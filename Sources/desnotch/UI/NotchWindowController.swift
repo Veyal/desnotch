@@ -8,10 +8,10 @@ final class NotchWindowController {
 
     private static let expandedSize = CGSize(width: 300, height: 44)
 
-    init(controller: NowPlayingController) {
+    init?(controller: NowPlayingController) {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return nil }
         self.controller = controller
 
-        let screen = NSScreen.main ?? NSScreen.screens[0]
         let placement = NotchGeometry.placement(for: screen, expandedSize: Self.expandedSize)
 
         panel = NSPanel(
