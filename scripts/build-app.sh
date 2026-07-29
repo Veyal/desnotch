@@ -24,6 +24,9 @@ cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 # (the .app root), not under Contents/Resources - it must sit here, not nested.
 if [ -d "$RESOURCE_BUNDLE" ]; then
     cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/$(basename "$RESOURCE_BUNDLE")"
+else
+    echo "error: resource bundle not found at $RESOURCE_BUNDLE (MediaRemote adapter would be missing from the .app)" >&2
+    exit 1
 fi
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST

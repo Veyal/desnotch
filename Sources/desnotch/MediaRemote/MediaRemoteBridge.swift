@@ -105,4 +105,17 @@ final class MediaRemoteBridge {
         process.standardError = FileHandle.nullDevice
         try? process.run()
     }
+
+    /// Stops the long-lived `stream` subprocess. Without this, quitting the app
+    /// orphans the perl process (reparented to launchd) with a live MediaRemote
+    /// subscription still running indefinitely.
+    func stopStreaming() {
+        stdout(for: streamProcess)?.readabilityHandler = nil
+        streamProcess?.terminate()
+        streamProcess = nil
+    }
+
+    private func stdout(for process: Process?) -> FileHandle? {
+        (process?.standardOutput as? Pipe)?.fileHandleForReading
+    }
 }
