@@ -128,7 +128,7 @@ enum AgentActivityScanner {
             guard !isAutomationCodexSession(payload) else { continue }
 
             let label = (payload["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "session"
-            let turnInProgress = tailCodexTurnInProgress(url) ?? true
+            guard let turnInProgress = tailCodexTurnInProgress(url) else { continue }
 
             sessions.append(
                 AgentSession(
