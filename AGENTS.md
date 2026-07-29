@@ -83,8 +83,11 @@ width (indicators live in the wings, **never behind the cutout - that area is op
 and anything drawn there is invisible**); expanded = same shape, all content pushed below the
 cutout via `.padding(.top, notch.height + 4)`. Solid `.black` fill (not 0.85 opacity) so it
 blends seamlessly with the hardware. On a screen with no notch (every non-MacBook display,
-including this project's Mac mini dev machine) it falls back to a capsule/pill floating below
-the menu bar top-center. The fallback path is what gets exercised in this dev environment;
+including this project's Mac mini dev machine) the layout is **identical**: it renders around
+a synthetic MacBook-sized cutout (`NotchPillView.fakeNotchSize`, 200×30pt of plain black in
+the middle, wings either side) drawn over the menu bar top-center, so both screen types
+share one code path via `effectiveNotch`. The fallback path is what gets exercised in this
+dev environment;
 the notch path was built for a MacBook Pro 14" report that the old top-centered layout was
 hidden behind the hardware - verify pixel fit on real hardware after geometry changes.
 

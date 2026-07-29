@@ -7,8 +7,9 @@ import AppKit
 /// region, matching how Dynamic-Island-style pills behave. Final pixel positioning
 /// against a *real* notch cutout still needs verification on a MacBook - see README.
 ///
-/// No notch (every other Mac, including this dev machine's display): the panel sits
-/// fully below the menu bar instead of straddling it, top-centered.
+/// No notch (every other Mac, including this dev machine's display): the panel is also
+/// anchored flush with the screen top, so the pill renders as a "fake notch" over the
+/// menu bar top-center.
 ///
 /// The panel is sized to the pill's measured content size plus a transparent inset
 /// reserved on the sides and bottom for the spring overshoot and drop shadow (the pill
@@ -78,16 +79,9 @@ public enum NotchGeometry {
         let height = windowSize.height
         let x = screen.frame.midX - width / 2
 
-        let y: CGFloat
-        if hasNotch {
-            // Anchor into the top notch region; real-notch pixel fit needs a MacBook.
-            y = screen.frame.maxY - height
-        } else {
-            // Sit fully below the menu bar (the top gap between visibleFrame and frame),
-            // with a small breathing margin - don't straddle the menu bar.
-            let menuBarTop = screen.visibleFrame.maxY
-            y = menuBarTop - height - 6
-        }
+        // Flush with the screen top on every screen: a real notch hugs the hardware cutout,
+        // and a notch-less screen gets a "fake notch" drawn over the menu bar top-center.
+        let y = screen.frame.maxY - height
 
         return Placement(
             frame: NSRect(x: x, y: y, width: width, height: height),

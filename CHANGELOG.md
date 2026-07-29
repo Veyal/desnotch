@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.1 — 2026-07-30
+
+- ✓ **Notch-less screens now replicate the MacBook notch exactly.** The old fallback (a
+  capsule floating below the menu bar) is gone: every screen renders the same
+  wings-around-cutout layout via `NotchPillView.effectiveNotch` - a real hardware cutout on
+  notch screens, a synthetic MacBook-sized one (`fakeNotchSize`, 200×30pt of plain black)
+  drawn over the menu bar top-center on notch-less screens. Panel is anchored flush with the
+  screen top everywhere; expanded content sits below the cutout in both cases.
+
 ## v0.3.0 — 2026-07-29
 
 Physical-notch compatibility (reported on a MacBook Pro 14" M2 Pro: the minimized pill was
