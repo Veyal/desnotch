@@ -1,6 +1,7 @@
 # desnotch
 
-Lightweight native macOS notch app: media now-playing live activity with animated open/close.
+Lightweight native macOS notch app: media now-playing live activity with animated open/close,
+plus an ambient AI coding-agent activity indicator.
 
 desnotch turns the MacBook notch into a small "Dynamic Island"-style live activity: when
 something is playing system-wide (Music, Safari video, Spotify, etc.) a small artwork indicator
@@ -8,6 +9,11 @@ sits at the notch, and the full pill - artwork, title, artist, and play/pause/ne
 controls that actually control playback - animates open briefly on a real change (a new track, or
 play/pause) before animating closed again, like a toast rather than a persistent panel. Hover the
 indicator to reopen it manually; move the mouse away to close it again.
+
+When nothing is playing, the same pill can instead surface a generic summary of local Claude
+Code / Codex CLI session activity (e.g. "3 agents: 2 working, 1 needs you") - see
+`AGENTS.md` for the detection approach, state model, and now-playing/agent-activity priority
+rule.
 
 ## Running in development
 
