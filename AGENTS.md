@@ -4,20 +4,39 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Add durable project-specific notes here as they are discovered through real work.
 
-## Now-playing data: private MediaRemote.framework
+## Now-playing data: private MediaRemote.framework via a vendored adapter subprocess
 
-There is no public API for system-wide now-playing state/control. `Sources/desnotch/MediaRemote/MediaRemoteBridge.swift`
-`dlopen`s `/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote` and `dlsym`s the
-functions/notification-name constants it needs (`MRMediaRemoteGetNowPlayingInfo`,
-`MRMediaRemoteRegisterForNowPlayingNotifications`, `MRMediaRemoteSendCommand`,
-`kMRMediaRemoteNowPlayingInfoDidChangeNotification` and friends). This is the same technique
-NotchNook/Alcove use, and it's a hard requirement of the brief, not a shortcut - none of these
-symbols/keys are documented or guaranteed stable across macOS releases. If notification callbacks
-stop firing or `MRMediaRemoteGetNowPlayingInfo` starts returning empty dictionaries after an OS
-upgrade, suspect a renamed/removed private symbol first, not app logic.
+There is no public API for system-wide now-playing state/control; this app reads/writes it via
+the private `MediaRemote.framework`. The original implementation called `MRMediaRemoteGetNowPlayingInfo`
+in-process via `dlopen`/`dlsym` - the technique NotchNook/Alcove and most tutorials describe, and
+it worked. **As of macOS 15.4, that call is entitlement-gated**: it resolves and executes without
+error but silently returns nil for an arbitrary third-party binary (confirmed by direct
+reproduction - real media playing, `MRMediaRemoteGetNowPlayingInfo` returning nil in-process while
+an external tool using a different technique saw the real data at the same instant). Only specific
+Apple-signed processes (e.g. `/usr/bin/perl`) pass that check now.
 
-The bridge is notification-driven only (no polling timer) to keep the app idle-cheap - preserve
-that when touching `MediaRemoteBridge`/`NowPlayingController`.
+`Sources/desnotch/MediaRemote/MediaRemoteBridge.swift` now works around this by shelling out to
+`Sources/desnotch/MediaRemote/Vendor/MediaRemoteAdapter/mediaremote-adapter.pl`, which loads
+`MediaRemoteAdapter.framework` (also vendored there) into `/usr/bin/perl`'s already-entitled
+process and streams now-playing JSON back over a pipe. This is the same technique `nowplaying-cli`
+and `media-control` use. Both files are from [ungive/mediaremote-adapter](https://github.com/ungive/mediaremote-adapter)
+(BSD-3-Clause, see `Vendor/MediaRemoteAdapter/LICENSE-mediaremote-adapter` and `NOTICE.md`), built
+as a stock universal (x86_64+arm64) binary via the project's own CMake build - not hand-modified.
+They're declared as SPM `resources:` in `Package.swift` and accessed via `Bundle.module`;
+`scripts/build-app.sh` copies the generated resource bundle to the `.app` root (where SPM's
+generated `Bundle.module` accessor expects it relative to `Bundle.main`, *not* under
+`Contents/Resources/`) - if you change how resources are declared, re-verify that copy step, since
+a subtly wrong path fails silently (the app just never sees any now-playing data, with no error).
+
+The bridge stays push/notification-driven, not polled: the adapter's `stream` subcommand is one
+long-lived subprocess that only writes a line when now-playing state actually changes, so idle CPU
+stays near zero. Preserve that when touching `MediaRemoteBridge`/`NowPlayingController` - don't
+replace `stream` with polling `get` on a timer.
+
+If real media is playing but the pill still doesn't appear, first check literally whether
+`/usr/bin/perl <path-to-mediaremote-adapter.pl> <path-to-MediaRemoteAdapter.framework> get` returns
+real data from a plain shell - that isolates "is the adapter technique still entitled on this
+macOS version" from "is desnotch's own code wrong."
 
 ## Notch geometry detection/fallback
 

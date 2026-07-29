@@ -35,10 +35,11 @@ to `/Applications`, or run it directly with `open dist/desnotch.app`.
 
 ## How it works
 
-- **Now-playing data & control**: via the private `MediaRemote.framework`, loaded with
-  `dlopen`/`dlsym` since there is no public API for system-wide now-playing state. The app
-  only reacts to MediaRemote's own change notifications - it never polls on a timer - so it
-  is idle-cheap (near-zero CPU at rest).
+- **Now-playing data & control**: via the private `MediaRemote.framework`, since there is no
+  public API for system-wide now-playing state. As of macOS 15.4, Apple entitlement-gated the
+  relevant call, so it can no longer be called in-process (see `Sources/desnotch/MediaRemote/Vendor/MediaRemoteAdapter/NOTICE.md`
+  for how this app works around that). Update delivery stays notification/stream-driven, never
+  polled, so the app is idle-cheap (near-zero CPU at rest).
 - **Notch geometry**: on a MacBook with a physical notch, the pill is sized and positioned
   using `NSScreen.safeAreaInsets` / `auxiliaryTopLeftArea` / `auxiliaryTopRightArea` to hug
   the actual notch cutout. On a screen with no notch (this project was developed on a

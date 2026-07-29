@@ -1,12 +1,13 @@
 import AppKit
 import Foundation
 
-/// Parsed snapshot of MediaRemote's now-playing dictionary.
+/// Parsed snapshot of one now-playing update from `MediaRemoteBridge`.
 ///
-/// The dictionary keys read here (`kMRMediaRemoteNowPlayingInfoTitle` etc.) are the
-/// well-known reverse-engineered key strings MediaRemote fills in - not a public,
-/// documented schema. Missing/renamed keys degrade gracefully to `nil`/defaults
-/// rather than crashing.
+/// The adapter's JSON keys (`title`, `artist`, `playbackRate`, `artworkData` as
+/// base64, etc.) are documented at github.com/ungive/mediaremote-adapter, unlike
+/// the private `kMRMediaRemoteNowPlayingInfo*` dictionary keys this project read
+/// directly before switching to the adapter. Missing/renamed keys still degrade
+/// gracefully to `nil`/defaults rather than crashing.
 struct NowPlayingInfo: Equatable {
     var title: String?
     var artist: String?
@@ -28,21 +29,17 @@ struct NowPlayingInfo: Equatable {
         title != nil || artist != nil
     }
 
-    init(cfDictionary: CFDictionary) {
-        let dict = cfDictionary as NSDictionary
-        title = dict["kMRMediaRemoteNowPlayingInfoTitle"] as? String
-        artist = dict["kMRMediaRemoteNowPlayingInfoArtist"] as? String
-        album = dict["kMRMediaRemoteNowPlayingInfoAlbum"] as? String
-        uniqueIdentifier = (dict["kMRMediaRemoteNowPlayingInfoUniqueIdentifier"] as? NSObject)?.description
+    init(adapterPayload payload: [String: Any]) {
+        title = payload["title"] as? String
+        artist = payload["artist"] as? String
+        album = payload["album"] as? String
+        isPlaying = payload["playing"] as? Bool ?? false
+        uniqueIdentifier = (payload["uniqueIdentifier"].map { "\($0)" })
 
-        if let rate = dict["kMRMediaRemoteNowPlayingInfoPlaybackRate"] as? Double {
-            isPlaying = rate > 0
-        } else {
-            isPlaying = false
-        }
-
-        if let artworkData = dict["kMRMediaRemoteNowPlayingInfoArtworkData"] as? Data {
-            artwork = NSImage(data: artworkData)
+        if let base64 = payload["artworkData"] as? String,
+            let data = Data(base64Encoded: base64)
+        {
+            artwork = NSImage(data: data)
         } else {
             artwork = nil
         }

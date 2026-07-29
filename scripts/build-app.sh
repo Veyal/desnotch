@@ -13,11 +13,18 @@ echo "==> swift build -c release"
 swift build -c release
 
 BIN_PATH=".build/release/$APP_NAME"
+RESOURCE_BUNDLE=".build/release/${APP_NAME}_${APP_NAME}.bundle"
 
 echo "==> assembling $APP_BUNDLE"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+# SPM's generated Bundle.module accessor looks for this next to Bundle.main
+# (the .app root), not under Contents/Resources - it must sit here, not nested.
+if [ -d "$RESOURCE_BUNDLE" ]; then
+    cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/$(basename "$RESOURCE_BUNDLE")"
+fi
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

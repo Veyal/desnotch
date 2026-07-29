@@ -7,7 +7,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "desnotch",
-            path: "Sources/desnotch"
+            path: "Sources/desnotch",
+            resources: [
+                .copy("MediaRemote/Vendor/MediaRemoteAdapter")
+            ]
         )
     ]
 )

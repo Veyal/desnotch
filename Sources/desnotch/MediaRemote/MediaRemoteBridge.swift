@@ -1,24 +1,31 @@
 import AppKit
 import Foundation
 
-/// Thin Swift wrapper around the private `MediaRemote.framework`.
+/// Bridges to the system's "now playing" (MediaRemote) state via a vendored
+/// external adapter process, rather than calling MediaRemote's private C API
+/// directly from this process.
 ///
-/// There is no public API for reading system-wide now-playing state or for sending
-/// play/pause/next/previous commands to whatever app currently owns the "Now Playing"
-/// session. NotchNook, Alcove, and most other notch/now-playing utilities all reach
-/// into this private framework the same way: `dlopen` the framework bundle, then
-/// `dlsym` the handful of C functions and CFString constants they need. Apple could
-/// change or remove these symbols in any OS release without notice - that's an
-/// accepted tradeoff for a non-App-Store app, not an oversight.
+/// This project originally called `MRMediaRemoteGetNowPlayingInfo` in-process via
+/// `dlopen`/`dlsym`, the technique most tutorials describe. As of macOS 15.4 that
+/// call is entitlement-gated: it resolves and executes without error but silently
+/// returns nil for an arbitrary third-party binary. Only specific Apple-signed
+/// processes (e.g. `/usr/bin/perl`) pass that check. `Vendor/MediaRemoteAdapter/`
+/// (github.com/ungive/mediaremote-adapter, BSD-3-Clause; see NOTICE.md there) works
+/// around this the same way `nowplaying-cli` and `media-control` do: it loads the
+/// adapter's code into `perl`'s already-entitled process and streams results back
+/// over a pipe.
 ///
-/// All of this is looked up lazily and defensively: if the framework or a symbol is
-/// missing (sandboxed context, future macOS removing it, etc.) the bridge simply
-/// reports no now-playing info instead of crashing.
+/// The adapter's `stream` subcommand keeps one long-lived subprocess running and
+/// only writes a line when now-playing state actually changes, so - like the
+/// previous in-process implementation - this stays notification-driven rather than
+/// polling: idle CPU stays near zero regardless of which underlying technique is
+/// fetching the data.
 final class MediaRemoteBridge {
     static let shared = MediaRemoteBridge()
 
-    /// Reverse-engineered `MRMediaRemoteCommand` enum values. These are stable across
-    /// the macOS releases this app targets but are not a public/documented contract.
+    /// Matches the adapter's `send` command IDs (`kMRPlay` etc.), which are the
+    /// same reverse-engineered `MRMediaRemoteCommand` values this project used
+    /// directly before switching to the adapter.
     enum Command: Int {
         case play = 0
         case pause = 1
@@ -28,135 +35,74 @@ final class MediaRemoteBridge {
         case previousTrack = 5
     }
 
-    var onNowPlayingChange: (() -> Void)?
+    /// Called on the main queue whenever the adapter reports a change. `nil` means
+    /// nothing is currently reporting now-playing info.
+    var onNowPlayingChange: ((NowPlayingInfo?) -> Void)?
 
-    private let handle: UnsafeMutableRawPointer?
-
-    private typealias GetNowPlayingInfoFn = @convention(c) (
-        DispatchQueue, @escaping @convention(block) (CFDictionary?) -> Void
-    ) -> Void
-    private typealias RegisterNotificationsFn = @convention(c) (DispatchQueue) -> Void
-    private typealias SendCommandFn = @convention(c) (Int, CFDictionary?) -> Bool
-    private typealias GetIsPlayingFn = @convention(c) (
-        DispatchQueue, @escaping @convention(block) (Bool) -> Void
-    ) -> Void
-
-    private let getNowPlayingInfoFn: GetNowPlayingInfoFn?
-    private let registerNotificationsFn: RegisterNotificationsFn?
-    private let sendCommandFn: SendCommandFn?
-    private let getIsPlayingFn: GetIsPlayingFn?
-
-    private let notificationCenter = CFNotificationCenterGetDistributedCenter()
-    private let queue = DispatchQueue(label: "com.desnotch.mediaremote")
-
-    private static func symbol<T>(_ handle: UnsafeMutableRawPointer?, _ name: String, as type: T.Type) -> T? {
-        guard let handle, let sym = dlsym(handle, name) else { return nil }
-        return unsafeBitCast(sym, to: type)
-    }
-
-    // TEMPORARY, NOT COMMITTED: root-cause diagnostic logging.
-    private func dlog(_ s: String) {
-        FileHandle.standardError.write("[desnotch-diag] MediaRemoteBridge: \(s)\n".data(using: .utf8)!)
-    }
+    private let scriptURL: URL?
+    private let frameworkPath: String?
+    private var streamProcess: Process?
+    private var stdoutBuffer = Data()
 
     private init() {
-        let handle = dlopen(
-            "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote",
-            RTLD_NOW
-        )
-        self.handle = handle
-        FileHandle.standardError.write(
-            "[desnotch-diag] MediaRemoteBridge: dlopen -> \(handle != nil ? "OK" : "FAILED")\n".data(using: .utf8)!
-        )
-
-        getNowPlayingInfoFn = Self.symbol(handle, "MRMediaRemoteGetNowPlayingInfo", as: GetNowPlayingInfoFn.self)
-        registerNotificationsFn = Self.symbol(
-            handle, "MRMediaRemoteRegisterForNowPlayingNotifications", as: RegisterNotificationsFn.self
-        )
-        sendCommandFn = Self.symbol(handle, "MRMediaRemoteSendCommand", as: SendCommandFn.self)
-        getIsPlayingFn = Self.symbol(
-            handle, "MRMediaRemoteGetNowPlayingApplicationIsPlaying", as: GetIsPlayingFn.self
-        )
-        dlog(
-            "symbols: getNowPlayingInfo=\(getNowPlayingInfoFn != nil) registerNotifications=\(registerNotificationsFn != nil) sendCommand=\(sendCommandFn != nil) getIsPlaying=\(getIsPlayingFn != nil)"
-        )
-
-        registerForChangeNotifications(name: "kMRMediaRemoteNowPlayingInfoDidChangeNotification")
-        registerForChangeNotifications(name: "kMRMediaRemotePlaybackQueueChangedNotification")
-        registerForChangeNotifications(name: "kMRMediaRemoteNowPlayingApplicationDidChangeNotification")
-        registerForChangeNotifications(name: "kMRMediaRemoteNowPlayingApplicationClientStateDidChange")
-
-        registerNotificationsFn?(queue)
-        dlog("called MRMediaRemoteRegisterForNowPlayingNotifications")
+        let adapterDir = Bundle.module.resourceURL?.appendingPathComponent("MediaRemoteAdapter")
+        scriptURL = adapterDir?.appendingPathComponent("mediaremote-adapter.pl")
+        frameworkPath = adapterDir?.appendingPathComponent("MediaRemoteAdapter.framework").path
+        startStreaming()
     }
 
-    /// `name` is looked up as a `const CFStringRef` symbol exported by the framework
-    /// rather than hardcoded, since the *value* backing these notification-name
-    /// constants is not part of any public contract either - only the symbol name is
-    /// stable enough to rely on.
-    private func registerForChangeNotifications(name: String) {
-        guard let handle,
-            let symPtr = dlsym(handle, name)
-        else {
-            dlog("registerForChangeNotifications(\(name)): symbol MISSING")
-            return
-        }
-        let cfStringPtr = symPtr.assumingMemoryBound(to: CFString?.self)
-        guard let cfString = cfStringPtr.pointee else {
-            dlog("registerForChangeNotifications(\(name)): symbol found but pointee nil")
-            return
-        }
-        let cfName = CFNotificationName(rawValue: cfString)
-        dlog("registerForChangeNotifications(\(name)): registering as \"\(cfString as String)\"")
+    private func startStreaming() {
+        guard let scriptURL, let frameworkPath else { return }
 
-        let observer = Unmanaged.passUnretained(self).toOpaque()
-        CFNotificationCenterAddObserver(
-            notificationCenter,
-            observer,
-            { _, observer, notificationName, _, _ in
-                guard let observer else { return }
-                let bridge = Unmanaged<MediaRemoteBridge>.fromOpaque(observer).takeUnretainedValue()
-                bridge.dlog("*** received notification: \(notificationName?.rawValue as CFString? ?? "?" as CFString) ***")
-                DispatchQueue.main.async {
-                    bridge.onNowPlayingChange?()
-                }
-            },
-            cfName.rawValue,
-            nil,
-            .deliverImmediately
-        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [scriptURL.path, frameworkPath, "stream", "--no-diff"]
+
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+
+        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            self?.consume(data)
+        }
+
+        guard (try? process.run()) != nil else { return }
+        streamProcess = process
     }
 
-    func fetchNowPlayingInfo(completion: @escaping (NowPlayingInfo?) -> Void) {
-        guard let getNowPlayingInfoFn else {
-            dlog("fetchNowPlayingInfo: getNowPlayingInfoFn is nil, completing nil")
-            completion(nil)
-            return
+    /// The adapter writes newline-delimited JSON; `availableData` doesn't respect
+    /// line boundaries, so incomplete lines are buffered across calls.
+    private func consume(_ data: Data) {
+        stdoutBuffer.append(data)
+        while let newlineIndex = stdoutBuffer.firstIndex(of: 0x0A) {
+            let lineData = stdoutBuffer[stdoutBuffer.startIndex..<newlineIndex]
+            stdoutBuffer.removeSubrange(stdoutBuffer.startIndex...newlineIndex)
+            guard !lineData.isEmpty else { continue }
+            handle(line: Data(lineData))
         }
-        dlog("fetchNowPlayingInfo: calling MRMediaRemoteGetNowPlayingInfo")
-        getNowPlayingInfoFn(queue) { [weak self] cfInfo in
-            guard let self else { return }
-            self.dlog("fetchNowPlayingInfo: raw dict = \(cfInfo.map { $0 as NSDictionary }.map(String.init(describing:)) ?? "nil")")
-            guard let cfInfo else {
-                DispatchQueue.main.async { completion(nil) }
-                return
-            }
-            let info = NowPlayingInfo(cfDictionary: cfInfo)
-            guard let getIsPlayingFn = self.getIsPlayingFn else {
-                DispatchQueue.main.async { completion(info) }
-                return
-            }
-            self.dlog("fetchNowPlayingInfo: calling MRMediaRemoteGetNowPlayingApplicationIsPlaying")
-            getIsPlayingFn(self.queue) { isPlaying in
-                self.dlog("fetchNowPlayingInfo: getIsPlayingFn completion isPlaying=\(isPlaying)")
-                var info = info
-                info.isPlaying = isPlaying
-                DispatchQueue.main.async { completion(info) }
-            }
+    }
+
+    private func handle(line: Data) {
+        guard
+            let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+            let payload = json["payload"] as? [String: Any]
+        else { return }
+
+        let info = payload.isEmpty ? nil : NowPlayingInfo(adapterPayload: payload)
+        DispatchQueue.main.async { [weak self] in
+            self?.onNowPlayingChange?(info)
         }
     }
 
     func send(_ command: Command) {
-        _ = sendCommandFn?(command.rawValue, nil)
+        guard let scriptURL, let frameworkPath else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [scriptURL.path, frameworkPath, "send", String(command.rawValue)]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
     }
 }

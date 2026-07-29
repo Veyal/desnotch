@@ -1,13 +1,13 @@
 import AppKit
 import Combine
 
-/// Bridges `MediaRemoteBridge` change notifications into SwiftUI state.
+/// Bridges `MediaRemoteBridge` updates into SwiftUI state.
 ///
-/// Deliberately notification-driven, not polled: `MediaRemoteBridge` only calls back
-/// when MediaRemote posts a change notification, so this controller (and therefore the
-/// UI) does zero work at rest. The only timer here is the one-shot idle-close timer
-/// below, which is scheduled/cancelled in response to state changes rather than
-/// ticking continuously.
+/// Deliberately push-driven, not polled: `MediaRemoteBridge` only calls back when
+/// the underlying adapter subprocess reports a real change, so this controller (and
+/// therefore the UI) does zero work at rest. The only timer here is the one-shot
+/// idle-close timer below, which is scheduled/cancelled in response to state changes
+/// rather than ticking continuously.
 @MainActor
 final class NowPlayingController: ObservableObject {
     @Published private(set) var info: NowPlayingInfo?
@@ -19,29 +19,9 @@ final class NowPlayingController: ObservableObject {
     private var idleTimer: Timer?
     private let bridge = MediaRemoteBridge.shared
 
-    // TEMPORARY, NOT COMMITTED: root-cause diagnostic logging for the real,
-    // non-bypassed pipeline (real media -> notification -> fetch -> apply).
-    private func dlog(_ s: String) {
-        FileHandle.standardError.write("[desnotch-diag] \(s)\n".data(using: .utf8)!)
-    }
-
     init() {
-        dlog("NowPlayingController.init")
-        bridge.onNowPlayingChange = { [weak self] in
-            self?.dlog("onNowPlayingChange fired")
-            self?.refresh()
-        }
-        refresh()
-    }
-
-    private func refresh() {
-        dlog("refresh() -> fetchNowPlayingInfo")
-        bridge.fetchNowPlayingInfo { [weak self] newInfo in
-            guard let self else { return }
-            self.dlog(
-                "fetchNowPlayingInfo completion: newInfo=\(String(describing: newInfo)) hasContent=\(newInfo?.hasContent ?? false) isPlaying=\(newInfo?.isPlaying ?? false)"
-            )
-            self.apply(newInfo)
+        bridge.onNowPlayingChange = { [weak self] newInfo in
+            self?.apply(newInfo)
         }
     }
 
@@ -49,18 +29,15 @@ final class NowPlayingController: ObservableObject {
         info = newInfo
 
         guard let newInfo, newInfo.hasContent else {
-            dlog("apply: no content -> scheduleHide")
             scheduleHide()
             return
         }
 
         if newInfo.isPlaying {
-            dlog("apply: isPlaying=true -> isVisible=true")
             idleTimer?.invalidate()
             idleTimer = nil
             isVisible = true
         } else {
-            dlog("apply: isPlaying=false -> scheduleHide")
             scheduleHide()
         }
     }
