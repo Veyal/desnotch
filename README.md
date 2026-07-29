@@ -25,8 +25,10 @@ swift run
 
 `swift build` also works standalone. Both run from a clean checkout with zero manual setup.
 
-The app has no dock icon and no menu bar item (`LSUIElement`/accessory activation policy) -
-that's intentional MVP scope, not a bug. Quit with Cmd+Q while it has focus, or `pkill desnotch`.
+The app has no dock icon (`LSUIElement`/accessory activation policy). A menu bar status item
+provides a reliable Quit and a Launch-at-Login toggle (the notch panel itself can't become the
+key window, so the app menu's Cmd+Q isn't always reachable). `pkill desnotch` is also safe -
+SIGTERM/SIGINT are handled and clean up the perl adapter subprocess instead of orphaning it.
 
 ## Building the distributable `.app`
 
@@ -35,8 +37,10 @@ scripts/build-app.sh
 ```
 
 This runs `swift build -c release`, bundles the binary into `dist/desnotch.app` with a minimal
-`Info.plist`, and ad-hoc codesigns it (`codesign --force --deep --sign -`). No notarization is
-attempted for this MVP, so Gatekeeper will warn on other machines; right-click > Open (or
+`Info.plist` (version from the latest git tag), places the MediaRemote adapter under
+`Contents/Resources/MediaRemoteAdapter`, and ad-hoc codesigns it inside-out (no `--deep`, so
+each component has its own signature as notarization requires). No notarization is attempted
+for this MVP, so Gatekeeper will warn on other machines; right-click > Open (or
 `xattr -dr com.apple.quarantine dist/desnotch.app`) to run it anyway. Drag `dist/desnotch.app`
 to `/Applications`, or run it directly with `open dist/desnotch.app`.
 

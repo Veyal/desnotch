@@ -3,37 +3,66 @@ import Foundation
 /// Coarse state for a single detected coding-agent session, derived from how recently its
 /// transcript file changed plus a lightweight turn-completion marker in its content - never
 /// from the transcript text itself.
-enum AgentActivityState {
+public enum AgentActivityState {
     case working
     case needsYourTurn
     case stalled
     case idle
 }
 
-enum AgentSource {
+public enum AgentSource {
     case claudeCode
     case codex
+    case pi
+    case openCode
+
+    /// SF Symbol glyph for the source (generic, no paths/content).
+    public var symbol: String {
+        switch self {
+        case .claudeCode: return "terminal.fill"
+        case .codex: return "chevron.left.forwardslash.chevron.right"
+        case .pi: return "p.circle.fill"
+        case .openCode: return "curlybraces"
+        }
+    }
+
+    /// Human-readable name for the source.
+    public var displayName: String {
+        switch self {
+        case .claudeCode: return "Claude Code"
+        case .codex: return "Codex"
+        case .pi: return "Pi"
+        case .openCode: return "OpenCode"
+        }
+    }
 }
 
 /// A single detected session. `projectLabel` is always a generic basename (never a full path)
 /// so it is safe to render directly in the UI.
-struct AgentSession: Identifiable {
-    let id = UUID()
-    let source: AgentSource
-    let projectLabel: String
-    let state: AgentActivityState
-    let lastActivity: Date
+public struct AgentSession: Identifiable {
+    public let id = UUID()
+    public let source: AgentSource
+    public let projectLabel: String
+    public let state: AgentActivityState
+    public let lastActivity: Date
+
+    public init(source: AgentSource, projectLabel: String, state: AgentActivityState, lastActivity: Date) {
+        self.source = source
+        self.projectLabel = projectLabel
+        self.state = state
+        self.lastActivity = lastActivity
+    }
 }
 
 /// Aggregated counts the pill actually renders - individual session identities/paths never
 /// reach the view layer, only these counts and generic labels.
-struct AgentActivitySummary {
-    let workingCount: Int
-    let needsYourTurnCount: Int
-    let stalledCount: Int
-    let idleCount: Int
+public struct AgentActivitySummary: Equatable {
+    public let workingCount: Int
+    public let needsYourTurnCount: Int
+    public let stalledCount: Int
+    public let idleCount: Int
 
-    init(sessions: [AgentSession]) {
+    public init(sessions: [AgentSession]) {
         workingCount = sessions.filter { $0.state == .working }.count
         needsYourTurnCount = sessions.filter { $0.state == .needsYourTurn }.count
         stalledCount = sessions.filter { $0.state == .stalled }.count
@@ -43,11 +72,11 @@ struct AgentActivitySummary {
     /// Sessions worth surfacing in the pill. Purely-idle sessions (turn finished a while ago,
     /// nothing pending) are tracked but deliberately excluded here so old/finished chats don't
     /// keep the pill open - see the priority note in `NotchPillView`.
-    var actionableCount: Int { workingCount + needsYourTurnCount + stalledCount }
+    public var actionableCount: Int { workingCount + needsYourTurnCount + stalledCount }
 
-    var hasActivity: Bool { actionableCount > 0 }
+    public var hasActivity: Bool { actionableCount > 0 }
 
-    var headline: String {
+    public var headline: String {
         var clauses: [String] = []
         if workingCount > 0 { clauses.append("\(workingCount) working") }
         if needsYourTurnCount > 0 { clauses.append("\(needsYourTurnCount) needs you") }

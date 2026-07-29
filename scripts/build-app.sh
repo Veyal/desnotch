@@ -9,23 +9,32 @@ APP_NAME="desnotch"
 DIST_DIR="dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 
+# Version: prefer an explicit env override, then the latest git tag, then a default.
+VERSION="${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo "0.1.0")}"
+BUILD_NUMBER="${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo "1")}"
+
 echo "==> swift build -c release"
 swift build -c release
 
 BIN_PATH=".build/release/$APP_NAME"
-RESOURCE_BUNDLE=".build/release/${APP_NAME}_${APP_NAME}.bundle"
+# After the DesnotchCore library split, the SPM resource bundle is named after the
+# target that owns the resources (DesnotchCore), not the executable.
+SPM_RESOURCE_BUNDLE=".build/release/${APP_NAME}_DesnotchCore.bundle"
+ADAPTER_SRC="$SPM_RESOURCE_BUNDLE/MediaRemoteAdapter"
 
 echo "==> assembling $APP_BUNDLE"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
+mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
-# SPM's generated Bundle.module accessor looks for this next to Bundle.main
-# (the .app root), not under Contents/Resources - it must sit here, not nested.
-if [ -d "$RESOURCE_BUNDLE" ]; then
-    cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/$(basename "$RESOURCE_BUNDLE")"
+# The MediaRemote adapter ships under Contents/Resources (sealed by codesign, so the
+# bundle is notarizable) and is resolved via Bundle.main.resourceURL at runtime; the
+# SPM resource bundle (Bundle.module) remains the fallback for `swift run`.
+if [ -d "$ADAPTER_SRC" ]; then
+    cp -R "$ADAPTER_SRC" "$APP_BUNDLE/Contents/Resources/MediaRemoteAdapter"
 else
-    echo "error: resource bundle not found at $RESOURCE_BUNDLE (MediaRemote adapter would be missing from the .app)" >&2
+    echo "error: adapter not found at $ADAPTER_SRC (MediaRemote adapter would be missing from the .app)" >&2
     exit 1
 fi
 
@@ -41,9 +50,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>
     <string>com.desnotch.app</string>
     <key>CFBundleVersion</key>
-    <string>0.1.0</string>
+    <string>$BUILD_NUMBER</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$VERSION</string>
     <key>CFBundleExecutable</key>
     <string>$APP_NAME</string>
     <key>CFBundlePackageType</key>
@@ -58,8 +67,14 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> ad-hoc codesigning"
-codesign --force --deep --sign - "$APP_BUNDLE"
+echo "==> ad-hoc codesigning (inside-out)"
+# Sign the embedded adapter framework first, then the binary, then the bundle - avoid
+# --deep (deprecated) so each component has its own signature as notarization requires.
+# --options runtime / --timestamp are intentionally omitted: they need a Developer ID
+# certificate, not an ad-hoc ("-") identity.
+codesign --force --sign - "$APP_BUNDLE/Contents/Resources/MediaRemoteAdapter/MediaRemoteAdapter.framework"
+codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+codesign --force --sign - "$APP_BUNDLE"
 
 echo "==> done: $APP_BUNDLE"
 echo "Drag it to /Applications, or run: open \"$APP_BUNDLE\""

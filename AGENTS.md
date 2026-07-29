@@ -22,16 +22,25 @@ process and streams now-playing JSON back over a pipe. This is the same techniqu
 and `media-control` use. Both files are from [ungive/mediaremote-adapter](https://github.com/ungive/mediaremote-adapter)
 (BSD-3-Clause, see `Vendor/MediaRemoteAdapter/LICENSE-mediaremote-adapter` and `NOTICE.md`), built
 as a stock universal (x86_64+arm64) binary via the project's own CMake build - not hand-modified.
-They're declared as SPM `resources:` in `Package.swift` and accessed via `Bundle.module`;
-`scripts/build-app.sh` copies the generated resource bundle to the `.app` root (where SPM's
-generated `Bundle.module` accessor expects it relative to `Bundle.main`, *not* under
-`Contents/Resources/`) - if you change how resources are declared, re-verify that copy step, since
-a subtly wrong path fails silently (the app just never sees any now-playing data, with no error).
-
+They're declared as an SPM `resources:` in `Package.swift` (on the `DesnotchCore` library
+target) and resolved at runtime via `MediaRemoteBridge.locateAdapter()`:
+`Bundle.main.resourceURL/MediaRemoteAdapter` in a packaged `.app` (under `Contents/Resources`,
+so the bundle is codesign-sealed/notarizable), with `Bundle.module` as the `swift run` fallback.
+`scripts/build-app.sh` copies the adapter to `Contents/Resources/MediaRemoteAdapter` (the SPM
+resource bundle is now `desnotch_DesnotchCore.bundle` after the library split). Missing
+resources now log via `os.Logger` (`com.desnotch.app`) instead of failing silently.
 The bridge stays push/notification-driven, not polled: the adapter's `stream` subcommand is one
 long-lived subprocess that only writes a line when now-playing state actually changes, so idle CPU
 stays near zero. Preserve that when touching `MediaRemoteBridge`/`NowPlayingController` - don't
-replace `stream` with polling `get` on a timer.
+replace `stream` with polling `get` on a timer. (The stream is now launched with `--debounce=100`
+to coalesce a track-change's burst of updates; a `get` one-shot is used only as a reconciliation
+fallback ~1.5s after a transport tap, in `NowPlayingController.reconcileWithGet`.)
+
+Resilience is load-bearing too: all mutable stream state runs through one serial
+`DispatchQueue` (`desnotch.mediaremote`), `stderr` goes to `/dev/null` (not an undrained pipe
+that could deadlock perl), and a `terminationHandler` relaunches the stream with exponential
+backoff (1s→30s) unless `stopStreaming()` set `isStopping`. Don't regress these when editing
+`MediaRemoteBridge`.
 
 If real media is playing but the pill still doesn't appear, first check literally whether
 `/usr/bin/perl <path-to-mediaremote-adapter.pl> <path-to-MediaRemoteAdapter.framework> get` returns
@@ -48,16 +57,22 @@ adding polling or shortening the adapter path - the subprocess spawn was never t
 
 ## Pill visibility: live-activity toast, not a persistent panel
 
-The pill has three states, driven by `NowPlayingController`: hidden (no active media), collapsed
-(media active, small hoverable artwork-only indicator at the notch), and expanded (full pill with
-text/controls). It does **not** stay expanded for the duration of playback - it expands briefly
+The pill has three states: hidden, collapsed (small hoverable indicator at the notch), and
+expanded. It does **not** stay expanded for the duration of playback - it expands briefly
 (`autoCollapseDelay`, ~2.5s) on a real change event (new track, or a play/pause flip) and
 auto-collapses again, like a toast. Hovering the collapsed indicator (`.onHover` in
-`NotchPillView`, `setHovering(_:)` in the controller) is the only way to manually reopen it, and
-moving the mouse away re-collapses it after a short grace period (`hoverExitDelay`) so briefly
-crossing the edge doesn't dismiss it. If you change this, preserve the reveal-only-on-`info`-change
-guard in `applyRemote` (comparing against the previous value) - without it, every redundant
-re-delivery of identical now-playing state would re-trigger the reveal animation.
+`NotchPillView`, `setHovering(_:)`) is the only way to manually reopen it, and moving the mouse
+away re-collapses it after a short grace period (`hoverExitDelay`). This applies to **both**
+content modes now: the expand/collapse/hover state lives in one shared `NotchPillPresentation`
+(`Sources/.../UI/NotchPillPresentation.swift`), used by both `NowPlayingController` and
+`AgentActivityController`, so agent activity is also a toast, not a persistent panel.
+
+Preserve the reveal-only-on-real-change guard when touching this: `NowPlayingController.applyRemote`
+reveals only when the new `info` differs from the previous (so redundant re-deliveries of identical
+state don't re-trigger the animation); `AgentActivityController.apply` reveals only when the
+actionable count or its breakdown signature changes. Timers run on `.common` run-loop mode so they
+keep firing during menu tracking. If you change this, keep the reveal guards and the shared
+presentation as the single owner of `isExpanded`.
 
 ## Notch geometry detection/fallback
 
@@ -93,15 +108,18 @@ Hard privacy constraints for this feature, load-bearing for anyone touching it:
   these are sub-agent/headless fan-out, not a person's session worth surfacing.
 
 State model (`AgentActivityScanner.classify`): a turn in progress becomes `.stalled` after 10
-minutes without a file change (presumed hung); a completed turn stays `.needsYourTurn` for 5
-minutes then fades to `.idle`; anything untouched for over 2 hours is dropped entirely. Only
-`.working`/`.needsYourTurn`/`.stalled` sessions count as "activity" - purely `.idle` sessions
-are tracked but excluded from the pill so old finished chats don't keep it open.
+minutes without a file change (presumed hung); a presumed-hung session is dropped entirely after
+`stalledSessionMax` (45 min) so dead sessions don't inflate the count for the full 2h lookback;
+a completed turn stays `.needsYourTurn` for 5 minutes then fades to `.idle`; anything untouched for
+over 2 hours is dropped. Only `.working`/`.needsYourTurn`/`.stalled` sessions count as "activity" -
+purely `.idle` sessions are tracked but excluded from the pill so old finished chats don't keep it open.
 
-**Now-playing vs. agent-activity priority** (`NotchPillView.contentKind`): now-playing always
-wins when visible, since it has real playback controls the user directly interacts with; agent
-activity only takes the pill when now-playing has nothing to show. This is a simple two-mode
-priority, not a combined/merged display - revisit if a future design wants both visible at once.
+**Now-playing vs. agent-activity priority** (`NotchPillView.contentKind`): now-playing wins while
+it is actively playing or expanded, since it has real playback controls the user directly interacts
+with; but paused/stopped media *yields* to agent activity (so a paused track doesn't pin the dot and
+bury a working agent). When media is paused and no agent is active, a collapsed now-playing
+indicator still shows so the user can resume. This is a simple two-mode priority, not a
+combined/merged display - revisit if a future design wants both visible at once.
 
 `AgentActivityController` polls the scanner on a 5s timer (file changes have no OS notification
 to hook, unlike `MediaRemoteBridge`) - keep that off the main actor if you touch it, per the
