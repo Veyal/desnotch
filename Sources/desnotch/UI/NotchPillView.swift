@@ -2,34 +2,51 @@ import SwiftUI
 
 /// The live-activity pill itself.
 ///
-/// Open/close is driven entirely by SwiftUI's animation system (`.spring()` tied to
-/// `isVisible`), not manual frame timers - the spec calls for a smooth, jank-free
-/// reveal, and hand-rolled per-frame animation is exactly what SwiftUI's implicit/
-/// explicit animations exist to avoid.
+/// Three states, not two: hidden (nothing playing), collapsed (media active, a
+/// small hoverable indicator sits at the notch), and expanded (the full pill with
+/// artwork/text/controls). It expands briefly on a real change and auto-collapses -
+/// like a toast, not a persistent panel - and hovering the collapsed indicator
+/// re-expands it manually. All transitions are spring-driven (`.animation` tied to
+/// `NowPlayingController`'s published state), not manual frame timers.
 struct NotchPillView: View {
     @ObservedObject var controller: NowPlayingController
     let hasPhysicalNotch: Bool
 
+    private let spring = Animation.spring(response: 0.45, dampingFraction: 0.75)
+
     var body: some View {
         Group {
-            if controller.isVisible, let info = controller.info {
-                content(for: info)
-                    .transition(
-                        .scale(scale: 0.6, anchor: .top)
-                            .combined(with: .opacity)
-                    )
+            if controller.hasActiveMedia, let info = controller.info {
+                if controller.isExpanded {
+                    expandedContent(for: info)
+                        .transition(.scale(scale: 0.6, anchor: .top).combined(with: .opacity))
+                } else {
+                    collapsedContent(for: info)
+                        .transition(.scale(scale: 0.6, anchor: .top).combined(with: .opacity))
+                }
             } else {
                 Color.clear
                     .frame(width: NotchGeometry.fallbackWidth, height: NotchGeometry.fallbackHeight)
             }
         }
-        .animation(.spring(response: 0.45, dampingFraction: 0.75), value: controller.isVisible)
+        .animation(spring, value: controller.isExpanded)
+        .animation(spring, value: controller.hasActiveMedia)
+        .onHover { hovering in
+            controller.setHovering(hovering)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private func content(for info: NowPlayingInfo) -> some View {
+    private func collapsedContent(for info: NowPlayingInfo) -> some View {
+        artwork(info.artwork, size: 16)
+            .padding(7)
+            .background(Capsule().fill(.black.opacity(0.85)))
+            .padding(.top, hasPhysicalNotch ? 2 : 6)
+    }
+
+    private func expandedContent(for info: NowPlayingInfo) -> some View {
         HStack(spacing: 10) {
-            artwork(info.artwork)
+            artwork(info.artwork, size: 24)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(info.title ?? "Unknown Title")
@@ -61,7 +78,7 @@ struct NotchPillView: View {
         .padding(.top, hasPhysicalNotch ? 2 : 6)
     }
 
-    private func artwork(_ image: NSImage?) -> some View {
+    private func artwork(_ image: NSImage?, size: CGFloat) -> some View {
         Group {
             if let image {
                 Image(nsImage: image)
@@ -71,8 +88,8 @@ struct NotchPillView: View {
                 Color.gray.opacity(0.3)
             }
         }
-        .frame(width: 24, height: 24)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size >= 24 ? 5 : 4))
     }
 
     private func controlButton(systemName: String, action: @escaping () -> Void) -> some View {

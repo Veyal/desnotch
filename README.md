@@ -3,10 +3,11 @@
 Lightweight native macOS notch app: media now-playing live activity with animated open/close.
 
 desnotch turns the MacBook notch into a small "Dynamic Island"-style live activity: when
-something is playing system-wide (Music, Safari video, Spotify, etc.) a pill animates open
-around the notch showing artwork, title, artist, and play/pause/next/previous controls that
-actually control playback. It animates closed again after a short idle timeout with no
-playback.
+something is playing system-wide (Music, Safari video, Spotify, etc.) a small artwork indicator
+sits at the notch, and the full pill - artwork, title, artist, and play/pause/next/previous
+controls that actually control playback - animates open briefly on a real change (a new track, or
+play/pause) before animating closed again, like a toast rather than a persistent panel. Hover the
+indicator to reopen it manually; move the mouse away to close it again.
 
 ## Running in development
 

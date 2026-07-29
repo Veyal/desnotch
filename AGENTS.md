@@ -38,6 +38,27 @@ If real media is playing but the pill still doesn't appear, first check literall
 real data from a plain shell - that isolates "is the adapter technique still entitled on this
 macOS version" from "is desnotch's own code wrong."
 
+**Command latency**: the `send` subprocess itself completes in ~15ms (measured) - it is not the
+bottleneck for the ~1s play/pause round-trip. Most of that latency is downstream and outside this
+app's control (target app processing the command, then the notification propagating back through
+the adapter's `stream` subprocess). `NowPlayingController.togglePlayPause()` masks this with an
+optimistic local flip rather than waiting for the round-trip; `applyRemote()` reconciles once the
+real state arrives (a no-op if it already matches the guess). Don't try to "fix" the latency by
+adding polling or shortening the adapter path - the subprocess spawn was never the slow part.
+
+## Pill visibility: live-activity toast, not a persistent panel
+
+The pill has three states, driven by `NowPlayingController`: hidden (no active media), collapsed
+(media active, small hoverable artwork-only indicator at the notch), and expanded (full pill with
+text/controls). It does **not** stay expanded for the duration of playback - it expands briefly
+(`autoCollapseDelay`, ~2.5s) on a real change event (new track, or a play/pause flip) and
+auto-collapses again, like a toast. Hovering the collapsed indicator (`.onHover` in
+`NotchPillView`, `setHovering(_:)` in the controller) is the only way to manually reopen it, and
+moving the mouse away re-collapses it after a short grace period (`hoverExitDelay`) so briefly
+crossing the edge doesn't dismiss it. If you change this, preserve the reveal-only-on-`info`-change
+guard in `applyRemote` (comparing against the previous value) - without it, every redundant
+re-delivery of identical now-playing state would re-trigger the reveal animation.
+
 ## Notch geometry detection/fallback
 
 `Sources/desnotch/UI/NotchGeometry.swift` detects a physical notch via `NSScreen.safeAreaInsets.top > 0`
