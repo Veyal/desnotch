@@ -2,10 +2,9 @@ import Foundation
 
 /// Tracks the pill's hover state, shared by both content modes.
 ///
-/// Expansion is decided in the view as `needsAttention || isHovering`: the pill minimizes
-/// by default and only stays expanded when an agent needs the user's action, or while the
-/// pointer is over it (hover re-opens it; a short exit grace avoids flicker on edge
-/// crossings). Timers run on `.common` run-loop mode so they keep firing during menu tracking.
+/// The pill minimizes by default and expands only while the pointer is over it (`isHovering`);
+/// a short exit grace avoids flicker on edge crossings. Timers run on `.common` run-loop mode
+/// so they keep firing during menu tracking.
 @MainActor
 public final class NotchPillPresentation: ObservableObject {
     @Published public private(set) var isHovering = false

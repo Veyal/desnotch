@@ -1,10 +1,13 @@
 import SwiftUI
 
-/// The single live-activity pill. It shows everything active at once, directly - no toast,
-/// no click-to-reveal: while anything is active the pill stays expanded, stacking the
-/// now-playing row (when media is active) and the per-agent list (when agents are active).
-/// When nothing is active it hides entirely. The user only needs to interact for real
-/// controls (play/pause/next/previous).
+/// The single live-activity pill. Minimized by default while anything is active; hovering
+/// expands it to a stacked view (now-playing row when media is active, per-agent list when
+/// agents are active). When nothing is active it hides entirely.
+///
+/// On a screen with a physical notch the pill hugs the hardware: the minimized state is a
+/// solid-black extension of the notch with the indicators in small "wings" either side of
+/// the cutout (never behind it - that area is opaque hardware), and the expanded state
+/// draws below the cutout. On notch-less screens it is a free-floating capsule/pill.
 ///
 /// Privacy: the agent list renders ONLY `AgentSession.projectLabel` (a folder basename),
 /// the `source`, the coarse `state`, and a relative time - never transcript text, prompts,
@@ -14,6 +17,8 @@ public struct NotchPillView: View {
     @ObservedObject public var agentActivity: AgentActivityController
     @ObservedObject public var presentation: NotchPillPresentation
     public let hasPhysicalNotch: Bool
+    /// Physical notch cutout size (`NotchGeometry.notchSize(for:)`); nil on notch-less screens.
+    public let notchSize: CGSize?
 
     /// Invoked with the pill's natural content size whenever SwiftUI lays it out, so
     /// the owning `NSPanel` can resize to fit content + shadow/overshoot room.
@@ -29,12 +34,14 @@ public struct NotchPillView: View {
         agentActivity: AgentActivityController,
         presentation: NotchPillPresentation,
         hasPhysicalNotch: Bool,
+        notchSize: CGSize? = nil,
         onSizeChange: ((CGSize) -> Void)? = nil
     ) {
         self.controller = controller
         self.agentActivity = agentActivity
         self.presentation = presentation
         self.hasPhysicalNotch = hasPhysicalNotch
+        self.notchSize = notchSize
         self.onSizeChange = onSizeChange
     }
 
@@ -47,7 +54,27 @@ public struct NotchPillView: View {
     private var hasMedia: Bool { controller.hasActiveMedia }
     private var hasAgents: Bool { agentActivity.summary.hasActivity }
     private var isActive: Bool { hasMedia || hasAgents }
-    private var topInset: CGFloat { hasPhysicalNotch ? 2 : 6 }
+    /// Flush with the screen top edge on a notch screen (the pill blends into the hardware);
+    /// a small breathing margin below the menu bar otherwise.
+    private var topInset: CGFloat { hasPhysicalNotch ? 0 : 6 }
+
+    /// Width of the black "wing" either side of the physical notch that hosts a minimized
+    /// indicator. Sized for the widest content (agent icon + 2-digit count).
+    private static let wingWidth: CGFloat = 44
+
+    /// Fixed width for the expanded pill. The rows contain greedy `Spacer`s, so without a
+    /// fixed width the pill would fill whatever the panel proposes (and feed that measured
+    /// size back into panel growth). A constant keeps it compact and the layout stable.
+    private static let expandedBaseWidth: CGFloat = 300
+
+    /// On a notch screen the expanded pill must at least span the physical cutout plus the
+    /// wings, so the black shape always fully covers the hardware.
+    private var expandedWidth: CGFloat {
+        if let notch = notchSize, hasPhysicalNotch {
+            return max(Self.expandedBaseWidth, notch.width + Self.wingWidth * 2)
+        }
+        return Self.expandedBaseWidth
+    }
 
     /// An agent is waiting on the user - reflected by the minimized agent icon (lightning),
     /// but it no longer forces the pill open. The pill is always minimized unless hovered.
@@ -120,9 +147,32 @@ public struct NotchPillView: View {
 
     // MARK: - Pill
 
-    /// One rounded pill stacking every active section, shown directly (persistently) while
-    /// anything is active. A thin divider separates now-playing and agents when both show.
+    /// The expanded (hovered) pill stacking every active section. A thin divider separates
+    /// now-playing and agents when both show. On a notch screen the shape stays flush with
+    /// the screen top and all content is pushed below the physical cutout (the cutout area
+    /// is opaque hardware); on notch-less screens it is a free-floating rounded pill.
+    @ViewBuilder
     private var pill: some View {
+        if let notch = notchSize, hasPhysicalNotch {
+            pillContent
+                .padding(.horizontal, 14)
+                .padding(.top, notch.height + 4)
+                .padding(.bottom, 8)
+                .frame(width: expandedWidth)
+                .background(BottomRoundedRectangle(radius: 14).fill(Color.black))
+                .contentShape(BottomRoundedRectangle(radius: 14))
+        } else {
+            pillContent
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .frame(width: expandedWidth)
+                .background(pillBackground)
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding(.top, topInset)
+        }
+    }
+
+    private var pillContent: some View {
         VStack(spacing: 0) {
             if hasMedia, let info = controller.info {
                 nowPlayingRow(info)
@@ -134,11 +184,6 @@ public struct NotchPillView: View {
                 agentSection
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(pillBackground)
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .padding(.top, topInset)
     }
 
     private var pillBackground: some View {
@@ -146,29 +191,58 @@ public struct NotchPillView: View {
             .fill(.black.opacity(0.85))
     }
 
-    /// Minimized state: a single compact capsule - music icon on the left, agent icon +
-    /// count on the right (lightning when one needs you, gear when working). One visible
-    /// unit rather than two separated dots, so it reads clearly even on a notch-less
-    /// display where it can't flank a camera housing.
+    /// Minimized state. Notch screens: a solid-black extension of the physical notch with
+    /// the indicators in small wings either side of the cutout (the cutout itself is opaque
+    /// hardware - nothing is ever drawn behind it). Notch-less screens: a single compact
+    /// capsule - music icon on the left, agent icon + count on the right.
     @ViewBuilder
     private var compact: some View {
-        HStack(spacing: hasMedia && hasAgents ? 8 : 0) {
-            if hasMedia {
-                mediaIndicator
+        if let notch = notchSize, hasPhysicalNotch {
+            notchCompact(notch)
+        } else {
+            HStack(spacing: hasMedia && hasAgents ? 8 : 0) {
+                if hasMedia {
+                    mediaIndicator
+                }
+                if hasAgents {
+                    agentIndicator
+                }
             }
-            if hasAgents {
-                agentIndicator
-            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(compactBackground)
+            .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.45), radius: 5, x: 0, y: 2)
+            .contentShape(Capsule())
+            .padding(.top, topInset)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(compactAccessibilityLabel))
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(compactBackground)
-        .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.45), radius: 5, x: 0, y: 2)
-        .contentShape(Capsule())
-        .padding(.top, topInset)
+    }
+
+    /// Wings flanking the physical cutout, drawn as one bottom-rounded black shape flush
+    /// with the screen top so it reads as a slightly wider notch. Both wings are always
+    /// drawn while anything is active (symmetry); an inactive side is just black.
+    private func notchCompact(_ notch: CGSize) -> some View {
+        HStack(spacing: 0) {
+            wing { if hasMedia { mediaIndicator } }
+            Color.clear
+                .frame(width: notch.width)
+            wing { if hasAgents { agentIndicator } }
+        }
+        .frame(height: notch.height)
+        .background(BottomRoundedRectangle(radius: 10).fill(Color.black))
+        .contentShape(BottomRoundedRectangle(radius: 10))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text(compactAccessibilityLabel))
+    }
+
+    private func wing<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        // Color.clear keeps the wing at full size even when its indicator is inactive,
+        // so the cutout gap stays centered on the physical notch.
+        Color.clear
+            .frame(width: Self.wingWidth)
+            .overlay(content())
     }
 
     private var mediaIndicator: some View {
@@ -224,7 +298,7 @@ public struct NotchPillView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            .frame(maxWidth: 160, alignment: .leading)
+            .frame(maxWidth: 140, alignment: .leading)
 
             Spacer(minLength: 4)
 
@@ -282,6 +356,7 @@ public struct NotchPillView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .frame(maxWidth: 150, alignment: .leading)
 
             Spacer(minLength: 4)
 
@@ -366,6 +441,32 @@ public struct NotchPillView: View {
         .buttonStyle(PillButtonStyle())
         .help(label)
         .accessibilityLabel(Text(label))
+    }
+}
+
+/// Rectangle with only the bottom two corners rounded - flush with the screen's top edge,
+/// so the pill reads as an extension of the physical notch. (Custom shape rather than
+/// `UnevenRoundedRectangle`, which needs macOS 13.3; the package targets 13.0.)
+struct BottomRoundedRectangle: Shape {
+    var radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let r = min(radius, min(rect.width, rect.height) / 2)
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+        path.addArc(
+            center: CGPoint(x: rect.maxX - r, y: rect.maxY - r),
+            radius: r, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false
+        )
+        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+        path.addArc(
+            center: CGPoint(x: rect.minX + r, y: rect.maxY - r),
+            radius: r, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false
+        )
+        path.closeSubpath()
+        return path
     }
 }
 

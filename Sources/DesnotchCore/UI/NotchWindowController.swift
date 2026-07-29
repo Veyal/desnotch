@@ -15,6 +15,7 @@ public final class NotchWindowController {
 
     private var currentScreen: NSScreen
     private var hasPhysicalNotch: Bool
+    private var notchSize: CGSize?
     private var cancellables = Set<AnyCancellable>()
 
     public init?(controller: NowPlayingController, agentActivity: AgentActivityController, presentation: NotchPillPresentation) {
@@ -24,6 +25,7 @@ public final class NotchWindowController {
         self.presentation = presentation
         self.currentScreen = screen
         self.hasPhysicalNotch = screen.safeAreaInsets.top > 0
+        self.notchSize = NotchGeometry.notchSize(for: screen)
 
         // Start at the content-floor size so the first content measurement doesn't trigger a
         // grow/recenter (which would look like a slide on launch).
@@ -83,6 +85,7 @@ public final class NotchWindowController {
             agentActivity: agentActivity,
             presentation: presentation,
             hasPhysicalNotch: hasPhysicalNotch,
+            notchSize: notchSize,
             onSizeChange: { [weak self] size in
                 self?.resize(toContent: size)
             }
@@ -114,9 +117,11 @@ public final class NotchWindowController {
         guard let screen = NotchGeometry.preferredScreen() else { return }
         currentScreen = screen
         let wasNotch = hasPhysicalNotch
+        let wasNotchSize = notchSize
         hasPhysicalNotch = screen.safeAreaInsets.top > 0
-        if hasPhysicalNotch != wasNotch {
-            // The pill's notch-aware layout depends on this; rebuild the view.
+        notchSize = NotchGeometry.notchSize(for: screen)
+        if hasPhysicalNotch != wasNotch || notchSize != wasNotchSize {
+            // The pill's notch-aware layout depends on these; rebuild the view.
             rebuildHosting()
         }
         // Re-anchor to the new screen geometry at the current/last known size.

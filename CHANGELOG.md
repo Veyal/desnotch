@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.3.0 — 2026-07-29
+
+Physical-notch compatibility (reported on a MacBook Pro 14" M2 Pro: the minimized pill was
+invisible behind the camera housing) and expanded-width fixes:
+
+- ✓ **Never draw behind the cutout.** New `NotchGeometry.notchSize(for:)` measures the
+  hardware cutout from `auxiliaryTopLeftArea`/`auxiliaryTopRightArea`. On a notch screen the
+  minimized pill is now a solid-black, bottom-rounded extension of the notch with the
+  indicators in 44pt "wings" either side of the cutout; the expanded pill keeps the same
+  flush shape and pushes all content below the cutout. Solid black fill blends with the
+  hardware. Notch-less screens keep the previous floating capsule/pill.
+- ✓ **Expanded pill no longer opens too wide.** The rows contain greedy `Spacer`s, so the
+  pill silently filled the whole panel (content floor, 340pt+). It now has a fixed 300pt
+  width (at least cutout + wings on a notch screen), the content floor is 300pt, and the
+  title/project labels have tighter `maxWidth` caps (140/150pt) with truncation.
+- ✓ **Stale docs corrected.** `NotchPillView`/`NotchPillPresentation` headers and
+  `AGENTS.md` described the removed toast/auto-expand model and pre-split
+  `Sources/desnotch/` paths; both now match the hover-only behavior and notch layout.
+
+---
+
+# v0.2.0 TODO review
+
 Work performed against `TODO.md` (2026-07-29 review) on the `main` branch. Each TODO
 item is marked **Done**, **Partial**, or **Deferred** with rationale. All code changes
 build clean (`swift build`, zero warnings/errors); the release bundle

@@ -27,12 +27,26 @@ public enum NotchGeometry {
     public static let fallbackWidth: CGFloat = 220
     public static let fallbackHeight: CGFloat = 32
 
+    /// Physical notch cutout size (points): height from `safeAreaInsets.top`, width from the
+    /// gap between `auxiliaryTopLeftArea`/`auxiliaryTopRightArea`. nil on notch-less screens.
+    /// The pill must never place content inside this rect - it is opaque hardware.
+    public static func notchSize(for screen: NSScreen) -> CGSize? {
+        let height = screen.safeAreaInsets.top
+        guard height > 0 else { return nil }
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            let width = screen.frame.width - left.width - right.width
+            if width > 0 { return CGSize(width: width, height: height) }
+        }
+        // Auxiliary areas unavailable: use a generous default so content stays clear.
+        return CGSize(width: 200, height: height)
+    }
+
     /// A content size generous enough to fit the expanded pill (now-playing artwork + title/
     /// artist + 3 transport buttons, or an agent headline). The panel is sized to at least
     /// this so that collapsing/expanding does NOT change the panel size mid-animation - a
     /// width change during the spring is what produced the horizontal "slide" feel. The panel
     /// only ever grows beyond this if content genuinely needs more room.
-    public static let contentFloor = CGSize(width: 340, height: 60)
+    public static let contentFloor = CGSize(width: 300, height: 60)
 
     /// Transparent room reserved around the pill so overshoot/shadow never clip.
     public static let shadowInsetX: CGFloat = 12
