@@ -54,12 +54,20 @@ final class MediaRemoteBridge {
         return unsafeBitCast(sym, to: type)
     }
 
+    // TEMPORARY, NOT COMMITTED: root-cause diagnostic logging.
+    private func dlog(_ s: String) {
+        FileHandle.standardError.write("[desnotch-diag] MediaRemoteBridge: \(s)\n".data(using: .utf8)!)
+    }
+
     private init() {
         let handle = dlopen(
             "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote",
             RTLD_NOW
         )
         self.handle = handle
+        FileHandle.standardError.write(
+            "[desnotch-diag] MediaRemoteBridge: dlopen -> \(handle != nil ? "OK" : "FAILED")\n".data(using: .utf8)!
+        )
 
         getNowPlayingInfoFn = Self.symbol(handle, "MRMediaRemoteGetNowPlayingInfo", as: GetNowPlayingInfoFn.self)
         registerNotificationsFn = Self.symbol(
@@ -69,6 +77,9 @@ final class MediaRemoteBridge {
         getIsPlayingFn = Self.symbol(
             handle, "MRMediaRemoteGetNowPlayingApplicationIsPlaying", as: GetIsPlayingFn.self
         )
+        dlog(
+            "symbols: getNowPlayingInfo=\(getNowPlayingInfoFn != nil) registerNotifications=\(registerNotificationsFn != nil) sendCommand=\(sendCommandFn != nil) getIsPlaying=\(getIsPlayingFn != nil)"
+        )
 
         registerForChangeNotifications(name: "kMRMediaRemoteNowPlayingInfoDidChangeNotification")
         registerForChangeNotifications(name: "kMRMediaRemotePlaybackQueueChangedNotification")
@@ -76,6 +87,7 @@ final class MediaRemoteBridge {
         registerForChangeNotifications(name: "kMRMediaRemoteNowPlayingApplicationClientStateDidChange")
 
         registerNotificationsFn?(queue)
+        dlog("called MRMediaRemoteRegisterForNowPlayingNotifications")
     }
 
     /// `name` is looked up as a `const CFStringRef` symbol exported by the framework
@@ -85,18 +97,26 @@ final class MediaRemoteBridge {
     private func registerForChangeNotifications(name: String) {
         guard let handle,
             let symPtr = dlsym(handle, name)
-        else { return }
+        else {
+            dlog("registerForChangeNotifications(\(name)): symbol MISSING")
+            return
+        }
         let cfStringPtr = symPtr.assumingMemoryBound(to: CFString?.self)
-        guard let cfString = cfStringPtr.pointee else { return }
+        guard let cfString = cfStringPtr.pointee else {
+            dlog("registerForChangeNotifications(\(name)): symbol found but pointee nil")
+            return
+        }
         let cfName = CFNotificationName(rawValue: cfString)
+        dlog("registerForChangeNotifications(\(name)): registering as \"\(cfString as String)\"")
 
         let observer = Unmanaged.passUnretained(self).toOpaque()
         CFNotificationCenterAddObserver(
             notificationCenter,
             observer,
-            { _, observer, _, _, _ in
+            { _, observer, notificationName, _, _ in
                 guard let observer else { return }
                 let bridge = Unmanaged<MediaRemoteBridge>.fromOpaque(observer).takeUnretainedValue()
+                bridge.dlog("*** received notification: \(notificationName?.rawValue as CFString? ?? "?" as CFString) ***")
                 DispatchQueue.main.async {
                     bridge.onNowPlayingChange?()
                 }
@@ -109,11 +129,15 @@ final class MediaRemoteBridge {
 
     func fetchNowPlayingInfo(completion: @escaping (NowPlayingInfo?) -> Void) {
         guard let getNowPlayingInfoFn else {
+            dlog("fetchNowPlayingInfo: getNowPlayingInfoFn is nil, completing nil")
             completion(nil)
             return
         }
+        dlog("fetchNowPlayingInfo: calling MRMediaRemoteGetNowPlayingInfo")
         getNowPlayingInfoFn(queue) { [weak self] cfInfo in
-            guard let self, let cfInfo else {
+            guard let self else { return }
+            self.dlog("fetchNowPlayingInfo: raw dict = \(cfInfo.map { $0 as NSDictionary }.map(String.init(describing:)) ?? "nil")")
+            guard let cfInfo else {
                 DispatchQueue.main.async { completion(nil) }
                 return
             }
@@ -122,7 +146,9 @@ final class MediaRemoteBridge {
                 DispatchQueue.main.async { completion(info) }
                 return
             }
+            self.dlog("fetchNowPlayingInfo: calling MRMediaRemoteGetNowPlayingApplicationIsPlaying")
             getIsPlayingFn(self.queue) { isPlaying in
+                self.dlog("fetchNowPlayingInfo: getIsPlayingFn completion isPlaying=\(isPlaying)")
                 var info = info
                 info.isPlaying = isPlaying
                 DispatchQueue.main.async { completion(info) }

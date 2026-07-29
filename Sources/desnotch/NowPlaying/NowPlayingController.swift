@@ -19,16 +19,28 @@ final class NowPlayingController: ObservableObject {
     private var idleTimer: Timer?
     private let bridge = MediaRemoteBridge.shared
 
+    // TEMPORARY, NOT COMMITTED: root-cause diagnostic logging for the real,
+    // non-bypassed pipeline (real media -> notification -> fetch -> apply).
+    private func dlog(_ s: String) {
+        FileHandle.standardError.write("[desnotch-diag] \(s)\n".data(using: .utf8)!)
+    }
+
     init() {
+        dlog("NowPlayingController.init")
         bridge.onNowPlayingChange = { [weak self] in
+            self?.dlog("onNowPlayingChange fired")
             self?.refresh()
         }
         refresh()
     }
 
     private func refresh() {
+        dlog("refresh() -> fetchNowPlayingInfo")
         bridge.fetchNowPlayingInfo { [weak self] newInfo in
             guard let self else { return }
+            self.dlog(
+                "fetchNowPlayingInfo completion: newInfo=\(String(describing: newInfo)) hasContent=\(newInfo?.hasContent ?? false) isPlaying=\(newInfo?.isPlaying ?? false)"
+            )
             self.apply(newInfo)
         }
     }
@@ -37,15 +49,18 @@ final class NowPlayingController: ObservableObject {
         info = newInfo
 
         guard let newInfo, newInfo.hasContent else {
+            dlog("apply: no content -> scheduleHide")
             scheduleHide()
             return
         }
 
         if newInfo.isPlaying {
+            dlog("apply: isPlaying=true -> isVisible=true")
             idleTimer?.invalidate()
             idleTimer = nil
             isVisible = true
         } else {
+            dlog("apply: isPlaying=false -> scheduleHide")
             scheduleHide()
         }
     }
