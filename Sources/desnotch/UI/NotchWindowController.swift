@@ -5,12 +5,14 @@ import SwiftUI
 final class NotchWindowController {
     private let panel: NSPanel
     private let controller: NowPlayingController
+    private let agentActivity: AgentActivityController
 
     private static let expandedSize = CGSize(width: 300, height: 44)
 
-    init?(controller: NowPlayingController) {
+    init?(controller: NowPlayingController, agentActivity: AgentActivityController) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return nil }
         self.controller = controller
+        self.agentActivity = agentActivity
 
         let placement = NotchGeometry.placement(for: screen, expandedSize: Self.expandedSize)
 
@@ -30,7 +32,9 @@ final class NotchWindowController {
         panel.ignoresMouseEvents = false
 
         let hosting = NSHostingView(
-            rootView: NotchPillView(controller: controller, hasPhysicalNotch: placement.hasPhysicalNotch)
+            rootView: NotchPillView(
+                controller: controller, agentActivity: agentActivity, hasPhysicalNotch: placement.hasPhysicalNotch
+            )
         )
         hosting.frame = NSRect(origin: .zero, size: placement.frame.size)
         panel.contentView = hosting

@@ -29,6 +29,44 @@ a fixed-width capsule floating top-center. That fallback path is what actually g
 in this dev environment - real notch-hugging geometry has not been visually verified against physical
 notch hardware; do that on an actual MacBook before trusting pixel-level positioning there.
 
+## AI agent activity pill mode
+
+`Sources/desnotch/AgentActivity/` adds a second pill content mode alongside now-playing: a
+generic summary of local Claude Code / Codex CLI session activity (e.g. "3 agents: 2 working,
+1 needs you"). The detection pattern - enumerate known session-log directories, skip sub-agent/
+automation fan-out, derive a coarse state from file recency plus a turn-completion marker - is
+adapted from [agent-island](https://github.com/tristan666666/agent-island) (MIT, Eric Park)'s
+`SessionScanner.swift`; the per-format parsing (Claude Code's `stop_reason`, Codex's
+`task_started`/`task_complete` event markers) was derived independently against real session
+files on the dev machine, not copied.
+
+Hard privacy constraints for this feature, load-bearing for anyone touching it:
+- All paths are built from `NSHomeDirectory()` (`~/.claude/projects`, `~/.codex/sessions`) -
+  never a machine-specific literal.
+- The UI (`NotchPillView.agentActivityContent`) only ever renders counts and generic labels
+  (a project folder's basename) via `AgentActivitySummary`/`AgentSession.projectLabel` - never
+  raw transcript content, prompts, or full absolute paths. Keep new UI additions on that side
+  of the boundary: read whatever you need for classification, but only ever pass a basename or
+  a count out to the view layer.
+- `AgentActivityScanner` skips Claude Code `subagents/` paths and `agent-*.jsonl` files, and
+  Codex sessions whose `originator`/`source` indicate automation (`exec`, `codex_exec`, etc.) -
+  these are sub-agent/headless fan-out, not a person's session worth surfacing.
+
+State model (`AgentActivityScanner.classify`): a turn in progress becomes `.stalled` after 10
+minutes without a file change (presumed hung); a completed turn stays `.needsYourTurn` for 5
+minutes then fades to `.idle`; anything untouched for over 2 hours is dropped entirely. Only
+`.working`/`.needsYourTurn`/`.stalled` sessions count as "activity" - purely `.idle` sessions
+are tracked but excluded from the pill so old finished chats don't keep it open.
+
+**Now-playing vs. agent-activity priority** (`NotchPillView.contentKind`): now-playing always
+wins when visible, since it has real playback controls the user directly interacts with; agent
+activity only takes the pill when now-playing has nothing to show. This is a simple two-mode
+priority, not a combined/merged display - revisit if a future design wants both visible at once.
+
+`AgentActivityController` polls the scanner on a 5s timer (file changes have no OS notification
+to hook, unlike `MediaRemoteBridge`) - keep that off the main actor if you touch it, per the
+existing `Task.detached` pattern.
+
 ## Build/run
 
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal
