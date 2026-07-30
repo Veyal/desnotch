@@ -17,8 +17,9 @@ public final class NotchPillPresentation: ObservableObject {
     @Published public private(set) var dropFlash = false
 
     /// Grace period after the mouse leaves before clearing hover, so briefly crossing the
-    /// edge doesn't collapse an expanded pill.
-    private let hoverExitDelay: TimeInterval = 0.4
+    /// edge doesn't collapse an expanded pill. User-configurable (Settings > Collapse delay);
+    /// read at scheduling time so changes apply to the next exit immediately.
+    private var hoverExitDelay: TimeInterval { SettingsStore.shared.hoverCollapseDelay }
     private var exitTimer: Timer?
     private var volumeFlashTimer: Timer?
     private var dropFlashTimer: Timer?

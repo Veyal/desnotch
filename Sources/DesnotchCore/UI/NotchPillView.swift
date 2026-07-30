@@ -73,24 +73,24 @@ public struct NotchPillView: View {
     /// indicator. Sized for the widest content (agent icon + 2-digit count).
     private static let wingWidth: CGFloat = 44
 
-    /// Synthetic cutout used on notch-less screens so the pill replicates the MacBook notch
-    /// exactly: a black "cutout" region in the middle (just black here - no camera) with the
-    /// indicators in wings either side. Sized like a MacBook Pro notch (~200×32pt).
-    private static let fakeNotchSize = CGSize(width: 200, height: 30)
-
     /// The cutout the layout is built around: the real hardware cutout when present,
-    /// otherwise the synthetic MacBook-sized one.
-    private var effectiveNotch: CGSize { notchSize ?? Self.fakeNotchSize }
+    /// otherwise a synthetic one whose size is user-configurable (Settings > Minimized
+    /// size; defaults match a MacBook Pro notch, ~200×30pt). Real hardware always wins -
+    /// drawing a differently-sized "cutout" over a physical notch would look broken.
+    private var effectiveNotch: CGSize {
+        notchSize ?? CGSize(width: settings.minimizedWidth, height: settings.minimizedHeight)
+    }
 
-    /// Fixed width for the expanded pill. The rows contain greedy `Spacer`s, so without a
-    /// fixed width the pill would fill whatever the panel proposes (and feed that measured
-    /// size back into panel growth). A constant keeps it compact and the layout stable.
-    private static let expandedBaseWidth: CGFloat = 300
-
-    /// The expanded pill must at least span the cutout plus the wings, so the black shape
-    /// always fully covers the hardware (or matches the minimized fake-notch footprint).
+    /// Fixed width for the expanded pill (user-configurable). The rows contain greedy
+    /// `Spacer`s, so without a fixed width the pill would fill whatever the panel proposes
+    /// (and feed that measured size back into panel growth - a layout feedback loop). A
+    /// definite value keeps it stable; it still never shrinks below cutout + wings.
     private var expandedWidth: CGFloat {
-        max(Self.expandedBaseWidth, effectiveNotch.width + Self.wingWidth * 2)
+        NotchGeometry.expandedPillWidth(
+            preferred: CGFloat(settings.expandedWidth),
+            cutoutWidth: effectiveNotch.width,
+            wingWidth: Self.wingWidth
+        )
     }
 
     /// An agent is waiting on the user - reflected by the minimized agent icon (lightning),
@@ -101,9 +101,13 @@ public struct NotchPillView: View {
     /// and holds the pill open so the tray is visible while dragging).
     @State private var isDropTargeted = false
 
-    /// Expanded while the pointer is over the pill, while a file drag hovers it, or
-    /// briefly after a successful drop (so the added item is seen landing).
-    private var isExpanded: Bool { presentation.isHovering || isDropTargeted || presentation.dropFlash }
+    /// Expanded while the pointer is over the pill, while a file drag hovers it, briefly
+    /// after a successful drop (so the added item is seen landing) - or permanently, when
+    /// the user picked the always-on mode in Settings.
+    private var isExpanded: Bool {
+        settings.pillMode == .alwaysOn
+            || presentation.isHovering || isDropTargeted || presentation.dropFlash
+    }
 
     /// Needs-you first (action required), then stalled, then working - most recent first.
     private var orderedAgents: [AgentSession] {
@@ -134,6 +138,10 @@ public struct NotchPillView: View {
         .animation(spring, value: hasHotProcesses)
         .animation(spring, value: calendarImminent)
         .animation(spring, value: presentation.isHovering)
+        .animation(spring, value: settings.pillMode)
+        .animation(spring, value: settings.minimizedWidth)
+        .animation(spring, value: settings.minimizedHeight)
+        .animation(spring, value: settings.expandedWidth)
         .animation(spring, value: isDropTargeted)
         .animation(spring, value: presentation.dropFlash)
         .animation(spring, value: tray.items)

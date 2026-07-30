@@ -49,6 +49,15 @@ public enum NotchGeometry {
     /// only ever grows beyond this if content genuinely needs more room.
     public static let contentFloor = CGSize(width: 300, height: 60)
 
+    /// The expanded pill's width: the user's preferred width, but never narrower than the
+    /// cutout plus both wings (the black shape must always fully cover the hardware).
+    /// Pure so the sizing rule is unit-testable.
+    public static func expandedPillWidth(
+        preferred: CGFloat, cutoutWidth: CGFloat, wingWidth: CGFloat
+    ) -> CGFloat {
+        max(preferred, cutoutWidth + wingWidth * 2)
+    }
+
     /// Transparent room reserved around the pill so overshoot/shadow never clip.
     public static let shadowInsetX: CGFloat = 12
     public static let shadowInsetBottom: CGFloat = 16

@@ -1,12 +1,46 @@
 import Foundation
 
-/// User-toggleable feature switches, UserDefaults-backed, all on by default.
+/// How the pill behaves when the pointer isn't over it.
+public enum PillVisibilityMode: String {
+    /// Minimized by default; hover expands, leaving collapses after `hoverCollapseDelay`.
+    case hoverAuto
+    /// Never minimizes - the expanded pill is always on screen.
+    case alwaysOn
+}
+
+/// User-toggleable feature switches and pill-behavior knobs, UserDefaults-backed.
 /// The pill view gates its sections on these; pollers (process monitor, calendar,
 /// agent scanner) also check them so disabled features stop doing background work.
 /// `notifyAgentNeedsYou` shares its key with `AgentAttentionNotifier.isEnabled`.
+///
+/// Numeric knobs are clamped to their published ranges on read AND on write, so a
+/// stale/hand-edited defaults value can never produce a degenerate layout.
 @MainActor
 public final class SettingsStore: ObservableObject {
-    public static let shared = SettingsStore()
+    public static let shared = SettingsStore(defaults: .standard)
+
+    // MARK: Bounds (public so the UI and tests share one source of truth)
+
+    /// Collapse grace after the pointer leaves the pill.
+    public static let hoverCollapseDelayRange: ClosedRange<Double> = 0.1...5.0
+    public static let defaultHoverCollapseDelay = 0.4
+
+    /// Minimized (fake-notch) cutout size on notch-less screens. On a real notch the
+    /// hardware dictates the minimized size, so these only affect notch-less displays.
+    public static let minimizedWidthRange: ClosedRange<Double> = 120...400
+    public static let defaultMinimizedWidth = 200.0
+    public static let minimizedHeightRange: ClosedRange<Double> = 24...44
+    public static let defaultMinimizedHeight = 30.0
+
+    /// Preferred expanded pill width (the shape still never shrinks below cutout+wings).
+    public static let expandedWidthRange: ClosedRange<Double> = 260...480
+    public static let defaultExpandedWidth = 300.0
+
+    public static func clamp(_ value: Double, to range: ClosedRange<Double>) -> Double {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    // MARK: Feature switches
 
     @Published public var nowPlayingEnabled: Bool { didSet { set("nowPlayingEnabled", nowPlayingEnabled) } }
     @Published public var agentActivityEnabled: Bool { didSet { set("agentActivityEnabled", agentActivityEnabled) } }
@@ -16,21 +50,73 @@ public final class SettingsStore: ObservableObject {
     @Published public var volumeScrollEnabled: Bool { didSet { set("volumeScrollEnabled", volumeScrollEnabled) } }
     @Published public var notifyAgentNeedsYou: Bool { didSet { set(AgentAttentionNotifier.defaultsKey, notifyAgentNeedsYou) } }
 
-    private init() {
-        nowPlayingEnabled = Self.get("nowPlayingEnabled")
-        agentActivityEnabled = Self.get("agentActivityEnabled")
-        calendarEnabled = Self.get("calendarEnabled")
-        processMonitorEnabled = Self.get("processMonitorEnabled")
-        trayEnabled = Self.get("trayEnabled")
-        volumeScrollEnabled = Self.get("volumeScrollEnabled")
-        notifyAgentNeedsYou = Self.get(AgentAttentionNotifier.defaultsKey)
+    // MARK: Pill behavior & sizing
+
+    @Published public var pillMode: PillVisibilityMode { didSet { set("pillMode", pillMode.rawValue) } }
+
+    @Published public var hoverCollapseDelay: Double {
+        didSet { clampAndSet(\.hoverCollapseDelay, "hoverCollapseDelay", Self.hoverCollapseDelayRange) }
+    }
+    @Published public var minimizedWidth: Double {
+        didSet { clampAndSet(\.minimizedWidth, "minimizedWidth", Self.minimizedWidthRange) }
+    }
+    @Published public var minimizedHeight: Double {
+        didSet { clampAndSet(\.minimizedHeight, "minimizedHeight", Self.minimizedHeightRange) }
+    }
+    @Published public var expandedWidth: Double {
+        didSet { clampAndSet(\.expandedWidth, "expandedWidth", Self.expandedWidthRange) }
     }
 
-    private static func get(_ key: String) -> Bool {
-        UserDefaults.standard.object(forKey: key) as? Bool ?? true
+    private let defaults: UserDefaults
+
+    /// Internal (not private) so tests can build a store against an isolated suite.
+    init(defaults: UserDefaults) {
+        self.defaults = defaults
+        nowPlayingEnabled = Self.bool(defaults, "nowPlayingEnabled")
+        agentActivityEnabled = Self.bool(defaults, "agentActivityEnabled")
+        calendarEnabled = Self.bool(defaults, "calendarEnabled")
+        processMonitorEnabled = Self.bool(defaults, "processMonitorEnabled")
+        trayEnabled = Self.bool(defaults, "trayEnabled")
+        volumeScrollEnabled = Self.bool(defaults, "volumeScrollEnabled")
+        notifyAgentNeedsYou = Self.bool(defaults, AgentAttentionNotifier.defaultsKey)
+
+        pillMode = (defaults.string(forKey: "pillMode")).flatMap(PillVisibilityMode.init(rawValue:)) ?? .hoverAuto
+        hoverCollapseDelay = Self.double(defaults, "hoverCollapseDelay", Self.defaultHoverCollapseDelay, Self.hoverCollapseDelayRange)
+        minimizedWidth = Self.double(defaults, "minimizedWidth", Self.defaultMinimizedWidth, Self.minimizedWidthRange)
+        minimizedHeight = Self.double(defaults, "minimizedHeight", Self.defaultMinimizedHeight, Self.minimizedHeightRange)
+        expandedWidth = Self.double(defaults, "expandedWidth", Self.defaultExpandedWidth, Self.expandedWidthRange)
     }
 
-    private func set(_ key: String, _ value: Bool) {
-        UserDefaults.standard.set(value, forKey: key)
+    // MARK: - Plumbing
+
+    private static func bool(_ defaults: UserDefaults, _ key: String) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? true
+    }
+
+    private static func double(
+        _ defaults: UserDefaults, _ key: String, _ fallback: Double, _ range: ClosedRange<Double>
+    ) -> Double {
+        guard let stored = defaults.object(forKey: key) as? Double else { return fallback }
+        return clamp(stored, to: range)
+    }
+
+    private func set(_ key: String, _ value: Any) {
+        defaults.set(value, forKey: key)
+    }
+
+    /// Re-assigns out-of-range writes to the clamped value (one bounded re-entry),
+    /// then persists. Keeps sliders, defaults edits, and programmatic writes all honest.
+    private func clampAndSet(
+        _ keyPath: ReferenceWritableKeyPath<SettingsStore, Double>,
+        _ key: String,
+        _ range: ClosedRange<Double>
+    ) {
+        let value = self[keyPath: keyPath]
+        let clamped = Self.clamp(value, to: range)
+        if clamped != value {
+            self[keyPath: keyPath] = clamped
+            return
+        }
+        set(key, value)
     }
 }

@@ -169,6 +169,14 @@ existing `Task.detached` pattern.
 Compact wing priority when several things are active: left = media > stuck-process >
 calendar; right = agents > stuck-process. Everything else is one hover away.
 
+Pill behavior/sizing is user-configurable via `SettingsStore` (Settings window):
+`pillMode` (hover-auto vs always-expanded), `hoverCollapseDelay`, `minimizedWidth/Height`
+(the synthetic cutout - real notch hardware always wins), `expandedWidth` (still floored
+at cutout+wings via `NotchGeometry.expandedPillWidth`, which keeps the no-feedback-loop
+fixed-width rule intact). All numeric knobs are clamped to their `SettingsStore.*Range`
+bounds on read AND write - keep new knobs on that pattern. Tests:
+`SettingsStoreTests.swift` (isolated UserDefaults suite; runs under Xcode/CI only).
+
 ## Build/run
 
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal

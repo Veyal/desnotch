@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.4 — 2026-07-31
+
+- ✓ **Configurable notch panel** (Settings → "Notch panel"): visibility mode ("Open on
+  hover" vs "Always expanded"), hover collapse delay (0.1–5s, default 0.4s), minimized
+  cutout size (width 120–400pt / height 24–44pt; notch-less screens only - real hardware
+  wins), and expanded width (260–480pt, still floored at cutout+wings via
+  `NotchGeometry.expandedPillWidth`). All knobs UserDefaults-persisted and clamped to
+  bounds on read and write.
+- ✓ **Tests**: `SettingsStoreTests` (defaults, persistence roundtrip, clamping, mode
+  fallback, expanded-sizing floor) against an isolated defaults suite (Xcode/CI only).
+
 ## v0.3.3 — 2026-07-30
 
 - ✓ **Always-visible notch.** The notch renders even with nothing active (invisible
