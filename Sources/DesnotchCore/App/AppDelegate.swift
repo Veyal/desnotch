@@ -14,8 +14,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var calendarController: CalendarController?
     private var processMonitorController: ProcessMonitorController?
     private var trayController: TrayController?
+    private var batteryController: BatteryController?
+    private var mediaUseMonitor: MediaUseMonitor?
+    private var updateChecker: UpdateChecker?
     private var windowController: NotchWindowController?
     private var settingsWindow: NSWindow?
+    private var statusMenu: NSMenu?
     private var statusItem: NSStatusItem?
     private var retryObserver: NSObjectProtocol?
 
@@ -41,11 +45,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let calendarController = MainActor.assumeIsolated { CalendarController() }
         let processMonitorController = MainActor.assumeIsolated { ProcessMonitorController() }
         let trayController = MainActor.assumeIsolated { TrayController() }
+        let batteryController = MainActor.assumeIsolated { BatteryController(presentation: presentation) }
+        let mediaUseMonitor = MainActor.assumeIsolated { MediaUseMonitor() }
         self.nowPlayingController = nowPlayingController
         self.agentActivityController = agentActivityController
         self.calendarController = calendarController
         self.processMonitorController = processMonitorController
         self.trayController = trayController
+        self.batteryController = batteryController
+        self.mediaUseMonitor = mediaUseMonitor
+
+        MainActor.assumeIsolated {
+            let checker = UpdateChecker()
+            checker.onUpdateAvailable = { [weak self] version in
+                self?.showUpdateMenuItem(version: version)
+            }
+            self.updateChecker = checker
+        }
 
         if let windowController = NotchWindowController(
             controller: nowPlayingController,
@@ -53,6 +69,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             calendar: calendarController,
             processMonitor: processMonitorController,
             tray: trayController,
+            battery: batteryController,
+            mediaUse: mediaUseMonitor,
             presentation: presentation
         ) {
             self.windowController = windowController
@@ -71,12 +89,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let cal = self.calendarController,
                       let pmc = self.processMonitorController,
                       let trayC = self.trayController,
+                      let bat = self.batteryController,
+                      let muse = self.mediaUseMonitor,
                       let wc = NotchWindowController(
                           controller: npc,
                           agentActivity: aac,
                           calendar: cal,
                           processMonitor: pmc,
                           tray: trayC,
+                          battery: bat,
+                          mediaUse: muse,
                           presentation: presentation
                       )
                 else { return }
@@ -114,6 +136,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         loginItem.state = launchAtLoginEnabled ? .on : .off
         menu.addItem(loginItem)
 
+        let privacyItem = NSMenuItem(
+            title: "Privacy Mode",
+            action: #selector(togglePrivacyMode(_:)),
+            keyEquivalent: ""
+        )
+        privacyItem.target = self
+        privacyItem.state = MainActor.assumeIsolated { SettingsStore.shared.privacyModeEnabled } ? .on : .off
+        menu.addItem(privacyItem)
+
         let settingsItem = NSMenuItem(
             title: "Settings…",
             action: #selector(openSettings(_:)),
@@ -131,6 +162,44 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menu.addItem(quit)
         statusItem?.menu = menu
+        statusMenu = menu
+    }
+
+    /// Inserted at the top of the status menu when a newer GitHub release exists.
+    private func showUpdateMenuItem(version: String) {
+        guard let menu = statusMenu else { return }
+        guard !menu.items.contains(where: { $0.tag == Self.updateItemTag }) else {
+            menu.items.first { $0.tag == Self.updateItemTag }?.title = "Update Available (\(version))…"
+            return
+        }
+        let item = NSMenuItem(
+            title: "Update Available (\(version))…",
+            action: #selector(openReleasesPage(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.tag = Self.updateItemTag
+        menu.insertItem(item, at: 0)
+        menu.insertItem(NSMenuItem.separator(), at: 1)
+        statusItem?.button?.image = NSImage(
+            systemSymbolName: "music.note.list",
+            accessibilityDescription: "desnotch (update available)"
+        )
+    }
+
+    private static let updateItemTag = 0xDE5
+
+    @objc func openReleasesPage(_ sender: NSMenuItem) {
+        if let url = URL(string: "https://github.com/Veyal/desnotch/releases/latest") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc func togglePrivacyMode(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated {
+            SettingsStore.shared.privacyModeEnabled.toggle()
+            sender.state = SettingsStore.shared.privacyModeEnabled ? .on : .off
+        }
     }
 
     private var launchAtLoginEnabled: Bool {

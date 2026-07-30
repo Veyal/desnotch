@@ -73,11 +73,14 @@ public enum AgentActivityScanner {
             guard let turnInProgress = tailClaudeTurnInProgress(url) else { continue }
             guard let state = classify(elapsed: elapsed, turnInProgress: turnInProgress) else { continue }
 
+            let cwd = readClaudeCWD(url)
             sessions.append(
                 AgentSession(
                     source: .claudeCode,
-                    projectLabel: label(forClaudeProject: projectDirName, transcript: url),
+                    projectLabel: cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+                        ?? projectLabel(fromEncodedDirectoryName: projectDirName),
                     taskTitle: readClaudeTaskTitle(url),
+                    projectPath: cwd,
                     state: state,
                     lastActivity: mtime
                 )
@@ -85,18 +88,6 @@ public enum AgentActivityScanner {
         }
 
         return sessions
-    }
-
-    /// Recovers a real project label. Claude Code stores sessions under an encoded absolute
-    /// path (`/` -> `-`), which is lossy for paths whose components themselves contain dashes
-    /// (e.g. `acme-app` would mangle to `tracker`). The transcript carries the
-    /// real `cwd`, so prefer its basename and only fall back to the encoded directory name.
-    private static func label(forClaudeProject encodedDir: String, transcript url: URL) -> String {
-        if let cwd = readClaudeCWD(url) {
-            let base = URL(fileURLWithPath: cwd).lastPathComponent
-            if !base.isEmpty { return base }
-        }
-        return projectLabel(fromEncodedDirectoryName: encodedDir)
     }
 
     /// Reads the real working directory from a Claude Code transcript's header lines (a
@@ -225,7 +216,8 @@ public enum AgentActivityScanner {
             else { continue }
             guard !isAutomationCodexSession(payload) else { continue }
 
-            let label = (payload["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "session"
+            let cwd = payload["cwd"] as? String
+            let label = cwd.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "session"
             guard let turnInProgress = tailCodexTurnInProgress(url) else { continue }
             guard let state = classify(elapsed: elapsed, turnInProgress: turnInProgress) else { continue }
 
@@ -234,6 +226,7 @@ public enum AgentActivityScanner {
                     source: .codex,
                     projectLabel: label,
                     taskTitle: readCodexTaskTitle(url),
+                    projectPath: cwd,
                     state: state,
                     lastActivity: mtime
                 )
@@ -294,6 +287,7 @@ public enum AgentActivityScanner {
                 AgentSession(
                     source: .pi,
                     projectLabel: URL(fileURLWithPath: cwd).lastPathComponent,
+                    projectPath: cwd,
                     state: state,
                     lastActivity: mtime
                 )
@@ -385,6 +379,7 @@ public enum AgentActivityScanner {
                 AgentSession(
                     source: .openCode,
                     projectLabel: URL(fileURLWithPath: directory).lastPathComponent,
+                    projectPath: directory == "session" ? nil : directory,
                     state: state,
                     lastActivity: lastActivity
                 )

@@ -169,6 +169,19 @@ existing `Task.detached` pattern.
 Compact wing priority when several things are active: left = media > stuck-process >
 calendar; right = agents > stuck-process. Everything else is one hover away.
 
+v0.4.0 additions, one line each: rows are clickable (media → source app via
+`bundleIdentifier`; agent → first running app in `NotchPillView.agentHostBundleIDs`, else
+reveal `AgentSession.projectPath` - a click-to-jump-only field, NEVER rendered); the
+needs-you wing icon bounces on count change (macOS 14+ symbolEffect); `BatteryController`
+(IOKit push notifications, plug/unplug flashes the pill open, nil state on desktops);
+`UpdateChecker` (daily GitHub latest-release poll, status-menu item; inert in dev builds
+with no bundle version; `isVersion(_:newerThan:)` is tested); `MediaUseMonitor` (5s poll
+of CoreAudio/CMIO "running somewhere" - no capture permission needed - orange mic/green
+camera dots overlaid top-trailing on the shape); privacy mode (`privacyModeEnabled`,
+default OFF, quick toggle in the status menu) blanks agent task titles and calendar
+titles; tray drag-out uses `NSItemProvider(contentsOf:)` (real Finder copies) and
+QuickLook thumbnails cached in `TrayController.thumbnails`.
+
 Pill behavior/sizing is user-configurable via `SettingsStore` (Settings window):
 `pillMode` (hover-auto vs always-expanded), `hoverCollapseDelay`, `minimizedWidth/Height`
 (the synthetic cutout - real notch hardware always wins), `expandedWidth` (still floored

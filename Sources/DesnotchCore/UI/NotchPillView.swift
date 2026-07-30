@@ -19,6 +19,8 @@ public struct NotchPillView: View {
     @ObservedObject public var calendar: CalendarController
     @ObservedObject public var processMonitor: ProcessMonitorController
     @ObservedObject public var tray: TrayController
+    @ObservedObject public var battery: BatteryController
+    @ObservedObject public var mediaUse: MediaUseMonitor
     @ObservedObject public var presentation: NotchPillPresentation
     @ObservedObject private var settings = SettingsStore.shared
     public let hasPhysicalNotch: Bool
@@ -40,6 +42,8 @@ public struct NotchPillView: View {
         calendar: CalendarController,
         processMonitor: ProcessMonitorController,
         tray: TrayController,
+        battery: BatteryController,
+        mediaUse: MediaUseMonitor,
         presentation: NotchPillPresentation,
         hasPhysicalNotch: Bool,
         notchSize: CGSize? = nil,
@@ -50,6 +54,8 @@ public struct NotchPillView: View {
         self.calendar = calendar
         self.processMonitor = processMonitor
         self.tray = tray
+        self.battery = battery
+        self.mediaUse = mediaUse
         self.presentation = presentation
         self.hasPhysicalNotch = hasPhysicalNotch
         self.notchSize = notchSize
@@ -101,12 +107,15 @@ public struct NotchPillView: View {
     /// and holds the pill open so the tray is visible while dragging).
     @State private var isDropTargeted = false
 
+    /// Timeline position being scrubbed (drag in progress); nil when not scrubbing.
+    @State private var scrubPosition: TimeInterval?
+
     /// Expanded while the pointer is over the pill, while a file drag hovers it, briefly
     /// after a successful drop (so the added item is seen landing) - or permanently, when
     /// the user picked the always-on mode in Settings.
     private var isExpanded: Bool {
         settings.pillMode == .alwaysOn
-            || presentation.isHovering || isDropTargeted || presentation.dropFlash
+            || presentation.isHovering || isDropTargeted || presentation.openFlash
     }
 
     /// Needs-you first (action required), then stalled, then working - most recent first.
@@ -143,9 +152,12 @@ public struct NotchPillView: View {
         .animation(spring, value: settings.minimizedHeight)
         .animation(spring, value: settings.expandedWidth)
         .animation(spring, value: isDropTargeted)
-        .animation(spring, value: presentation.dropFlash)
+        .animation(spring, value: presentation.openFlash)
         .animation(spring, value: tray.items)
         .animation(.easeInOut(duration: 0.15), value: presentation.volumeFlash == nil)
+        .animation(.easeInOut(duration: 0.2), value: mediaUse.micInUse)
+        .animation(.easeInOut(duration: 0.2), value: mediaUse.cameraInUse)
+        .animation(spring, value: battery.state)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // The pill renders on an always-dark surface; force a dark color scheme so
         // `.secondary` text stays legible in Light Mode too.
@@ -208,7 +220,7 @@ public struct NotchPillView: View {
                     if let url {
                         Task { @MainActor in
                             tray.add(url)
-                            presentation.flashDropConfirmation()
+                            presentation.flashOpen()
                         }
                     }
                 }
@@ -220,6 +232,28 @@ public struct NotchPillView: View {
                 volumeReadout(level)
                     .transition(.opacity)
                     .padding(.bottom, 3)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            // Mic/camera in-use dots, hugging the shape's top-right corner in both states
+            // (the camera literally lives in the notch, so this is its natural home).
+            if mediaUse.micInUse || mediaUse.cameraInUse {
+                HStack(spacing: 3) {
+                    if mediaUse.micInUse {
+                        Circle().fill(Color.orange).frame(width: 5, height: 5)
+                    }
+                    if mediaUse.cameraInUse {
+                        Circle().fill(Color.green).frame(width: 5, height: 5)
+                    }
+                }
+                .padding(.top, 5)
+                .padding(.trailing, 7)
+                .transition(.opacity)
+                .allowsHitTesting(false)
+                .accessibilityLabel(Text([
+                    mediaUse.micInUse ? "microphone in use" : nil,
+                    mediaUse.cameraInUse ? "camera in use" : nil
+                ].compactMap { $0 }.joined(separator: ", ")))
             }
         }
     }
@@ -251,6 +285,43 @@ public struct NotchPillView: View {
         settings.calendarEnabled && (calendar.nextEvent != nil || calendar.accessState == .denied)
     }
 
+    private var showBatteryRow: Bool { settings.batteryEnabled }
+
+    /// Blank sensitive strings while privacy mode is on (screen sharing/recording).
+    private func privacyRedacted(_ text: String, fallback: String) -> String {
+        settings.privacyModeEnabled ? fallback : text
+    }
+
+    private func batteryRow(_ state: BatteryController.BatteryState) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: batterySymbol(state))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(state.isCharging ? .green : (state.percent <= 20 ? .red : .secondary))
+                .frame(width: 14)
+            Text(state.isCharging ? "Charging" : "Battery")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+            Spacer(minLength: 4)
+            Text("\(state.percent)%")
+                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text("Battery \(state.percent) percent\(state.isCharging ? ", charging" : "")"))
+    }
+
+    private func batterySymbol(_ state: BatteryController.BatteryState) -> String {
+        if state.isCharging { return "battery.100percent.bolt" }
+        switch state.percent {
+        case ..<13: return "battery.0percent"
+        case ..<38: return "battery.25percent"
+        case ..<63: return "battery.50percent"
+        case ..<88: return "battery.75percent"
+        default: return "battery.100percent"
+        }
+    }
+
     /// The tray is the last section (when enabled). With every section disabled or empty
     /// the expanded pill still shows a small placeholder rather than an empty black blob.
     private var pillContent: some View {
@@ -280,13 +351,19 @@ public struct NotchPillView: View {
                     calendarAccessHint
                 }
             }
-            if trayEnabled {
+            if showBatteryRow, let state = battery.state {
                 if hasMedia || hasAgents || hasHotProcesses || showCalendarRow {
+                    sectionDivider
+                }
+                batteryRow(state)
+            }
+            if trayEnabled {
+                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow || (showBatteryRow && battery.state != nil) {
                     sectionDivider
                 }
                 traySection
             }
-            if !trayEnabled && !hasMedia && !hasAgents && !hasHotProcesses && !showCalendarRow {
+            if !trayEnabled && !hasMedia && !hasAgents && !hasHotProcesses && !showCalendarRow && !(showBatteryRow && battery.state != nil) {
                 Text("Everything is turned off — see Settings")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -372,9 +449,55 @@ public struct NotchPillView: View {
             Image(systemName: needsAttention ? "bolt.fill" : "gearshape.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(needsAttention ? .yellow : .white)
+                // One-shot bounce whenever the needs-you count changes, so the flip is
+                // noticeable without hovering (the icon swap alone was silent).
+                .availabilityGuardedBounce(trigger: agentActivity.summary.needsYourTurnCount)
             Text("\(agentActivity.summary.actionableCount)")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white)
+        }
+    }
+
+    // MARK: - Click-to-jump actions
+
+    private func activateMediaApp(_ info: NowPlayingInfo) {
+        guard let bundleID = info.bundleIdentifier else { return }
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+            activate(app)
+        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
+    /// Terminals/editors that host agent CLIs, in preference order. The session log
+    /// doesn't record which app runs it, so activate the first of these that's running;
+    /// with none running, reveal the project folder instead.
+    private static let agentHostBundleIDs = [
+        "com.googlecode.iterm2",
+        "com.mitchellh.ghostty",
+        "dev.warp.Warp",
+        "com.apple.Terminal",
+        "com.todesktop.230313mzl4w4u92", // Cursor
+        "com.microsoft.VSCode"
+    ]
+
+    private func activateAgentHost(_ session: AgentSession) {
+        for bundleID in Self.agentHostBundleIDs {
+            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+                activate(app)
+                return
+            }
+        }
+        if let path = session.projectPath {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+        }
+    }
+
+    private func activate(_ app: NSRunningApplication) {
+        if #available(macOS 14.0, *) {
+            app.activate()
+        } else {
+            app.activate(options: [.activateIgnoringOtherApps])
         }
     }
 
@@ -421,19 +544,26 @@ public struct NotchPillView: View {
 
     private func nowPlayingControlsRow(_ info: NowPlayingInfo) -> some View {
         HStack(spacing: 10) {
-            artwork(info.artwork, size: 24)
+            // Artwork + titles jump to the app that's playing; the transport buttons keep
+            // their own actions, so only the leading cluster is tappable.
+            HStack(spacing: 10) {
+                artwork(info.artwork, size: 24)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(info.title ?? "Unknown Title")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(info.artist ?? "")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(info.title ?? "Unknown Title")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(info.artist ?? "")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: 140, alignment: .leading)
             }
-            .frame(maxWidth: 140, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { activateMediaApp(info) }
+            .help("Open the playing app")
 
             Spacer(minLength: 4)
 
@@ -460,29 +590,61 @@ public struct NotchPillView: View {
     /// Elapsed/total readout with a thin progress bar. `TimelineView` ticks it every
     /// second, but only while the expanded pill actually renders it - the position is
     /// extrapolated from the last adapter update, no extra polling of the adapter.
+    /// Draggable (when enabled in Settings): drag or click the bar to seek; while
+    /// scrubbing the local scrub position is shown, then handed to
+    /// `NowPlayingController.seek` on release (optimistic, so the bar doesn't snap back).
     private func timeline(_ info: NowPlayingInfo, duration: TimeInterval) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let position = min(max(info.position(at: context.date) ?? 0, 0), duration)
+            let livePosition = min(max(info.position(at: context.date) ?? 0, 0), duration)
+            let position = scrubPosition ?? livePosition
+            let fraction = CGFloat(position / duration)
             HStack(spacing: 6) {
                 Text(mmss(position))
                     .font(.system(size: 8).monospacedDigit())
                     .foregroundStyle(.secondary)
-                Capsule()
-                    .fill(Color.white.opacity(0.25))
-                    .frame(height: 3)
-                    .overlay(alignment: .leading) {
-                        GeometryReader { geo in
-                            Capsule()
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.25))
+                            .frame(height: 3)
+                        Capsule()
+                            .fill(Color.white)
+                            .frame(width: geo.size.width * fraction, height: 3)
+                        if settings.timelineSeekEnabled {
+                            // The knob is the draggability affordance; it grows while scrubbing.
+                            Circle()
                                 .fill(Color.white)
-                                .frame(width: geo.size.width * CGFloat(position / duration))
+                                .frame(width: scrubPosition != nil ? 9 : 6, height: scrubPosition != nil ? 9 : 6)
+                                .offset(x: geo.size.width * fraction - (scrubPosition != nil ? 4.5 : 3))
                         }
                     }
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(seekGesture(width: geo.size.width, duration: duration))
+                }
+                .frame(height: 12)
                 Text(mmss(duration))
                     .font(.system(size: 8).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
         }
+        .animation(.easeOut(duration: 0.12), value: scrubPosition != nil)
         .accessibilityHidden(true)
+    }
+
+    private func seekGesture(width: CGFloat, duration: TimeInterval) -> some Gesture {
+        // minimumDistance 0 makes a plain click seek too, not just a drag.
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard settings.timelineSeekEnabled, width > 0 else { return }
+                let fraction = min(max(value.location.x / width, 0), 1)
+                scrubPosition = TimeInterval(fraction) * duration
+            }
+            .onEnded { _ in
+                guard settings.timelineSeekEnabled, let target = scrubPosition else { return }
+                controller.seek(to: target)
+                scrubPosition = nil
+            }
     }
 
     private func mmss(_ t: TimeInterval) -> String {
@@ -520,7 +682,7 @@ public struct NotchPillView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 14)
 
-            Text(session.taskTitle ?? session.projectLabel)
+            Text(privacyRedacted(session.taskTitle ?? session.projectLabel, fallback: session.projectLabel))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
@@ -539,8 +701,11 @@ public struct NotchPillView: View {
                 .frame(width: 30, alignment: .trailing)
         }
         .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .onTapGesture { activateAgentHost(session) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("\(session.source.displayName) · \(session.projectLabel) · \(session.taskTitle ?? "") · \(stateLabel(session.state))"))
+        .accessibilityHint(Text("Opens your terminal"))
     }
 
     private func stateLabel(_ state: AgentActivityState) -> String {
@@ -668,9 +833,11 @@ public struct NotchPillView: View {
 
     private func trayRow(_ url: URL) -> some View {
         HStack(spacing: 8) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+            Image(nsImage: tray.icon(for: url))
                 .resizable()
+                .aspectRatio(contentMode: .fit)
                 .frame(width: 14, height: 14)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
             Text(url.lastPathComponent)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
@@ -690,7 +857,10 @@ public struct NotchPillView: View {
         .padding(.vertical, 1)
         .contentShape(Rectangle())
         .onTapGesture { NSWorkspace.shared.open(url) }
-        .onDrag { NSItemProvider(object: url as NSURL) }
+        // `NSItemProvider(contentsOf:)` registers a file representation, so dropping in
+        // Finder performs a real copy (the plain NSURL provider only carried a URL type,
+        // which Finder ignores).
+        .onDrag { NSItemProvider(contentsOf: url) ?? NSItemProvider(object: url as NSURL) }
         .help(url.lastPathComponent)
     }
 
@@ -702,7 +872,7 @@ public struct NotchPillView: View {
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 14)
-            Text(event.title)
+            Text(privacyRedacted(event.title, fallback: "Busy"))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
@@ -813,6 +983,16 @@ private extension View {
     func availabilityGuardedSymbolReplace() -> some View {
         if #available(macOS 14.0, *) {
             contentTransition(.symbolEffect(.replace))
+        } else {
+            self
+        }
+    }
+
+    /// `.symbolEffect(.bounce)` is macOS 14+; on 13 the icon change simply doesn't pulse.
+    @ViewBuilder
+    func availabilityGuardedBounce(trigger: Int) -> some View {
+        if #available(macOS 14.0, *) {
+            symbolEffect(.bounce, value: trigger)
         } else {
             self
         }

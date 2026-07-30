@@ -13,6 +13,8 @@ public final class NotchWindowController {
     private let calendar: CalendarController
     private let processMonitor: ProcessMonitorController
     private let tray: TrayController
+    private let battery: BatteryController
+    private let mediaUse: MediaUseMonitor
     private let presentation: NotchPillPresentation
 
     private var currentScreen: NSScreen
@@ -31,6 +33,8 @@ public final class NotchWindowController {
         calendar: CalendarController,
         processMonitor: ProcessMonitorController,
         tray: TrayController,
+        battery: BatteryController,
+        mediaUse: MediaUseMonitor,
         presentation: NotchPillPresentation
     ) {
         guard let screen = NotchGeometry.preferredScreen() else { return nil }
@@ -39,6 +43,8 @@ public final class NotchWindowController {
         self.calendar = calendar
         self.processMonitor = processMonitor
         self.tray = tray
+        self.battery = battery
+        self.mediaUse = mediaUse
         self.presentation = presentation
         self.currentScreen = screen
         self.hasPhysicalNotch = screen.safeAreaInsets.top > 0
@@ -122,6 +128,8 @@ public final class NotchWindowController {
             calendar: calendar,
             processMonitor: processMonitor,
             tray: tray,
+            battery: battery,
+            mediaUse: mediaUse,
             presentation: presentation,
             hasPhysicalNotch: hasPhysicalNotch,
             notchSize: notchSize,

@@ -46,6 +46,9 @@ public struct AgentSession: Identifiable {
     public let source: AgentSource
     public let projectLabel: String
     public let taskTitle: String?
+    /// Absolute project directory for click-to-jump. NEVER rendered (privacy boundary:
+    /// only `projectLabel`/`taskTitle` reach pixels) - used solely as an open target.
+    public let projectPath: String?
     public let state: AgentActivityState
     public let lastActivity: Date
 
@@ -53,12 +56,14 @@ public struct AgentSession: Identifiable {
         source: AgentSource,
         projectLabel: String,
         taskTitle: String? = nil,
+        projectPath: String? = nil,
         state: AgentActivityState,
         lastActivity: Date
     ) {
         self.source = source
         self.projectLabel = projectLabel
         self.taskTitle = taskTitle
+        self.projectPath = projectPath
         self.state = state
         self.lastActivity = lastActivity
     }

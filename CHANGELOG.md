@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.0 — 2026-07-31
+
+The pill becomes actionable:
+
+- ✓ **Click-to-jump**: media artwork/title activates the playing app; an agent row
+  activates your terminal/editor (first running of iTerm2/Ghostty/Warp/Terminal/Cursor/
+  VS Code), or reveals the project folder when none is running.
+- ✓ **Needs-attention pulse**: the wing bolt icon bounces when the needs-you count
+  changes (macOS 14+).
+- ✓ **Battery glance** (MacBooks): percent + charging row; plugging/unplugging briefly
+  auto-expands the pill. Hidden on desktops. Toggleable.
+- ✓ **Update check**: daily GitHub release poll; an "Update Available (x.y.z)…" item
+  appears in the status menu (update via `brew upgrade --cask desnotch`).
+- ✓ **Mic/camera in-use dots**: orange (mic) / green (camera) dots on the shape's
+  top-right when any process uses them; no capture permission needed. Toggleable.
+- ✓ **Privacy mode** (Settings toggle + status-menu quick toggle, default off): blanks
+  agent task titles (→ project name) and calendar titles (→ "Busy") for screen sharing.
+- ✓ **Tray upgrades**: Finder-grade drag-out (real file copies), QuickLook thumbnails
+  for previewable files, batch drops.
+
 ## v0.3.4 — 2026-07-31
 
 - ✓ **Configurable notch panel** (Settings → "Notch panel"): visibility mode ("Open on

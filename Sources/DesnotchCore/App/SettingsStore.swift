@@ -48,6 +48,12 @@ public final class SettingsStore: ObservableObject {
     @Published public var processMonitorEnabled: Bool { didSet { set("processMonitorEnabled", processMonitorEnabled) } }
     @Published public var trayEnabled: Bool { didSet { set("trayEnabled", trayEnabled) } }
     @Published public var volumeScrollEnabled: Bool { didSet { set("volumeScrollEnabled", volumeScrollEnabled) } }
+    @Published public var timelineSeekEnabled: Bool { didSet { set("timelineSeekEnabled", timelineSeekEnabled) } }
+    @Published public var batteryEnabled: Bool { didSet { set("batteryEnabled", batteryEnabled) } }
+    @Published public var micCameraIndicatorEnabled: Bool { didSet { set("micCameraIndicatorEnabled", micCameraIndicatorEnabled) } }
+    /// Blanks sensitive text (agent task titles, calendar event titles) for screen
+    /// sharing/recording. Defaults OFF, unlike the feature toggles.
+    @Published public var privacyModeEnabled: Bool { didSet { set("privacyModeEnabled", privacyModeEnabled) } }
     @Published public var notifyAgentNeedsYou: Bool { didSet { set(AgentAttentionNotifier.defaultsKey, notifyAgentNeedsYou) } }
 
     // MARK: Pill behavior & sizing
@@ -78,6 +84,10 @@ public final class SettingsStore: ObservableObject {
         processMonitorEnabled = Self.bool(defaults, "processMonitorEnabled")
         trayEnabled = Self.bool(defaults, "trayEnabled")
         volumeScrollEnabled = Self.bool(defaults, "volumeScrollEnabled")
+        timelineSeekEnabled = Self.bool(defaults, "timelineSeekEnabled")
+        batteryEnabled = Self.bool(defaults, "batteryEnabled")
+        micCameraIndicatorEnabled = Self.bool(defaults, "micCameraIndicatorEnabled")
+        privacyModeEnabled = defaults.object(forKey: "privacyModeEnabled") as? Bool ?? false
         notifyAgentNeedsYou = Self.bool(defaults, AgentAttentionNotifier.defaultsKey)
 
         pillMode = (defaults.string(forKey: "pillMode")).flatMap(PillVisibilityMode.init(rawValue:)) ?? .hoverAuto

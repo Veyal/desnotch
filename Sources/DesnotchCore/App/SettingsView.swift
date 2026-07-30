@@ -15,6 +15,7 @@ struct SettingsView: View {
             Toggle("Calendar glance", isOn: $settings.calendarEnabled)
             Toggle("Stuck-process detector", isOn: $settings.processMonitorEnabled)
             Toggle("File tray", isOn: $settings.trayEnabled)
+            Toggle("Battery glance (MacBooks)", isOn: $settings.batteryEnabled)
 
             Divider()
                 .padding(.vertical, 2)
@@ -66,6 +67,9 @@ struct SettingsView: View {
             Text("Behavior")
                 .font(.headline)
             Toggle("Volume on scroll", isOn: $settings.volumeScrollEnabled)
+            Toggle("Drag timeline to seek", isOn: $settings.timelineSeekEnabled)
+            Toggle("Mic/camera in-use dots", isOn: $settings.micCameraIndicatorEnabled)
+            Toggle("Privacy mode (blank titles)", isOn: $settings.privacyModeEnabled)
             Toggle("Notify when an agent needs you", isOn: $settings.notifyAgentNeedsYou)
         }
         .toggleStyle(.switch)

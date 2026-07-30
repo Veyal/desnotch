@@ -227,6 +227,23 @@ public final class MediaRemoteBridge {
         }
     }
 
+    /// Seeks to an absolute timeline position via the adapter's `seek` subcommand
+    /// (which takes microseconds). Same fire-and-forget shape as `send(_:)`.
+    public func seek(to seconds: TimeInterval) {
+        guard let scriptURL, let frameworkPath else { return }
+        let micros = Int64((max(0, seconds) * 1_000_000).rounded())
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [scriptURL.path, frameworkPath, "seek", String(micros)]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            logger.error("Adapter seek(\(micros)) failed: \(error.localizedDescription, privacy: .public).")
+        }
+    }
+
     // MARK: - Shutdown
 
     /// Stops the long-lived `stream` subprocess. Without this, quitting the app

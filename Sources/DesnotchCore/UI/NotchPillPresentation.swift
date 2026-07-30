@@ -12,9 +12,9 @@ public final class NotchPillPresentation: ObservableObject {
     /// Momentary volume readout (0...1) after a scroll-to-adjust gesture; auto-clears.
     @Published public private(set) var volumeFlash: Float?
 
-    /// Brief forced-open state after a successful file drop, so the user sees the item
-    /// land in the tray even if the cursor immediately leaves; auto-clears.
-    @Published public private(set) var dropFlash = false
+    /// Brief forced-open state so the user sees a change land (a file dropped into the
+    /// tray, the power cable plugged/unplugged) even without hovering; auto-clears.
+    @Published public private(set) var openFlash = false
 
     /// Grace period after the mouse leaves before clearing hover, so briefly crossing the
     /// edge doesn't collapse an expanded pill. User-configurable (Settings > Collapse delay);
@@ -22,7 +22,7 @@ public final class NotchPillPresentation: ObservableObject {
     private var hoverExitDelay: TimeInterval { SettingsStore.shared.hoverCollapseDelay }
     private var exitTimer: Timer?
     private var volumeFlashTimer: Timer?
-    private var dropFlashTimer: Timer?
+    private var openFlashTimer: Timer?
 
     public init() {}
 
@@ -62,15 +62,15 @@ public final class NotchPillPresentation: ObservableObject {
         volumeFlashTimer = timer
     }
 
-    /// Hold the pill open briefly after a drop so the added tray item is visible.
-    public func flashDropConfirmation() {
-        dropFlash = true
-        dropFlashTimer?.invalidate()
-        let timer = Timer(timeInterval: 1.5, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.dropFlash = false }
+    /// Hold the pill open briefly so a state change is visible without hovering.
+    public func flashOpen(for duration: TimeInterval = 1.5) {
+        openFlash = true
+        openFlashTimer?.invalidate()
+        let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.openFlash = false }
         }
         RunLoop.main.add(timer, forMode: .common)
-        dropFlashTimer = timer
+        openFlashTimer = timer
     }
 
     /// Forget hover state (used when all activity clears).

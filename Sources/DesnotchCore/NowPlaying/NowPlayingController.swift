@@ -81,6 +81,20 @@ public final class NowPlayingController: ObservableObject {
         scheduleReconciliation()
     }
 
+    /// Seek to an absolute position (dragging the pill's timeline). Optimistic like
+    /// `togglePlayPause`: the local elapsed/timestamp move immediately so the bar
+    /// doesn't snap back while the MediaRemote round-trip completes; the stream (or
+    /// the `get` fallback) then confirms the real position.
+    public func seek(to seconds: TimeInterval) {
+        guard var optimistic = info else { return }
+        let clamped = optimistic.duration.map { min(max(0, seconds), $0) } ?? max(0, seconds)
+        optimistic.elapsed = clamped
+        optimistic.elapsedAt = Date()
+        info = optimistic
+        bridge.seek(to: clamped)
+        scheduleReconciliation()
+    }
+
     /// If the stream hasn't confirmed a transport command by `reconciliationDelay`,
     /// run the adapter `get` once and treat its result as ground truth. This covers
     /// the case where a command was dropped or the change-driven stream missed the
