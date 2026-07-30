@@ -38,17 +38,27 @@ public enum AgentSource {
 }
 
 /// A single detected session. `projectLabel` is always a generic basename (never a full path)
-/// so it is safe to render directly in the UI.
+/// so it is safe to render directly in the UI. `taskTitle` is a short, hard-truncated hint
+/// derived from the session's first real user prompt line (owner-approved exception to the
+/// no-transcript rule - see AGENTS.md); nil when the format carries no usable prompt.
 public struct AgentSession: Identifiable {
     public let id = UUID()
     public let source: AgentSource
     public let projectLabel: String
+    public let taskTitle: String?
     public let state: AgentActivityState
     public let lastActivity: Date
 
-    public init(source: AgentSource, projectLabel: String, state: AgentActivityState, lastActivity: Date) {
+    public init(
+        source: AgentSource,
+        projectLabel: String,
+        taskTitle: String? = nil,
+        state: AgentActivityState,
+        lastActivity: Date
+    ) {
         self.source = source
         self.projectLabel = projectLabel
+        self.taskTitle = taskTitle
         self.state = state
         self.lastActivity = lastActivity
     }

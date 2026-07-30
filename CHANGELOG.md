@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.3.2 — 2026-07-30
+
+New pill sections & gestures:
+
+- ✓ **Grow-from-notch animation.** Minimized/expanded are now one continuous black shape
+  (`notchBody`) whose frame + corner radius morph under the spring; only the content
+  cross-fades (clipped to the growing shape). No more shrink-then-grow double shape.
+- ✓ **Agent task titles.** Rows show a hint of what each agent is doing - derived from the
+  session's first prompt line, hard-capped at 48 chars (Claude Code + Codex; others fall
+  back to the project folder name; project name on hover tooltip).
+- ✓ **Volume on scroll** over the pill (CoreAudio `VirtualMainVolume`) with a brief level
+  bar readout.
+- ✓ **Needs-you notifications** when an agent newly flips to needs-your-turn (packaged app:
+  user notification; bare binary: sound). Toggle in the status-bar menu.
+- ✓ **Calendar glance**: next non-all-day event within 12h as an expanded row; keeps the
+  pill alive on its own when starting within 30 min or ongoing. Calendar permission is
+  requested on first launch.
+- ✓ **Stuck-process detector**: flags processes sustaining ≥90% CPU for ≥10 min (orange
+  flame section + one notification per streak, top 3 by CPU).
+- ✓ **Fix: 1px wallpaper hairline** above the pill (fractional window frame; now integral,
+  flush with the screen top).
+- ✓ **Fix: menu-bar clicks swallowed** near the notch: the panel is click-through except
+  while the cursor is inside the pill's current visual rect (cursor-tracked
+  `ignoresMouseEvents`).
+
 ## v0.3.1 — 2026-07-30
 
 - ✓ **Notch-less screens now replicate the MacBook notch exactly.** The old fallback (a

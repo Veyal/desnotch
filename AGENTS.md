@@ -105,11 +105,13 @@ files on the dev machine, not copied.
 Hard privacy constraints for this feature, load-bearing for anyone touching it:
 - All paths are built from `NSHomeDirectory()` (`~/.claude/projects`, `~/.codex/sessions`) -
   never a machine-specific literal.
-- The UI (`NotchPillView.agentSection`) only ever renders counts and generic labels
-  (a project folder's basename) via `AgentActivitySummary`/`AgentSession.projectLabel` - never
-  raw transcript content, prompts, or full absolute paths. Keep new UI additions on that side
-  of the boundary: read whatever you need for classification, but only ever pass a basename or
-  a count out to the view layer.
+- The UI (`NotchPillView.agentSection`) only ever renders counts, generic labels (a project
+  folder's basename via `AgentSession.projectLabel`), and `AgentSession.taskTitle` - a
+  first-prompt-derived hint the owner explicitly opted into, hard-truncated to
+  `AgentActivityScanner.taskTitleMax` (48 chars), first line only, with harness noise
+  (`<...>` wrappers, "Caveat:") rejected. Never full prompts, transcript bodies, or absolute
+  paths. Keep new UI additions on that side of the boundary, and keep the title cap tight -
+  the pill is permanently on screen and this user screenshots/screen-shares constantly.
 - `AgentActivityScanner` skips Claude Code `subagents/` paths and `agent-*.jsonl` files, and
   Codex sessions whose `originator`/`source` indicate automation (`exec`, `codex_exec`, etc.) -
   these are sub-agent/headless fan-out, not a person's session worth surfacing.
@@ -128,6 +130,30 @@ on a notch screen).
 `AgentActivityController` polls the scanner on a 5s timer (file changes have no OS notification
 to hook, unlike `MediaRemoteBridge`) - keep that off the main actor if you touch it, per the
 existing `Task.detached` pattern.
+
+## Other pill sections & gestures (v0.3.2)
+
+- **Volume on scroll** (`SystemVolume`, CoreAudio `VirtualMainVolume`; monitor in
+  `NotchWindowController`): scrolling over the pill adjusts the default output device's
+  volume with a brief bar readout (`NotchPillPresentation.flashVolume`). Verified working
+  on the mini's output device; some external DACs have no settable volume - `adjust`
+  returns nil and the gesture is a silent no-op there.
+- **Needs-you notifications** (`AgentAttentionNotifier`): fires when a session newly flips
+  to `.needsYourTurn` (keyed by source|project|title across scans, seeded silently on the
+  first scan after launch). Uses `UNUserNotificationCenter` only in a packaged `.app` -
+  a bare `swift run` binary has no bundle identity and would crash, so it falls back to
+  `NSSound`. Toggleable from the status menu (`notifyAgentNeedsYou` default, on by default).
+- **Calendar glance** (`CalendarController`, EventKit): next non-all-day event within 12h as
+  an expanded row; it keeps the pill alive on its own only when imminent (<30 min or
+  ongoing). Usage-description keys live in `scripts/build-app.sh`'s Info.plist. If access is
+  denied or can't be prompted (headless/SSH bare binary), the row just never appears.
+- **Stuck-process detector** (`ProcessMonitorController`): samples `ps -axo pid,pcpu,comm`
+  every 30s; a process sustaining ≥90% CPU for ≥10 min is flagged (pill section + one
+  notification per streak). The sustained window is the point - don't "simplify" it to a
+  single high-CPU sample, that just flags every compile.
+
+Compact wing priority when several things are active: left = media > stuck-process >
+calendar; right = agents > stuck-process. Everything else is one hover away.
 
 ## Build/run
 

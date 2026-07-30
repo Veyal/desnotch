@@ -77,6 +77,7 @@ public enum AgentActivityScanner {
                 AgentSession(
                     source: .claudeCode,
                     projectLabel: label(forClaudeProject: projectDirName, transcript: url),
+                    taskTitle: readClaudeTaskTitle(url),
                     state: state,
                     lastActivity: mtime
                 )
@@ -112,6 +113,70 @@ public enum AgentActivityScanner {
     /// Legacy fallback: last dash-separated segment of the encoded directory name.
     private static func projectLabel(fromEncodedDirectoryName name: String) -> String {
         name.split(separator: "-").last.map(String.init) ?? "project"
+    }
+
+    // MARK: - Task titles
+
+    /// Hard cap for the first-prompt-derived task title shown in the pill. Keep this tight:
+    /// the pill is always on screen (and often screenshotted/screen-shared), so it must only
+    /// ever show a hint of what the agent is doing, never a full prompt.
+    private static let taskTitleMax = 48
+
+    /// First non-empty prompt line, whitespace-collapsed and truncated to `taskTitleMax`.
+    /// Rejects harness noise: XML-ish wrappers (`<system-reminder>`, `<command-name>`, …)
+    /// and Claude Code "Caveat:" preambles.
+    private static func sanitizeTitle(_ raw: String) -> String? {
+        guard let firstLine = raw
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map({ $0.trimmingCharacters(in: .whitespaces) })
+            .first(where: { !$0.isEmpty })
+        else { return nil }
+        guard !firstLine.hasPrefix("<"), !firstLine.hasPrefix("Caveat:") else { return nil }
+        let collapsed = firstLine
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else { return nil }
+        guard collapsed.count > taskTitleMax else { return collapsed }
+        return String(collapsed.prefix(taskTitleMax)) + "…"
+    }
+
+    /// First real user prompt in a Claude Code transcript (`type:"user"`, string content or
+    /// the first text block; sidechains skipped). Scans only the leading chunk - a session
+    /// whose first prompt sits past it just falls back to the project label.
+    private static func readClaudeTaskTitle(_ url: URL) -> String? {
+        guard let text = readUpToNewline(url, maxBytes: 262_144) else { return nil }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let obj = parseJSONObject(String(line)),
+                obj["type"] as? String == "user",
+                obj["isSidechain"] as? Bool != true,
+                let message = obj["message"] as? [String: Any]
+            else { continue }
+            let candidate: String?
+            if let s = message["content"] as? String {
+                candidate = s
+            } else if let blocks = message["content"] as? [[String: Any]] {
+                candidate = blocks.first { $0["type"] as? String == "text" }?["text"] as? String
+            } else {
+                candidate = nil
+            }
+            if let candidate, let title = sanitizeTitle(candidate) { return title }
+        }
+        return nil
+    }
+
+    /// First user prompt in a Codex rollout (`event_msg` with a `user_message` payload).
+    private static func readCodexTaskTitle(_ url: URL) -> String? {
+        guard let text = readUpToNewline(url, maxBytes: 262_144) else { return nil }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let obj = parseJSONObject(String(line)),
+                obj["type"] as? String == "event_msg",
+                let payload = obj["payload"] as? [String: Any],
+                payload["type"] as? String == "user_message",
+                let message = payload["message"] as? String
+            else { continue }
+            if let title = sanitizeTitle(message) { return title }
+        }
+        return nil
     }
 
     /// Returns whether the most recent turn-relevant transcript entry indicates the agent is
@@ -168,6 +233,7 @@ public enum AgentActivityScanner {
                 AgentSession(
                     source: .codex,
                     projectLabel: label,
+                    taskTitle: readCodexTaskTitle(url),
                     state: state,
                     lastActivity: mtime
                 )

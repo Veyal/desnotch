@@ -75,9 +75,12 @@ public enum NotchGeometry {
 
     public static func placement(for screen: NSScreen, windowSize: CGSize) -> Placement {
         let hasNotch = screen.safeAreaInsets.top > 0
-        let width = windowSize.width
-        let height = windowSize.height
-        let x = screen.frame.midX - width / 2
+        // Integral frame only: SwiftUI reports fractional content sizes, and a fractional
+        // window height puts the top edge on a half pixel - which renders as a hairline of
+        // wallpaper between the pill and the screen's top edge.
+        let width = windowSize.width.rounded(.up)
+        let height = windowSize.height.rounded(.up)
+        let x = (screen.frame.midX - width / 2).rounded()
 
         // Flush with the screen top on every screen: a real notch hugs the hardware cutout,
         // and a notch-less screen gets a "fake notch" drawn over the menu bar top-center.

@@ -61,6 +61,10 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSCalendarsUsageDescription</key>
+    <string>desnotch shows your next meeting in the notch pill.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>desnotch shows your next meeting in the notch pill.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

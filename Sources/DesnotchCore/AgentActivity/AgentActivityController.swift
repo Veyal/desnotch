@@ -24,6 +24,8 @@ public final class AgentActivityController: ObservableObject {
     private var scanTask: Task<Void, Never>?
     private var lastActionableCount = 0
     private var lastSignature = ""
+    private var lastNeedsYouKeys: Set<String> = []
+    private var isFirstApply = true
 
     public init(presentation: NotchPillPresentation) {
         self.presentation = presentation
@@ -63,6 +65,21 @@ public final class AgentActivityController: ObservableObject {
         guard sig != lastSignature else { return }
         lastSignature = sig
 
+        // Notify sessions that newly flipped to needs-your-turn. Keyed by identity, not
+        // UUID (session ids are fresh each scan). The first apply after launch only seeds
+        // the set - pre-existing needs-you sessions shouldn't fire a notification.
+        let needsYou = actionable.filter { $0.state == .needsYourTurn }
+        let needsYouKeys = Set(needsYou.map(Self.sessionKey))
+        if !isFirstApply {
+            for session in needsYou where !lastNeedsYouKeys.contains(Self.sessionKey(session)) {
+                AgentAttentionNotifier.shared.notifyNeedsYou(
+                    session.taskTitle ?? session.projectLabel
+                )
+            }
+        }
+        lastNeedsYouKeys = needsYouKeys
+        isFirstApply = false
+
         self.summary = summary
         self.sessions = actionable
 
@@ -74,6 +91,11 @@ public final class AgentActivityController: ObservableObject {
         }
 
         lastActionableCount = summary.actionableCount
+    }
+
+    /// Stable identity across scans (session structs get fresh UUIDs every scan).
+    private static func sessionKey(_ session: AgentSession) -> String {
+        "\(session.source)|\(session.projectLabel)|\(session.taskTitle ?? "")"
     }
 
     deinit {

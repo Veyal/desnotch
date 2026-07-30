@@ -10,6 +10,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var presentation: NotchPillPresentation?
     private var nowPlayingController: NowPlayingController?
     private var agentActivityController: AgentActivityController?
+    private var calendarController: CalendarController?
+    private var processMonitorController: ProcessMonitorController?
     private var windowController: NotchWindowController?
     private var statusItem: NSStatusItem?
     private var retryObserver: NSObjectProtocol?
@@ -33,12 +35,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.presentation = presentation
         let nowPlayingController = NowPlayingController(presentation: presentation)
         let agentActivityController = AgentActivityController(presentation: presentation)
+        let calendarController = MainActor.assumeIsolated { CalendarController() }
+        let processMonitorController = MainActor.assumeIsolated { ProcessMonitorController() }
         self.nowPlayingController = nowPlayingController
         self.agentActivityController = agentActivityController
+        self.calendarController = calendarController
+        self.processMonitorController = processMonitorController
 
         if let windowController = NotchWindowController(
             controller: nowPlayingController,
             agentActivity: agentActivityController,
+            calendar: calendarController,
+            processMonitor: processMonitorController,
             presentation: presentation
         ) {
             self.windowController = windowController
@@ -54,9 +62,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let presentation = self.presentation,
                       let npc = self.nowPlayingController,
                       let aac = self.agentActivityController,
+                      let cal = self.calendarController,
+                      let pmc = self.processMonitorController,
                       let wc = NotchWindowController(
                           controller: npc,
                           agentActivity: aac,
+                          calendar: cal,
+                          processMonitor: pmc,
                           presentation: presentation
                       )
                 else { return }
@@ -94,6 +106,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         loginItem.state = launchAtLoginEnabled ? .on : .off
         menu.addItem(loginItem)
 
+        let notifyItem = NSMenuItem(
+            title: "Notify When Agent Needs You",
+            action: #selector(toggleNotifications(_:)),
+            keyEquivalent: ""
+        )
+        notifyItem.target = self
+        notifyItem.state = AgentAttentionNotifier.shared.isEnabled ? .on : .off
+        menu.addItem(notifyItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let quit = NSMenuItem(
@@ -107,6 +128,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var launchAtLoginEnabled: Bool {
         SMAppService.mainApp.status == .enabled
+    }
+
+    @objc func toggleNotifications(_ sender: NSMenuItem) {
+        AgentAttentionNotifier.shared.isEnabled.toggle()
+        sender.state = AgentAttentionNotifier.shared.isEnabled ? .on : .off
     }
 
     @objc func toggleLaunchAtLogin(_ sender: NSMenuItem) {

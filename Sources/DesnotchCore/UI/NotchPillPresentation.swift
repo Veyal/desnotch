@@ -9,10 +9,14 @@ import Foundation
 public final class NotchPillPresentation: ObservableObject {
     @Published public private(set) var isHovering = false
 
+    /// Momentary volume readout (0...1) after a scroll-to-adjust gesture; auto-clears.
+    @Published public private(set) var volumeFlash: Float?
+
     /// Grace period after the mouse leaves before clearing hover, so briefly crossing the
     /// edge doesn't collapse an expanded pill.
     private let hoverExitDelay: TimeInterval = 0.4
     private var exitTimer: Timer?
+    private var volumeFlashTimer: Timer?
 
     public init() {}
 
@@ -28,6 +32,17 @@ public final class NotchPillPresentation: ObservableObject {
             RunLoop.main.add(timer, forMode: .common)
             exitTimer = timer
         }
+    }
+
+    /// Show the volume level briefly after a scroll adjustment.
+    public func flashVolume(_ level: Float) {
+        volumeFlash = level
+        volumeFlashTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.2, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.volumeFlash = nil }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        volumeFlashTimer = timer
     }
 
     /// Forget hover state (used when all activity clears).
