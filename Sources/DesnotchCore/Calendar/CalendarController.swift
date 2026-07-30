@@ -1,5 +1,6 @@
 import EventKit
 import Foundation
+import os
 
 /// Publishes the next upcoming (non-all-day) calendar event within the lookahead window
 /// for the pill's calendar glance row. Access is requested once at init; if the user
@@ -19,11 +20,21 @@ public final class CalendarController: ObservableObject {
         }
     }
 
+    public enum AccessState {
+        case undetermined
+        case granted
+        /// Denied, restricted, or the process couldn't prompt - surfaced as a hint row
+        /// in the pill so the user knows why no events appear.
+        case denied
+    }
+
     @Published public private(set) var nextEvent: NextEvent?
+    @Published public private(set) var accessState: AccessState = .undetermined
 
     private let store = EKEventStore()
-    private let lookahead: TimeInterval = 12 * 3600
+    private let lookahead: TimeInterval = 24 * 3600
     private let refreshInterval: TimeInterval = 30
+    private let logger = Logger(subsystem: "com.desnotch.app", category: "calendar")
     private var timer: Timer?
     private var changeObserver: NSObjectProtocol?
     private var hasAccess = false
@@ -44,9 +55,19 @@ public final class CalendarController: ObservableObject {
     }
 
     private func requestAccess() {
-        let handler: (Bool, Error?) -> Void = { [weak self] granted, _ in
+        let handler: (Bool, Error?) -> Void = { [weak self] granted, error in
             Task { @MainActor in
-                guard let self, granted else { return }
+                guard let self else { return }
+                if let error {
+                    self.logger.error("calendar access request failed: \(error.localizedDescription)")
+                }
+                guard granted else {
+                    self.logger.notice("calendar access not granted")
+                    self.accessState = .denied
+                    return
+                }
+                self.logger.info("calendar access granted; \(self.store.calendars(for: .event).count) calendars")
+                self.accessState = .granted
                 self.hasAccess = true
                 self.startRefreshing()
                 self.refresh()
@@ -75,6 +96,10 @@ public final class CalendarController: ObservableObject {
 
     private func refresh() {
         guard hasAccess else { return }
+        guard SettingsStore.shared.calendarEnabled else {
+            if nextEvent != nil { nextEvent = nil }
+            return
+        }
         let now = Date()
         let predicate = store.predicateForEvents(
             withStart: now, end: now.addingTimeInterval(lookahead), calendars: nil

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.3.3 — 2026-07-30
+
+- ✓ **Always-visible notch.** The notch renders even with nothing active (invisible
+  black-on-black on real hardware) - hover always works and hosts the calendar glance +
+  the new file tray.
+- ✓ **File tray** with full drag feedback: drag files onto the notch (shape highlights,
+  pill expands, "Drop to add" state), items animate in, click opens, drag out re-exports,
+  ✕ removes. Path references persist across launches (8 max).
+- ✓ **Fix: pill collapsed ~1s into a hover.** SwiftUI `.onHover` raced panel resizes;
+  hover is now owned solely by the window controller's cursor tracker.
+- ✓ **Fix: hover at the absolute top of the screen didn't register** (NSRect top-edge
+  exclusion vs. a top-pinned cursor reporting exactly y == screen top).
+- ✓ **Now-playing timeline**: thin progress bar + elapsed/total, extrapolated client-side,
+  1s tick only while visible; hidden for sources with no duration.
+- ✓ **Settings pane** (menu bar icon → Settings…, ⌘,): per-feature toggles (now playing,
+  agents, calendar, process detector, tray, volume scroll, notifications). Disabled
+  features stop their background work, not just their UI.
+- ✓ **Calendar glance**: lookahead 12h → 24h with day-aware labels ("in 42m", "14:00",
+  "tmrw 09:00"); a denied-access state now shows a clickable hint row instead of nothing.
+
 ## v0.3.2 — 2026-07-30
 
 New pill sections & gestures:

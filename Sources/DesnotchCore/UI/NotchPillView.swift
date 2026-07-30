@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The single live-activity pill. Minimized by default while anything is active; hovering
 /// expands it to a stacked view (now-playing row when media is active, per-agent list when
@@ -17,7 +18,9 @@ public struct NotchPillView: View {
     @ObservedObject public var agentActivity: AgentActivityController
     @ObservedObject public var calendar: CalendarController
     @ObservedObject public var processMonitor: ProcessMonitorController
+    @ObservedObject public var tray: TrayController
     @ObservedObject public var presentation: NotchPillPresentation
+    @ObservedObject private var settings = SettingsStore.shared
     public let hasPhysicalNotch: Bool
     /// Physical notch cutout size (`NotchGeometry.notchSize(for:)`); nil on notch-less screens.
     public let notchSize: CGSize?
@@ -36,6 +39,7 @@ public struct NotchPillView: View {
         agentActivity: AgentActivityController,
         calendar: CalendarController,
         processMonitor: ProcessMonitorController,
+        tray: TrayController,
         presentation: NotchPillPresentation,
         hasPhysicalNotch: Bool,
         notchSize: CGSize? = nil,
@@ -45,6 +49,7 @@ public struct NotchPillView: View {
         self.agentActivity = agentActivity
         self.calendar = calendar
         self.processMonitor = processMonitor
+        self.tray = tray
         self.presentation = presentation
         self.hasPhysicalNotch = hasPhysicalNotch
         self.notchSize = notchSize
@@ -57,13 +62,13 @@ public struct NotchPillView: View {
             : .spring(response: 0.5, dampingFraction: 0.82)
     }
 
-    private var hasMedia: Bool { controller.hasActiveMedia }
-    private var hasAgents: Bool { agentActivity.summary.hasActivity }
-    private var hasHotProcesses: Bool { !processMonitor.hotProcesses.isEmpty }
-    /// A calendar event keeps the pill alive on its own only when imminent/ongoing;
-    /// the expanded glance row shows for anything within the lookahead window.
-    private var calendarImminent: Bool { calendar.isImminent }
-    private var isActive: Bool { hasMedia || hasAgents || calendarImminent || hasHotProcesses }
+    private var hasMedia: Bool { settings.nowPlayingEnabled && controller.hasActiveMedia }
+    private var hasAgents: Bool { settings.agentActivityEnabled && agentActivity.summary.hasActivity }
+    private var hasHotProcesses: Bool { settings.processMonitorEnabled && !processMonitor.hotProcesses.isEmpty }
+    /// Drives the compact calendar indicator; the expanded glance row shows for anything
+    /// within the lookahead window.
+    private var calendarImminent: Bool { settings.calendarEnabled && calendar.isImminent }
+    private var trayEnabled: Bool { settings.trayEnabled }
     /// Width of the black "wing" either side of the physical notch that hosts a minimized
     /// indicator. Sized for the widest content (agent icon + 2-digit count).
     private static let wingWidth: CGFloat = 44
@@ -92,9 +97,13 @@ public struct NotchPillView: View {
     /// but it no longer forces the pill open. The pill is always minimized unless hovered.
     private var needsAttention: Bool { agentActivity.summary.needsYourTurnCount > 0 }
 
-    /// Expanded only while the pointer is over the pill (hover). Otherwise it stays
-    /// minimized to the left/right indicators - even when an agent needs action.
-    private var isExpanded: Bool { presentation.isHovering }
+    /// A file drag is currently over the notch shape (drives the drop-target visuals
+    /// and holds the pill open so the tray is visible while dragging).
+    @State private var isDropTargeted = false
+
+    /// Expanded while the pointer is over the pill, while a file drag hovers it, or
+    /// briefly after a successful drop (so the added item is seen landing).
+    private var isExpanded: Bool { presentation.isHovering || isDropTargeted || presentation.dropFlash }
 
     /// Needs-you first (action required), then stalled, then working - most recent first.
     private var orderedAgents: [AgentSession] {
@@ -105,16 +114,13 @@ public struct NotchPillView: View {
     }
 
     public var body: some View {
-        Group {
-            if isActive {
-                notchBody
-            } else {
-                Color.clear
-                    .frame(width: NotchGeometry.fallbackWidth, height: NotchGeometry.fallbackHeight)
-                    .allowsHitTesting(false)
-            }
-        }
-        .background(sizeReader)
+        // The notch is ALWAYS shown (and hover always expands it): even with nothing
+        // playing and no agents it hosts the calendar glance and the file tray. On real
+        // notch hardware the empty compact state is pure black wings hugging the cutout -
+        // effectively invisible; on notch-less screens it's the fake notch the user wants
+        // visible anyway.
+        notchBody
+            .background(sizeReader)
         .onPreferenceChange(PillContentWidthPreferenceKey.self) { w in
             measuredWidth = w
             onSizeChange?(CGSize(width: w, height: measuredHeight))
@@ -123,17 +129,15 @@ public struct NotchPillView: View {
             measuredHeight = h
             onSizeChange?(CGSize(width: measuredWidth, height: h))
         }
-        .animation(spring, value: isActive)
         .animation(spring, value: hasMedia)
         .animation(spring, value: hasAgents)
         .animation(spring, value: hasHotProcesses)
         .animation(spring, value: calendarImminent)
         .animation(spring, value: presentation.isHovering)
+        .animation(spring, value: isDropTargeted)
+        .animation(spring, value: presentation.dropFlash)
+        .animation(spring, value: tray.items)
         .animation(.easeInOut(duration: 0.15), value: presentation.volumeFlash == nil)
-        .onHover { hovering in
-            guard isActive else { return }
-            presentation.setHovering(hovering)
-        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // The pill renders on an always-dark surface; force a dark color scheme so
         // `.secondary` text stays legible in Light Mode too.
@@ -170,9 +174,39 @@ public struct NotchPillView: View {
             }
         }
         .frame(width: isExpanded ? expandedWidth : compactWidth)
-        .background(BottomRoundedRectangle(radius: shapeRadius).fill(Color.black))
+        .background(
+            BottomRoundedRectangle(radius: shapeRadius)
+                .fill(isDropTargeted ? Color(white: 0.13) : Color.black)
+        )
+        .overlay(
+            // Drop-target affordance: the shape itself lights up while a file hovers it.
+            BottomRoundedRectangle(radius: shapeRadius)
+                .stroke(Color.white.opacity(isDropTargeted ? 0.6 : 0), lineWidth: 1.5)
+        )
         .clipShape(BottomRoundedRectangle(radius: shapeRadius))
         .contentShape(BottomRoundedRectangle(radius: shapeRadius))
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard trayEnabled else { return false }
+            var accepted = false
+            for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                accepted = true
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    let url: URL?
+                    if let data = item as? Data {
+                        url = URL(dataRepresentation: data, relativeTo: nil)
+                    } else {
+                        url = item as? URL
+                    }
+                    if let url {
+                        Task { @MainActor in
+                            tray.add(url)
+                            presentation.flashDropConfirmation()
+                        }
+                    }
+                }
+            }
+            return accepted
+        }
         .overlay(alignment: .bottom) {
             if let level = presentation.volumeFlash {
                 volumeReadout(level)
@@ -205,8 +239,12 @@ public struct NotchPillView: View {
 
     private var compactWidth: CGFloat { effectiveNotch.width + Self.wingWidth * 2 }
 
-    private var showCalendarRow: Bool { calendar.nextEvent != nil }
+    private var showCalendarRow: Bool {
+        settings.calendarEnabled && (calendar.nextEvent != nil || calendar.accessState == .denied)
+    }
 
+    /// The tray is the last section (when enabled). With every section disabled or empty
+    /// the expanded pill still shows a small placeholder rather than an empty black blob.
     private var pillContent: some View {
         VStack(spacing: 0) {
             if hasMedia, let info = controller.info {
@@ -227,8 +265,46 @@ public struct NotchPillView: View {
             if (hasMedia || hasAgents || hasHotProcesses) && showCalendarRow {
                 sectionDivider
             }
-            if showCalendarRow, let event = calendar.nextEvent {
-                calendarRow(event)
+            if showCalendarRow {
+                if let event = calendar.nextEvent {
+                    calendarRow(event)
+                } else {
+                    calendarAccessHint
+                }
+            }
+            if trayEnabled {
+                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow {
+                    sectionDivider
+                }
+                traySection
+            }
+            if !trayEnabled && !hasMedia && !hasAgents && !hasHotProcesses && !showCalendarRow {
+                Text("Everything is turned off — see Settings")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            }
+        }
+    }
+
+    /// Shown instead of the event row when access was denied - otherwise the feature
+    /// just looks broken. Click opens the Calendars privacy pane.
+    private var calendarAccessHint: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "calendar.badge.exclamationmark")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.yellow)
+                .frame(width: 14)
+            Text("Calendar access needed — click to allow")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") {
+                NSWorkspace.shared.open(url)
             }
         }
     }
@@ -327,6 +403,15 @@ public struct NotchPillView: View {
     // MARK: - Now-playing row
 
     private func nowPlayingRow(_ info: NowPlayingInfo) -> some View {
+        VStack(spacing: 5) {
+            nowPlayingControlsRow(info)
+            if let duration = info.duration, duration > 0, info.elapsed != nil {
+                timeline(info, duration: duration)
+            }
+        }
+    }
+
+    private func nowPlayingControlsRow(_ info: NowPlayingInfo) -> some View {
         HStack(spacing: 10) {
             artwork(info.artwork, size: 24)
 
@@ -362,6 +447,39 @@ public struct NotchPillView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("\(info.title ?? "Unknown Title")\(info.artist.map { ", \($0)" } ?? "")"))
+    }
+
+    /// Elapsed/total readout with a thin progress bar. `TimelineView` ticks it every
+    /// second, but only while the expanded pill actually renders it - the position is
+    /// extrapolated from the last adapter update, no extra polling of the adapter.
+    private func timeline(_ info: NowPlayingInfo, duration: TimeInterval) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let position = min(max(info.position(at: context.date) ?? 0, 0), duration)
+            HStack(spacing: 6) {
+                Text(mmss(position))
+                    .font(.system(size: 8).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Capsule()
+                    .fill(Color.white.opacity(0.25))
+                    .frame(height: 3)
+                    .overlay(alignment: .leading) {
+                        GeometryReader { geo in
+                            Capsule()
+                                .fill(Color.white)
+                                .frame(width: geo.size.width * CGFloat(position / duration))
+                        }
+                    }
+                Text(mmss(duration))
+                    .font(.system(size: 8).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func mmss(_ t: TimeInterval) -> String {
+        let s = max(0, Int(t))
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     // MARK: - Agent section (inline list)
@@ -493,6 +611,81 @@ public struct NotchPillView: View {
         .animation(nil, value: processMonitor.hotProcesses.count)
     }
 
+    // MARK: - File tray
+
+    /// Drop shelf: file references dragged onto the notch. Renders basenames + Finder
+    /// icons only. Click opens the file; items can be dragged out; ✕ removes.
+    private var traySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: "tray.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Text("tray")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+
+            if tray.items.isEmpty {
+                // A visible drop zone, not just a label - it brightens while targeted.
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(
+                        isDropTargeted ? Color.white.opacity(0.8) : Color.white.opacity(0.25),
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                    )
+                    .frame(height: 26)
+                    .overlay(
+                        Text(isDropTargeted ? "Drop to add" : "Drop files here")
+                            .font(.system(size: 10, weight: isDropTargeted ? .semibold : .regular))
+                            .foregroundStyle(isDropTargeted ? .white : .secondary)
+                    )
+                    .padding(.vertical, 2)
+            } else {
+                ForEach(tray.items, id: \.self) { url in
+                    trayRow(url)
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9, anchor: .top)),
+                                removal: .opacity.combined(with: .scale(scale: 0.9))
+                            )
+                        )
+                }
+            }
+        }
+        // Unlike the agent list (whose 5s re-scan must not re-animate), tray changes are
+        // direct user actions - let items visibly slide in/out.
+        .animation(spring, value: tray.items)
+    }
+
+    private func trayRow(_ url: URL) -> some View {
+        HStack(spacing: 8) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                .resizable()
+                .frame(width: 14, height: 14)
+            Text(url.lastPathComponent)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .frame(maxWidth: 190, alignment: .leading)
+            Spacer(minLength: 4)
+            Button {
+                tray.remove(url)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(PillButtonStyle())
+            .accessibilityLabel(Text("Remove \(url.lastPathComponent) from tray"))
+        }
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .onTapGesture { NSWorkspace.shared.open(url) }
+        .onDrag { NSItemProvider(object: url as NSURL) }
+        .help(url.lastPathComponent)
+    }
+
     // MARK: - Calendar glance
 
     private func calendarRow(_ event: CalendarController.NextEvent) -> some View {
@@ -520,7 +713,13 @@ public struct NotchPillView: View {
         let s = Int(event.start.timeIntervalSinceNow)
         if s <= 0 { return "now" }
         if s < 3600 { return "in \(max(1, s / 60))m" }
-        return "in \(s / 3600)h \((s % 3600) / 60)m"
+        if s < 6 * 3600 { return "in \(s / 3600)h \((s % 3600) / 60)m" }
+        // Further out (24h lookahead): an absolute time reads better than "in 19h 40m".
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        let time = formatter.string(from: event.start)
+        return Foundation.Calendar.current.isDateInTomorrow(event.start) ? "tmrw \(time)" : time
     }
 
     // MARK: - Shared pieces

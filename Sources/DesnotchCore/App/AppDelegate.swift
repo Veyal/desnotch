@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import SwiftUI
 
 /// No dock icon by default (accessory activation policy). Because the borderless,
 /// non-activating panel can never become the key window, the app menu's Cmd+Q is
@@ -12,7 +13,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentActivityController: AgentActivityController?
     private var calendarController: CalendarController?
     private var processMonitorController: ProcessMonitorController?
+    private var trayController: TrayController?
     private var windowController: NotchWindowController?
+    private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem?
     private var retryObserver: NSObjectProtocol?
 
@@ -37,16 +40,19 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let agentActivityController = AgentActivityController(presentation: presentation)
         let calendarController = MainActor.assumeIsolated { CalendarController() }
         let processMonitorController = MainActor.assumeIsolated { ProcessMonitorController() }
+        let trayController = MainActor.assumeIsolated { TrayController() }
         self.nowPlayingController = nowPlayingController
         self.agentActivityController = agentActivityController
         self.calendarController = calendarController
         self.processMonitorController = processMonitorController
+        self.trayController = trayController
 
         if let windowController = NotchWindowController(
             controller: nowPlayingController,
             agentActivity: agentActivityController,
             calendar: calendarController,
             processMonitor: processMonitorController,
+            tray: trayController,
             presentation: presentation
         ) {
             self.windowController = windowController
@@ -64,11 +70,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let aac = self.agentActivityController,
                       let cal = self.calendarController,
                       let pmc = self.processMonitorController,
+                      let trayC = self.trayController,
                       let wc = NotchWindowController(
                           controller: npc,
                           agentActivity: aac,
                           calendar: cal,
                           processMonitor: pmc,
+                          tray: trayC,
                           presentation: presentation
                       )
                 else { return }
@@ -106,14 +114,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         loginItem.state = launchAtLoginEnabled ? .on : .off
         menu.addItem(loginItem)
 
-        let notifyItem = NSMenuItem(
-            title: "Notify When Agent Needs You",
-            action: #selector(toggleNotifications(_:)),
-            keyEquivalent: ""
+        let settingsItem = NSMenuItem(
+            title: "Settings…",
+            action: #selector(openSettings(_:)),
+            keyEquivalent: ","
         )
-        notifyItem.target = self
-        notifyItem.state = AgentAttentionNotifier.shared.isEnabled ? .on : .off
-        menu.addItem(notifyItem)
+        settingsItem.target = self
+        menu.addItem(settingsItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -130,9 +137,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         SMAppService.mainApp.status == .enabled
     }
 
-    @objc func toggleNotifications(_ sender: NSMenuItem) {
-        AgentAttentionNotifier.shared.isEnabled.toggle()
-        sender.state = AgentAttentionNotifier.shared.isEnabled ? .on : .off
+    @objc func openSettings(_ sender: NSMenuItem) {
+        if settingsWindow == nil {
+            let window = NSWindow(
+                contentRect: .zero,
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "desnotch Settings"
+            window.contentView = MainActor.assumeIsolated { NSHostingView(rootView: SettingsView()) }
+            window.isReleasedWhenClosed = false
+            window.setContentSize(window.contentView?.fittingSize ?? .zero)
+            window.center()
+            settingsWindow = window
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc func toggleLaunchAtLogin(_ sender: NSMenuItem) {

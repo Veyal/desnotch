@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 /// Owns the borderless, transparent, always-on-top panel the pill lives in.
@@ -13,17 +12,15 @@ public final class NotchWindowController {
     private let agentActivity: AgentActivityController
     private let calendar: CalendarController
     private let processMonitor: ProcessMonitorController
+    private let tray: TrayController
     private let presentation: NotchPillPresentation
 
     private var currentScreen: NSScreen
     private var hasPhysicalNotch: Bool
     private var notchSize: CGSize?
-    private var cancellables = Set<AnyCancellable>()
     private var scrollMonitor: Any?
     private var mouseMoveMonitors: [Any] = []
 
-    /// Whether anything is currently shown (drives interactivity together with the cursor).
-    private var hasContent = false
     /// The pill's current visual size as reported by SwiftUI (tracks the collapse/expand
     /// animation), used to compute the only region of the panel that should take events.
     private var pillContentSize: CGSize = .zero
@@ -33,6 +30,7 @@ public final class NotchWindowController {
         agentActivity: AgentActivityController,
         calendar: CalendarController,
         processMonitor: ProcessMonitorController,
+        tray: TrayController,
         presentation: NotchPillPresentation
     ) {
         guard let screen = NotchGeometry.preferredScreen() else { return nil }
@@ -40,6 +38,7 @@ public final class NotchWindowController {
         self.agentActivity = agentActivity
         self.calendar = calendar
         self.processMonitor = processMonitor
+        self.tray = tray
         self.presentation = presentation
         self.currentScreen = screen
         self.hasPhysicalNotch = screen.safeAreaInsets.top > 0
@@ -75,38 +74,29 @@ public final class NotchWindowController {
         // Keep the panel click-through in sync with whether anything is actually shown.
         // init runs on the main thread (from applicationDidFinishLaunching), so the
         // main-actor-isolated published projections are reachable here.
-        MainActor.assumeIsolated {
-            Publishers.CombineLatest4(
-                controller.$info.map { $0?.hasContent == true },
-                agentActivity.$summary.map { $0.hasActivity },
-                calendar.$nextEvent.map { CalendarController.isImminent($0) },
-                processMonitor.$hotProcesses.map { !$0.isEmpty }
-            )
-            .map { $0 || $1 || $2 || $3 }
-            .receive(on: RunLoop.main)
-            .sink { [weak self] hasContent in
-                self?.hasContent = hasContent
-                self?.updateInteractivity()
-            }
-            .store(in: &cancellables)
-        }
-
         // The panel is much wider than the visible pill (stable size for clean animation),
         // and an event-accepting window swallows clicks meant for the menu bar underneath -
         // per-view hitTest can't give them back. So the *window* only accepts events while
-        // the cursor is actually over the pill's current visual rect, tracked via
-        // mouse-moved monitors (global = cursor over other apps; local = over us).
+        // the cursor is actually over the pill's current visual rect, tracked via mouse
+        // monitors (global = cursor over other apps; local = over us). The same tracker is
+        // the single authority for hover-expansion - SwiftUI's .onHover raced panel
+        // resizes and could strand the pill open or closed. `.leftMouseDragged` is
+        // included so dragging a file over the notch makes the panel interactive and the
+        // tray's drop target reachable.
         let moveHandler: (NSEvent) -> Void = { [weak self] _ in
             self?.updateInteractivity()
         }
+        let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
         mouseMoveMonitors = [
-            NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { moveHandler($0) },
-            NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { moveHandler($0); return $0 }
+            NSEvent.addGlobalMonitorForEvents(matching: events) { moveHandler($0) },
+            NSEvent.addLocalMonitorForEvents(matching: events) { moveHandler($0); return $0 }
         ].compactMap { $0 }
+        updateInteractivity()
 
         // Scroll over the notch adjusts system volume (with a brief readout in the pill).
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
+            guard MainActor.assumeIsolated({ SettingsStore.shared.volumeScrollEnabled }) else { return event }
             let scale: Float = event.hasPreciseScrollingDeltas ? 0.002 : 0.02
             let delta = Float(event.scrollingDeltaY) * scale
             guard delta != 0 else { return event }
@@ -131,6 +121,7 @@ public final class NotchWindowController {
             agentActivity: agentActivity,
             calendar: calendar,
             processMonitor: processMonitor,
+            tray: tray,
             presentation: presentation,
             hasPhysicalNotch: hasPhysicalNotch,
             notchSize: notchSize,
@@ -178,35 +169,36 @@ public final class NotchWindowController {
         resize(toContent: lastContentSize())
     }
 
-    /// The panel takes mouse events only while something is shown AND the cursor is inside
-    /// the pill's current visual rect (top-centered in the panel); everywhere else the
-    /// window is click-through so menu-bar items beside/under the transparent margins work.
+    /// The panel takes mouse events only while the cursor is inside the pill's current
+    /// visual rect (top-centered in the panel); everywhere else the window is
+    /// click-through so menu-bar items beside/under the transparent margins work.
+    /// The same cursor test drives hover-expansion (exit goes through the presentation's
+    /// grace period, so edge flicker doesn't collapse the pill).
     private func updateInteractivity() {
-        let shouldAccept = hasContent && cursorInsidePill()
-        if panel.ignoresMouseEvents == shouldAccept {
-            panel.ignoresMouseEvents = !shouldAccept
+        let inside = cursorInsidePill()
+        if panel.ignoresMouseEvents == inside {
+            panel.ignoresMouseEvents = !inside
         }
-        // Once the window is click-through it stops receiving mouse events, so SwiftUI's
-        // .onHover may never see the exit - end the hover from here (grace-period applies).
-        if !shouldAccept {
-            MainActor.assumeIsolated {
-                if presentation.isHovering {
-                    presentation.setHovering(false)
-                }
-            }
+        MainActor.assumeIsolated {
+            presentation.setHovering(inside)
         }
     }
 
     private func cursorInsidePill() -> Bool {
         guard pillContentSize.width > 0, pillContentSize.height > 0 else { return false }
         let slack: CGFloat = 4
+        // `NSRect.contains` excludes the top edge (y < maxY), and a cursor pinned against
+        // the top of the screen reports y == screen top exactly - the most natural place
+        // to point at a notch. Extend the rect a couple of points above the screen so the
+        // absolute-top position still counts as inside.
+        let topOverscan: CGFloat = 2
         let width = min(panel.frame.width, pillContentSize.width + slack * 2)
         let height = min(panel.frame.height, pillContentSize.height + slack)
         let rect = NSRect(
             x: panel.frame.midX - width / 2,
             y: panel.frame.maxY - height,
             width: width,
-            height: height
+            height: height + topOverscan
         )
         return rect.contains(NSEvent.mouseLocation)
     }

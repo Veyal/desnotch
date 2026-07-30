@@ -43,6 +43,14 @@ public final class AgentActivityController: ObservableObject {
     }
 
     private func scanOnce() async {
+        guard await MainActor.run(body: { SettingsStore.shared.agentActivityEnabled }) else {
+            // Disabled in Settings: publish an empty state once (signature dedupe makes
+            // repeats free) and skip the filesystem scan entirely.
+            await MainActor.run { [weak self] in
+                self?.apply(sessions: [], summary: AgentActivitySummary(sessions: []))
+            }
+            return
+        }
         let now = Date()
         let scanned = await Task.detached(priority: .utility) { AgentActivityScanner.scan(now: now) }.value
         let summary = AgentActivitySummary(sessions: scanned)
@@ -82,15 +90,10 @@ public final class AgentActivityController: ObservableObject {
 
         self.summary = summary
         self.sessions = actionable
-
-        // When activity fully clears, clear hover so the pill hides cleanly.
-        guard summary.hasActivity else {
-            lastActionableCount = 0
-            presentation.reset()
-            return
-        }
-
-        lastActionableCount = summary.actionableCount
+        lastActionableCount = summary.hasActivity ? summary.actionableCount : 0
+        // Note: no presentation.reset() here - the notch is now always visible and hover
+        // is owned by the window controller's cursor tracker; yanking it on activity
+        // clearing would collapse the pill mid-read.
     }
 
     /// Stable identity across scans (session structs get fresh UUIDs every scan).

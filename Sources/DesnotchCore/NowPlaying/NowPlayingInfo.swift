@@ -19,6 +19,23 @@ public struct NowPlayingInfo: Equatable {
     /// different app (or two sources with no unique id) is detected as a real change.
     public var bundleIdentifier: String?
 
+    /// Track length in seconds, if the source reports one (radio/streams often don't).
+    public var duration: TimeInterval?
+    /// Playback position in seconds as of `elapsedAt`. Deliberately excluded from
+    /// equality - it changes on every delivery and would defeat change detection.
+    public var elapsed: TimeInterval?
+    /// When `elapsed` was sampled (adapter timestamp, or arrival time as a fallback).
+    public var elapsedAt = Date()
+
+    /// Live playback position extrapolated to `date` (frozen while paused).
+    public func position(at date: Date) -> TimeInterval? {
+        guard let elapsed else { return nil }
+        guard isPlaying else { return elapsed }
+        let extrapolated = elapsed + date.timeIntervalSince(elapsedAt)
+        if let duration { return min(extrapolated, duration) }
+        return extrapolated
+    }
+
     public static func == (lhs: NowPlayingInfo, rhs: NowPlayingInfo) -> Bool {
         lhs.title == rhs.title
             && lhs.artist == rhs.artist
@@ -40,6 +57,10 @@ public struct NowPlayingInfo: Equatable {
         isPlaying = payload["playing"] as? Bool ?? false
         bundleIdentifier = payload["bundleIdentifier"] as? String
 
+        duration = (payload["duration"] as? NSNumber)?.doubleValue
+        elapsed = (payload["elapsedTime"] as? NSNumber)?.doubleValue
+        elapsedAt = NowPlayingInfo.date(from: payload["timestamp"]) ?? Date()
+
         // The adapter can hand back an NSNull-wrapped uniqueIdentifier; casting it
         // straight to a String used to produce the literal "<null>", which broke
         // track-change equality. Treat NSNumber/NSNull/empty as "no identifier".
@@ -51,6 +72,23 @@ public struct NowPlayingInfo: Equatable {
             artwork = ArtworkCache.downsampled(data: data, for: uniqueIdentifier)
         } else {
             artwork = nil
+        }
+    }
+
+    /// The adapter's `timestamp` is an ISO 8601 string (with fractional seconds); accept
+    /// an epoch number too, and nil for anything else so `elapsedAt` falls back to now.
+    private static func date(from value: Any?) -> Date? {
+        switch value {
+        case let s as String:
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: s) { return date }
+            return ISO8601DateFormatter().date(from: s)
+        case let n as NSNumber:
+            if n === NSNull() { return nil }
+            return Date(timeIntervalSince1970: n.doubleValue)
+        default:
+            return nil
         }
     }
 

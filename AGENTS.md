@@ -55,16 +55,19 @@ optimistic local flip rather than waiting for the round-trip; `applyRemote()` re
 real state arrives (a no-op if it already matches the guess). Don't try to "fix" the latency by
 adding polling or shortening the adapter path - the subprocess spawn was never the slow part.
 
-## Pill visibility: minimized by default, expands on hover only
+## Pill visibility: always-visible notch, expands on hover only
 
-The pill has three states: hidden (nothing active), minimized (while anything is active), and
-expanded (only while the pointer hovers it; `hoverExitDelay` grace on exit, timers on `.common`
-run-loop mode). There is no toast/auto-expand behavior anymore - expansion is purely
-`presentation.isHovering`, owned by the shared `NotchPillPresentation`
-(`Sources/DesnotchCore/UI/NotchPillPresentation.swift`). The expanded pill stacks every active
-section at once (now-playing row + per-agent list) - there is no now-playing-vs-agents priority
-switch. An agent needing attention changes the minimized icon (lightning, yellow) but does NOT
-force the pill open.
+The notch is ALWAYS rendered (even with nothing active it hosts the calendar glance + file
+tray; on real hardware the empty state is invisible black-on-black). Hover expands it;
+exit collapses after a `hoverExitDelay` grace. **Hover has exactly one authority**:
+`NotchWindowController.updateInteractivity()`'s cursor-in-pill-rect test, fed by
+global+local mouse monitors (`.mouseMoved` + `.leftMouseDragged` - the latter so file
+drags reach the tray's drop target). SwiftUI `.onHover` was removed deliberately: its
+exit events raced panel resizes and stranded the pill open or closed (the "popup closes
+after 1s while still hovering" bug). Don't reintroduce it. The same test drives
+`panel.ignoresMouseEvents` so menu-bar clicks outside the pill rect pass through. The
+expanded pill stacks every section at once - no priority switch. An agent needing
+attention changes the wing icon (lightning, yellow) but does NOT force the pill open.
 
 The expanded pill has a **fixed width** (`NotchPillView.expandedBaseWidth`, 300pt; on a notch
 screen at least cutout + 2 wings). This is deliberate: the rows contain greedy `Spacer`s, so
@@ -151,6 +154,17 @@ existing `Task.detached` pattern.
   every 30s; a process sustaining ≥90% CPU for ≥10 min is flagged (pill section + one
   notification per streak). The sustained window is the point - don't "simplify" it to a
   single high-CPU sample, that just flags every compile.
+
+- **File tray** (`TrayController`): drop files onto the notch shape (SwiftUI `.onDrop` of
+  `.fileURL`); stores path references only (UserDefaults-persisted, dead paths pruned on
+  load, 8 max). Rows: click opens, drag out re-exports via `NSItemProvider`, ✕ removes.
+  Drag delivery depends on the `.leftMouseDragged` monitors making the panel interactive
+  mid-drag (Dropover-style; verify on hardware if drops ever stop landing).
+- **Now-playing timeline**: `NowPlayingInfo.duration/elapsed/elapsedAt` (adapter `duration`/
+  `elapsedTime`/`timestamp`; excluded from `==` on purpose - they change every delivery).
+  Position is extrapolated client-side (`position(at:)`) and ticked by a 1s `TimelineView`
+  only while rendered - no extra adapter polling. Hidden when the source reports no
+  duration (radio/streams).
 
 Compact wing priority when several things are active: left = media > stuck-process >
 calendar; right = agents > stuck-process. Everything else is one hover away.

@@ -48,9 +48,18 @@ public final class ProcessMonitorController: ObservableObject {
         let interval = sampleInterval
         sampleTask = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
-                let sample = Self.sampleProcesses()
-                await MainActor.run { [weak self] in
-                    self?.apply(sample: sample, now: Date())
+                let enabled = await MainActor.run { SettingsStore.shared.processMonitorEnabled }
+                if enabled {
+                    let sample = Self.sampleProcesses()
+                    await MainActor.run { [weak self] in
+                        self?.apply(sample: sample, now: Date())
+                    }
+                } else {
+                    // Disabled: no `ps` spawns; drop any leftover flags so re-enabling
+                    // starts from a clean slate.
+                    await MainActor.run { [weak self] in
+                        self?.apply(sample: [], now: Date())
+                    }
                 }
                 try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
             }
