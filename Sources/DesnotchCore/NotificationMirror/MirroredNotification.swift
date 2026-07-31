@@ -16,6 +16,16 @@ public struct MirroredNotification: Equatable {
     /// (`AgentActivityScanner.taskTitleMax`) but a little roomier for message previews.
     public static let contentMax = 64
 
+    /// AX scaffolding the banner walk can pick up that is never notification content:
+    /// the host window's own title and the banner's action buttons. Filtered before
+    /// app identification - critically, "Notification Center" is also the *running
+    /// process's* display name, so without this filter the running-app promotion
+    /// happily claims the scaffolding chunk as the sending app (seen on hardware as
+    /// a prominent "Notification Center" title on every banner).
+    public static let chunkNoise: Set<String> = [
+        "notification center", "close", "options", "show more", "show less", "clear all"
+    ]
+
     /// Parses the raw accessibility description of a banner into app name + content.
     ///
     /// On macOS Sequoia a banner's readable text arrives as either newline-separated
@@ -48,6 +58,7 @@ public struct MirroredNotification: Equatable {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
         }
+        chunks.removeAll { chunkNoise.contains($0.lowercased()) }
         guard !chunks.isEmpty else { return nil }
         let appIndex = chunks.firstIndex { runningAppNames.contains($0.lowercased()) } ?? 0
         let appName = collapse(chunks[appIndex])

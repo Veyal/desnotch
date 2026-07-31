@@ -97,6 +97,34 @@ final class RunningAppPromotionTests: XCTestCase {
         XCTAssertEqual(n?.appName, "Slack")
         XCTAssertEqual(n?.content, "John, hello")
     }
+
+    func testNotificationCenterScaffoldingNeverBecomesTheApp() {
+        // Regression (seen on hardware): the walk collects the host window's own
+        // "Notification Center" title, and the promotion scan matched it because the
+        // NotificationCenter *process* is a running app by that exact name.
+        let runningWithNC = running.union(["notification center"])
+        let n = MirroredNotification.parse(
+            rawDescription: "Notification Center\nTelegram\nJohn\nhi",
+            runningAppNames: runningWithNC
+        )
+        XCTAssertEqual(n?.appName, "Telegram")
+        XCTAssertEqual(n?.content, "John, hi")
+    }
+
+    func testActionButtonChunksFilteredFromContent() {
+        let n = MirroredNotification.parse(
+            rawDescription: "Notification Center\nWhatsApp\nJohn\nhello\nClose\nOptions",
+            runningAppNames: running
+        )
+        XCTAssertEqual(n?.appName, "WhatsApp")
+        XCTAssertEqual(n?.content, "John, hello")
+    }
+
+    func testNoiseOnlyDescriptionRejected() {
+        XCTAssertNil(MirroredNotification.parse(
+            rawDescription: "Notification Center\nClose", runningAppNames: running
+        ))
+    }
 }
 
 @MainActor

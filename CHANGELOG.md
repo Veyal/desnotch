@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.1 — 2026-07-31
+
+- ✓ **Fix: notification rows titled "Notification Center"**: the banner reader was
+  picking up Notification Center's own window title (and its action buttons) as
+  notification text, and the running-app matcher then claimed it as the sending app.
+  Scaffolding chunks are now filtered before app identification, so rows show the
+  real sender (Telegram, WhatsApp, …).
+- ✓ **Notification row restyle**: compact alert anchored on the source — larger app
+  icon (with a matching tile behind the bell fallback), app name as the primary
+  line, content secondary. Click-to-open, mute, privacy mode, accessibility, and
+  reduced motion unchanged.
+
 ## v0.6.0 — 2026-07-31
 
 - ✓ **Music indicator styles** (Settings › Music indicator): choose what the minimized

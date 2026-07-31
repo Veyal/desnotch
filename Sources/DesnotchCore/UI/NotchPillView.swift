@@ -401,29 +401,35 @@ public struct NotchPillView: View {
     /// arrival counter makes every new banner re-run the insertion transition even
     /// when it replaces a still-visible one.
     private func notificationRow(_ banner: MirroredNotification) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 9) {
+            // The icon is the alert's anchor: app-sized, rounded like a system badge,
+            // bell fallback in a matching tile so both variants share one silhouette.
             Group {
                 if let icon = notificationMirror.sourceIcon(for: banner.appName) {
                     Image(nsImage: icon)
                         .resizable()
                         .scaledToFit()
                 } else {
-                    Image(systemName: "bell.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
+                        .overlay(
+                            Image(systemName: "bell.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white)
+                        )
                 }
             }
-            .frame(width: 18, height: 18)
+            .frame(width: 22, height: 22)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(banner.appName)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
                     .lineLimit(1)
                     .frame(maxWidth: 150, alignment: .leading)
                 Text(privacyRedacted(banner.content ?? "Notification", fallback: "Notification"))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .frame(maxWidth: 190, alignment: .leading)
             }
@@ -435,7 +441,7 @@ public struct NotchPillView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 30, alignment: .trailing)
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
         .onTapGesture { notificationMirror.activateSource() }
         .accessibilityElement(children: .combine)
