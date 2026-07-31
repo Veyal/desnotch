@@ -24,8 +24,10 @@ private let notificationCenterBundleID = "com.apple.notificationcenterui"
 final class NotificationCenterObserver {
 
     /// Raw joined text of a new banner (app name + title/body lines). Parsing and
-    /// privacy policy live in the caller - this type only extracts strings.
-    var onBanner: ((String) -> Void)?
+    /// privacy policy live in the caller - this type only extracts strings. Return
+    /// `true` to have the system banner closed (the caller decides: it knows whether
+    /// the banner was actually mirrored and whether the user asked for dismissal).
+    var onBanner: ((String) -> Bool)?
 
     private let logger = Logger(subsystem: "com.desnotch.app", category: "NotificationMirror")
     private var observer: AXObserver?
@@ -148,7 +150,62 @@ final class NotificationCenterObserver {
     private func handleNewWindow(_ window: AXUIElement) {
         let lines = Self.collectText(from: window)
         guard !lines.isEmpty else { return } // Not a banner (or nothing readable).
-        onBanner?(lines.joined(separator: "\n"))
+        let shouldDismiss = onBanner?(lines.joined(separator: "\n")) ?? false
+        guard shouldDismiss else { return }
+        // Let the banner finish presenting before closing it: pressing the close
+        // button mid-present is unreliable, and this window is only dismissed
+        // because the caller confirmed it was mirrored into the pill.
+        DispatchQueue.main.asyncAfter(deadline: .now() + dismissDelay) { [weak self] in
+            self?.dismiss(window)
+        }
+    }
+
+    /// Grace before closing a mirrored banner - long enough for the present
+    /// animation to settle, short enough that the banner barely registers.
+    private let dismissDelay: TimeInterval = 0.35
+
+    /// Closes a banner window by pressing its close/dismiss affordance.
+    ///
+    /// There is no supported way to stop a banner from appearing at all: notification
+    /// delivery has no third-party hook, and Focus/DND (the only real suppression)
+    /// would also stop the banner from ever being created - blinding this observer.
+    /// So "don't show macOS notifications" is implemented as "close it right after we
+    /// mirror it". The notification is NOT dismissed from Notification Center - only
+    /// its on-screen banner - so nothing is lost.
+    private func dismiss(_ window: AXUIElement) {
+        // Preferred: the window's own close button.
+        if let close = Self.copyAttribute(window, kAXCloseButtonAttribute as String),
+           CFGetTypeID(close as CFTypeRef) == AXUIElementGetTypeID() {
+            let element = close as! AXUIElement // Type-checked immediately above.
+            if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+                logger.debug("Dismissed mirrored banner via close button.")
+                return
+            }
+        }
+        // Fallback: a labelled Close/Clear/Dismiss button inside the banner tree.
+        // Bounded walk, same caps as text collection.
+        var queue: [AXUIElement] = [window]
+        var visited = 0
+        while !queue.isEmpty && visited < 40 {
+            let element = queue.removeFirst()
+            visited += 1
+            if let role = Self.copyAttribute(element, kAXRoleAttribute as String) as? String,
+               role == kAXButtonRole as String {
+                let label = [
+                    Self.copyAttribute(element, kAXDescriptionAttribute as String) as? String,
+                    Self.copyAttribute(element, kAXTitleAttribute as String) as? String
+                ].compactMap { $0?.lowercased() }
+                if label.contains(where: { ["close", "clear", "dismiss"].contains($0) }),
+                   AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+                    logger.debug("Dismissed mirrored banner via labelled button.")
+                    return
+                }
+            }
+            if let children = Self.copyAttribute(element, kAXChildrenAttribute as String) as? [AXUIElement] {
+                queue.append(contentsOf: children)
+            }
+        }
+        logger.notice("Could not dismiss mirrored banner (no close affordance found).")
     }
 
     /// Breadth-first walk of a (banner) window collecting readable text. Sequoia's

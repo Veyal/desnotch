@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.0 — 2026-07-31
+
+- ✓ **Hide the macOS banner after mirroring** (Settings, off by default): when a
+  notification is mirrored into the notch, desnotch closes the system banner so the
+  notch is the only place it shows. macOS has no supported way to stop a banner from
+  appearing — and Do Not Disturb would hide it from the notch too — so it is closed
+  right after it appears; expect a brief flash. Only banners desnotch actually
+  mirrored are closed (muted apps keep their normal banner), and the notification
+  itself is untouched in Notification Center.
+
 ## v0.6.1 — 2026-07-31
 
 - ✓ **Fix: notification rows titled "Notification Center"**: the banner reader was

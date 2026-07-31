@@ -110,6 +110,13 @@ struct SettingsView: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Toggle("Hide the macOS banner after mirroring", isOn: $settings.dismissSystemBanners)
+                .disabled(!settings.notificationMirrorEnabled)
+                .opacity(settings.notificationMirrorEnabled ? 1 : 0.4)
+            Text("macOS has no supported way to stop a banner from appearing (and Do Not Disturb would hide it from the notch too), so desnotch closes it right after mirroring — expect a brief flash. The notification itself stays in Notification Center.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if let mirror = notificationMirror {
                 NotificationPermissionStatus(controller: mirror)
             }

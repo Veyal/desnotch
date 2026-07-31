@@ -70,6 +70,12 @@ public final class SettingsStore: ObservableObject {
     /// Mirror notification banners into the pill. OFF by default (it additionally
     /// needs the Accessibility permission - two explicit opt-ins, deliberately).
     @Published public var notificationMirrorEnabled: Bool { didSet { set("notificationMirrorEnabled", notificationMirrorEnabled) } }
+    /// After mirroring a banner into the pill, close the system banner so the notch is
+    /// the only place it shows. OFF by default. There is no API to suppress banners
+    /// *before* they appear (and Focus/DND would blind the mirror entirely), so this
+    /// dismisses them just after - expect a brief flash. The notification itself is
+    /// untouched and stays in Notification Center.
+    @Published public var dismissSystemBanners: Bool { didSet { set("dismissSystemBanners", dismissSystemBanners) } }
     /// Lowercased display names of apps whose banners are muted in the pill. App
     /// *names* are harmless metadata - notification content is never persisted.
     @Published public private(set) var mutedNotificationApps: [String] {
@@ -125,6 +131,7 @@ public final class SettingsStore: ObservableObject {
         privacyModeEnabled = defaults.object(forKey: "privacyModeEnabled") as? Bool ?? false
         notifyAgentNeedsYou = Self.bool(defaults, AgentAttentionNotifier.defaultsKey)
         notificationMirrorEnabled = defaults.object(forKey: "notificationMirrorEnabled") as? Bool ?? false
+        dismissSystemBanners = defaults.object(forKey: "dismissSystemBanners") as? Bool ?? false
         mutedNotificationApps = defaults.stringArray(forKey: "mutedNotificationApps") ?? []
 
         pillMode = (defaults.string(forKey: "pillMode")).flatMap(PillVisibilityMode.init(rawValue:)) ?? .hoverAuto

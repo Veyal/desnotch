@@ -191,7 +191,17 @@ existing `Task.detached` pattern.
   `AXAttributedDescription`/`AXDescription`, not static texts - `collectText` tries
   those per node; parsing tolerates comma-joined and newline-separated shapes
   (`MirroredNotification.parse`, tested). Banner-shape drift across macOS releases is
-  expected - fix the parser, not the architecture.
+  expected - fix the parser, not the architecture. `chunkNoise` strips AX scaffolding
+  ("Notification Center", Close/Options/...) BEFORE app identification: the host
+  window's title is also the NotificationCenter process's display name, so without it
+  the running-app scan claims it and every row is titled "Notification Center".
+  "Hide the macOS banner" (`dismissSystemBanners`, off by default) is implemented as
+  dismiss-after-mirroring (AX press on the banner's close affordance, 0.35s after
+  arrival), NOT suppression: nothing lets a third party stop a banner from being
+  created, and Focus/DND - the only real suppression - would also stop the AX
+  window-created event and blind the mirror. Don't "upgrade" this to DND toggling.
+  Only banners this app actually mirrored are dismissed (muted apps keep their normal
+  system banner); Notification Center history is never touched.
 
 Compact wing priority when several things are active: left = media > stuck-process >
 calendar; right = agents > notification > stuck-process. Everything else is one hover

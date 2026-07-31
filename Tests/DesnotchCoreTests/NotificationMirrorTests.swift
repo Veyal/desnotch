@@ -150,6 +150,14 @@ final class NotificationMirrorSettingsTests: XCTestCase {
         XCTAssertTrue(reloaded.mutedNotificationApps.contains("slack"))
     }
 
+    func testBannerDismissalIsOffByDefaultAndPersists() {
+        let suite = "desnotch.tests.mirror-dismiss"
+        let store = freshStore(suite)
+        XCTAssertFalse(store.dismissSystemBanners)
+        store.dismissSystemBanners = true
+        XCTAssertTrue(SettingsStore(defaults: UserDefaults(suiteName: suite)!).dismissSystemBanners)
+    }
+
     func testMuteIsCaseInsensitiveAndDeduplicated() {
         let store = freshStore("desnotch.tests.mirror-case")
         store.setNotificationApp("Slack", muted: true)

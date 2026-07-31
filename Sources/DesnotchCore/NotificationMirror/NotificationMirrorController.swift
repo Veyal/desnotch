@@ -47,7 +47,7 @@ public final class NotificationMirrorController: ObservableObject {
         self.presentation = presentation
         self.settings = settings
         observer.onBanner = { [weak self] raw in
-            self?.handleBanner(raw)
+            self?.handleBanner(raw) ?? false
         }
         cancellable = settings.$notificationMirrorEnabled
             .receive(on: DispatchQueue.main)
@@ -116,7 +116,12 @@ public final class NotificationMirrorController: ObservableObject {
 
     // MARK: - Banner handling
 
-    private func handleBanner(_ raw: String) {
+    /// Returns whether the system banner should now be closed: only ever true when
+    /// the banner was actually mirrored into the pill AND the user asked for it. A
+    /// muted app keeps its normal system banner - muting means "not in the notch",
+    /// not "silently swallowed".
+    @discardableResult
+    private func handleBanner(_ raw: String) -> Bool {
         // Lowercased display names of everything running, so the parser can promote
         // the chunk that actually names an app (sender-first layouts, wrappers).
         let runningNames = Set(
@@ -124,24 +129,26 @@ public final class NotificationMirrorController: ObservableObject {
         )
         guard let parsed = MirroredNotification.parse(
             rawDescription: raw, runningAppNames: runningNames
-        ) else { return }
+        ) else { return false }
         // Content-free diagnostics (counts and booleans only - NEVER banner text):
         // enough to tell which banner layout this macOS build produces when tuning
         // on real hardware. `log stream --predicate 'subsystem == "com.desnotch.app"'`.
         logger.debug(
             "Banner parsed: appMatchedRunning=\(runningNames.contains(parsed.appName.lowercased())), hasContent=\(parsed.content != nil)"
         )
-        guard !isMuted(parsed.appName) else { return }
+        guard !isMuted(parsed.appName) else { return false }
         if let latest,
             latest.appName == parsed.appName,
             latest.content == parsed.content,
             parsed.receivedAt.timeIntervalSince(latest.receivedAt) < Self.duplicateWindow {
-            return
+            // Same banner re-reported - already mirrored, so still ours to dismiss.
+            return settings.dismissSystemBanners
         }
         latest = parsed
         arrivalCount += 1
         presentation.flashOpen(for: 4.0)
         scheduleExpiry()
+        return settings.dismissSystemBanners
     }
 
     private func scheduleExpiry() {
