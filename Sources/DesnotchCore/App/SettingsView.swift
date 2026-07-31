@@ -13,6 +13,28 @@ struct SettingsView: View {
             Text("Pill sections")
                 .font(.headline)
             Toggle("Now playing (media controls)", isOn: $settings.nowPlayingEnabled)
+            HStack(spacing: 8) {
+                Text("Music indicator")
+                    .frame(width: 105, alignment: .leading)
+                // labelsHidden only hides the visual duplicate; the Picker's title
+                // stays as its accessibility label for VoiceOver.
+                Picker("Music indicator style", selection: $settings.musicIndicatorStyle) {
+                    Text("Equalizer").tag(MusicIndicatorStyle.equalizer)
+                    Text("Note").tag(MusicIndicatorStyle.note)
+                    Text("Album art").tag(MusicIndicatorStyle.albumArt)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .font(.system(size: 11))
+            .disabled(!settings.nowPlayingEnabled)
+            .opacity(settings.nowPlayingEnabled ? 1 : 0.4)
+            if settings.musicIndicatorStyle == .albumArt {
+                Text("Album art falls back to the equalizer when a track has none, and is hidden by Privacy mode.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Toggle("AI agent activity", isOn: $settings.agentActivityEnabled)
             Toggle("Calendar glance", isOn: $settings.calendarEnabled)
             Toggle("Stuck-process detector", isOn: $settings.processMonitorEnabled)

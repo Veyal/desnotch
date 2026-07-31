@@ -21,10 +21,23 @@ public struct MirroredNotification: Equatable {
     /// On macOS Sequoia a banner's readable text arrives as either newline-separated
     /// lines or one "AppName, Title, Body" comma-joined line (the SwiftUI Notification
     /// Center exposes `AXAttributedDescription`/`AXDescription`, not per-line static
-    /// texts). The first non-empty chunk is the app name; everything after joins into
-    /// the content line. Returns nil for descriptions with no readable app name -
-    /// callers treat that as "not a banner" (e.g. the Notification Center sidebar).
-    public static func parse(rawDescription: String, receivedAt: Date = Date()) -> MirroredNotification? {
+    /// texts). Returns nil for descriptions with no readable text - callers treat
+    /// that as "not a banner" (e.g. the Notification Center sidebar).
+    ///
+    /// App identification: the FIRST chunk (in banner order) whose lowercased text
+    /// matches a name in `runningAppNames` wins - so a browser-delivered web
+    /// notification ("Google Chrome, WhatsApp, John: hi") stays attributed to the
+    /// browser and is never promoted to the site's native app, while a sender-first
+    /// layout ("John, hi, Telegram") still finds the real app. With no match the
+    /// first chunk is assumed to be the app name (Sequoia's documented layout) -
+    /// covering apps that aren't running (APNs-delivered) or name drift. Known
+    /// blind spot, accepted: a contact named exactly like a running app can win the
+    /// scan when the true app chunk matches nothing.
+    public static func parse(
+        rawDescription: String,
+        runningAppNames: Set<String> = [],
+        receivedAt: Date = Date()
+    ) -> MirroredNotification? {
         var chunks = rawDescription
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -35,14 +48,16 @@ public struct MirroredNotification: Equatable {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
         }
-        guard let first = chunks.first, !first.isEmpty else { return nil }
-        let appName = collapse(first)
+        guard !chunks.isEmpty else { return nil }
+        let appIndex = chunks.firstIndex { runningAppNames.contains($0.lowercased()) } ?? 0
+        let appName = collapse(chunks[appIndex])
+        var rest = chunks
+        rest.remove(at: appIndex)
         // Some banners repeat timestamps like "now" or "1m ago" as a trailing chunk;
         // they're noise at 64 chars, not worth special-casing - the cap handles it.
-        let rest = chunks.dropFirst().joined(separator: ", ")
         return MirroredNotification(
             appName: appName,
-            content: sanitizeContent(rest),
+            content: sanitizeContent(rest.joined(separator: ", ")),
             receivedAt: receivedAt
         )
     }

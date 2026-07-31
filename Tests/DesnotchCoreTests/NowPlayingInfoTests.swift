@@ -105,6 +105,125 @@ final class StaleNowPlayingTests: XCTestCase {
     }
 }
 
+final class MusicIndicatorResolverTests: XCTestCase {
+    func testNoteStyleIsAlwaysNote() {
+        for playing in [true, false] {
+            XCTAssertEqual(
+                MusicIndicatorResolver.resolve(
+                    style: .note, hasArtwork: true, isPlaying: playing,
+                    reduceMotion: false, privacyMode: false
+                ),
+                .note
+            )
+        }
+    }
+
+    func testEqualizerStyleFollowsPlaybackAndMotion() {
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .equalizer, hasArtwork: false, isPlaying: true,
+                reduceMotion: false, privacyMode: false
+            ),
+            .equalizer
+        )
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .equalizer, hasArtwork: false, isPlaying: false,
+                reduceMotion: false, privacyMode: false
+            ),
+            .note
+        )
+        // Reduced motion never gets the animated bars.
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .equalizer, hasArtwork: false, isPlaying: true,
+                reduceMotion: true, privacyMode: false
+            ),
+            .note
+        )
+    }
+
+    func testAlbumArtNeedsArtworkAndPrivacyOff() {
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .albumArt, hasArtwork: true, isPlaying: true,
+                reduceMotion: false, privacyMode: false
+            ),
+            .art
+        )
+        // No artwork -> equalizer/note fallback chain.
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .albumArt, hasArtwork: false, isPlaying: true,
+                reduceMotion: false, privacyMode: false
+            ),
+            .equalizer
+        )
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .albumArt, hasArtwork: false, isPlaying: false,
+                reduceMotion: false, privacyMode: false
+            ),
+            .note
+        )
+        // Privacy mode suppresses art even when available (art identifies the track).
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .albumArt, hasArtwork: true, isPlaying: true,
+                reduceMotion: false, privacyMode: true
+            ),
+            .equalizer
+        )
+    }
+
+    func testAlbumArtRespectsReducedMotionInFallbackOnly() {
+        // Art itself is static - fine under reduced motion.
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .albumArt, hasArtwork: true, isPlaying: true,
+                reduceMotion: true, privacyMode: false
+            ),
+            .art
+        )
+        XCTAssertEqual(
+            MusicIndicatorResolver.resolve(
+                style: .albumArt, hasArtwork: false, isPlaying: true,
+                reduceMotion: true, privacyMode: false
+            ),
+            .note
+        )
+    }
+}
+
+@MainActor
+final class MusicIndicatorSettingsTests: XCTestCase {
+    private func freshStore(_ name: String) -> SettingsStore {
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return SettingsStore(defaults: defaults)
+    }
+
+    func testDefaultStyleIsEqualizer() {
+        XCTAssertEqual(freshStore("desnotch.tests.indicator-default").musicIndicatorStyle, .equalizer)
+    }
+
+    func testStylePersistsAcrossStores() {
+        let suite = "desnotch.tests.indicator-persist"
+        let store = freshStore(suite)
+        store.musicIndicatorStyle = .albumArt
+        let reloaded = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertEqual(reloaded.musicIndicatorStyle, .albumArt)
+    }
+
+    func testGarbageStoredValueFallsBackToDefault() {
+        let suite = "desnotch.tests.indicator-garbage"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set("vinyl-hologram", forKey: "musicIndicatorStyle")
+        XCTAssertEqual(SettingsStore(defaults: defaults).musicIndicatorStyle, .equalizer)
+    }
+}
+
 final class NowPlayingEqualizerTests: XCTestCase {
     func testBarLevelsBoundedAndDeterministic() {
         for i in 0..<NowPlayingEqualizer.barCount {

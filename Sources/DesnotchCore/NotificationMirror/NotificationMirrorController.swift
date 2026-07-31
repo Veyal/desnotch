@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import os
 
 /// Owns the notification-mirror feature: permission lifecycle, the AX observer, the
 /// per-app mute list, and the single most-recent banner the pill renders.
@@ -34,6 +35,7 @@ public final class NotificationMirrorController: ObservableObject {
     /// (banner window plus the Notification Center list can both fire) - ignore it.
     static let duplicateWindow: TimeInterval = 2
 
+    private let logger = Logger(subsystem: "com.desnotch.app", category: "NotificationMirror")
     private let presentation: NotchPillPresentation
     private let settings: SettingsStore
     private let observer = NotificationCenterObserver()
@@ -115,7 +117,20 @@ public final class NotificationMirrorController: ObservableObject {
     // MARK: - Banner handling
 
     private func handleBanner(_ raw: String) {
-        guard let parsed = MirroredNotification.parse(rawDescription: raw) else { return }
+        // Lowercased display names of everything running, so the parser can promote
+        // the chunk that actually names an app (sender-first layouts, wrappers).
+        let runningNames = Set(
+            NSWorkspace.shared.runningApplications.compactMap { $0.localizedName?.lowercased() }
+        )
+        guard let parsed = MirroredNotification.parse(
+            rawDescription: raw, runningAppNames: runningNames
+        ) else { return }
+        // Content-free diagnostics (counts and booleans only - NEVER banner text):
+        // enough to tell which banner layout this macOS build produces when tuning
+        // on real hardware. `log stream --predicate 'subsystem == "com.desnotch.app"'`.
+        logger.debug(
+            "Banner parsed: appMatchedRunning=\(runningNames.contains(parsed.appName.lowercased())), hasContent=\(parsed.content != nil)"
+        )
         guard !isMuted(parsed.appName) else { return }
         if let latest,
             latest.appName == parsed.appName,

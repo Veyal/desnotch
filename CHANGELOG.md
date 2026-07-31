@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.6.0 — 2026-07-31
+
+- ✓ **Music indicator styles** (Settings › Music indicator): choose what the minimized
+  wing shows for media — Equalizer (animated bars while playing, the default), Note
+  (always static), or Album art (the current track's artwork, dimmed while paused).
+  Album art falls back to the equalizer/note when a track has none, and Privacy mode
+  suppresses it (artwork identifies the track on a screen-shared surface). Reduce
+  Motion never gets the animated bars.
+- ✓ **Smarter notification source matching**: the mirrored-banner parser now scans all
+  banner text chunks for a running app's name instead of trusting the first chunk, so
+  sender-first banner layouts still resolve the real app (Telegram, WhatsApp, …).
+  Browser-delivered web notifications (e.g. WhatsApp Web in Chrome/Safari) stay
+  attributed to the browser — first match in banner order wins. Adds content-free
+  diagnostic logging (counts/booleans only, never notification text).
+
 ## v0.5.0 — 2026-07-31
 
 - ✓ **Notifications in the notch** (new, off by default): mirrors notification banners

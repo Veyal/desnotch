@@ -8,6 +8,18 @@ public enum PillVisibilityMode: String {
     case alwaysOn
 }
 
+/// Which indicator the minimized wing shows for now-playing media.
+public enum MusicIndicatorStyle: String, CaseIterable {
+    /// Animated equalizer bars while playing, static note while paused (default).
+    case equalizer
+    /// Always the static music note.
+    case note
+    /// The current track's album artwork; falls back to equalizer/note behavior when
+    /// a track has no artwork, and is suppressed entirely by privacy mode (artwork
+    /// identifies the track on a permanently visible, screen-shared surface).
+    case albumArt
+}
+
 /// User-toggleable feature switches and pill-behavior knobs, UserDefaults-backed.
 /// The pill view gates its sections on these; pollers (process monitor, calendar,
 /// agent scanner) also check them so disabled features stop doing background work.
@@ -79,6 +91,9 @@ public final class SettingsStore: ObservableObject {
     // MARK: Pill behavior & sizing
 
     @Published public var pillMode: PillVisibilityMode { didSet { set("pillMode", pillMode.rawValue) } }
+    @Published public var musicIndicatorStyle: MusicIndicatorStyle {
+        didSet { set("musicIndicatorStyle", musicIndicatorStyle.rawValue) }
+    }
 
     @Published public var hoverCollapseDelay: Double {
         didSet { clampAndSet(\.hoverCollapseDelay, "hoverCollapseDelay", Self.hoverCollapseDelayRange) }
@@ -113,6 +128,8 @@ public final class SettingsStore: ObservableObject {
         mutedNotificationApps = defaults.stringArray(forKey: "mutedNotificationApps") ?? []
 
         pillMode = (defaults.string(forKey: "pillMode")).flatMap(PillVisibilityMode.init(rawValue:)) ?? .hoverAuto
+        musicIndicatorStyle = (defaults.string(forKey: "musicIndicatorStyle"))
+            .flatMap(MusicIndicatorStyle.init(rawValue:)) ?? .equalizer
         hoverCollapseDelay = Self.double(defaults, "hoverCollapseDelay", Self.defaultHoverCollapseDelay, Self.hoverCollapseDelayRange)
         minimizedWidth = Self.double(defaults, "minimizedWidth", Self.defaultMinimizedWidth, Self.minimizedWidthRange)
         minimizedHeight = Self.double(defaults, "minimizedHeight", Self.defaultMinimizedHeight, Self.minimizedHeightRange)

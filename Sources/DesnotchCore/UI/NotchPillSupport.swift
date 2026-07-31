@@ -32,6 +32,30 @@ struct BottomRoundedRectangle: Shape {
     }
 }
 
+/// Decides which minimized music indicator actually renders for a given style +
+/// state. Pure so the fallback rules are testable: album art needs artwork AND
+/// privacy mode off (art identifies the track on a permanently visible surface);
+/// the equalizer needs actual playback AND motion allowed; everything else is the
+/// static note. Keep every new style's fallback chain in here, not in the view.
+enum MusicIndicatorResolver {
+    enum Resolved {
+        case equalizer, note, art
+    }
+
+    static func resolve(
+        style: MusicIndicatorStyle,
+        hasArtwork: Bool,
+        isPlaying: Bool,
+        reduceMotion: Bool,
+        privacyMode: Bool
+    ) -> Resolved {
+        if style == .albumArt && hasArtwork && !privacyMode { return .art }
+        if style == .note { return .note }
+        // .equalizer, and .albumArt's no-art/privacy fallback.
+        return (isPlaying && !reduceMotion) ? .equalizer : .note
+    }
+}
+
 /// Tiny three-bar "equalizer" for the minimized wing while media is actually playing -
 /// the classic now-playing affordance. Bar heights are a pure function of absolute time
 /// (`barLevel`, tested), sampled by a `TimelineView` at 20fps - so there is no

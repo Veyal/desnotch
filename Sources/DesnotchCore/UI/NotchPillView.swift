@@ -522,24 +522,45 @@ public struct NotchPillView: View {
             .overlay(content())
     }
 
-    /// Dancing equalizer bars while playing, the familiar static note while paused.
-    /// Reduced motion keeps the note in both states (a state-change icon swap is fine;
-    /// a permanent loop is not). Both variants live in a fixed 12×12 slot so the
-    /// crossfade never shifts the wing's layout.
+    /// User-selectable (Settings > Music indicator): equalizer bars while playing,
+    /// the static note, or the current track's album art. Fallback rules live in
+    /// `MusicIndicatorResolver` (no artwork or privacy mode → equalizer/note;
+    /// reduced motion → never the animated bars). All variants share one fixed
+    /// 14×14 slot so style/state changes never shift the wing's layout.
     private var mediaIndicator: some View {
-        ZStack {
-            if controller.info?.isPlaying == true && !reduceMotion {
+        let resolved = MusicIndicatorResolver.resolve(
+            style: settings.musicIndicatorStyle,
+            hasArtwork: controller.info?.artwork != nil,
+            isPlaying: controller.info?.isPlaying == true,
+            reduceMotion: reduceMotion,
+            privacyMode: settings.privacyModeEnabled
+        )
+        return ZStack {
+            switch resolved {
+            case .art:
+                if let art = controller.info?.artwork {
+                    Image(nsImage: art)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 14, height: 14)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        // Dimmed while paused: a state signal with zero ongoing cost.
+                        .opacity(controller.info?.isPlaying == true ? 1 : 0.55)
+                        .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                }
+            case .equalizer:
                 NowPlayingEqualizer()
                     .transition(.opacity.combined(with: .scale(scale: 0.6)))
-            } else {
+            case .note:
                 Image(systemName: "music.note")
                     .font(.system(size: 12, weight: .semibold))
                     .transition(.opacity.combined(with: .scale(scale: 0.6)))
             }
         }
-        .frame(width: 12, height: 12)
+        .frame(width: 14, height: 14)
         .foregroundStyle(.white)
         .animation(spring, value: controller.info?.isPlaying == true)
+        .animation(spring, value: settings.musicIndicatorStyle)
     }
 
     private var agentIndicator: some View {

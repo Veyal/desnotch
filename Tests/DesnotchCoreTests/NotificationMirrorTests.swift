@@ -45,6 +45,60 @@ final class MirroredNotificationParsingTests: XCTestCase {
     }
 }
 
+final class RunningAppPromotionTests: XCTestCase {
+    private let running: Set<String> = ["telegram", "whatsapp", "google chrome", "safari"]
+
+    func testAppNameFirstLayoutStillWins() {
+        let n = MirroredNotification.parse(
+            rawDescription: "Telegram, John, hi there", runningAppNames: running
+        )
+        XCTAssertEqual(n?.appName, "Telegram")
+        XCTAssertEqual(n?.content, "John, hi there")
+    }
+
+    func testSenderFirstLayoutPromotesRunningApp() {
+        let n = MirroredNotification.parse(
+            rawDescription: "John Doe\nWhatsApp\nhi there", runningAppNames: running
+        )
+        XCTAssertEqual(n?.appName, "WhatsApp")
+        XCTAssertEqual(n?.content, "John Doe, hi there") // original order, app chunk removed
+    }
+
+    func testBrowserDeliveryStaysAttributedToBrowser() {
+        // WhatsApp Web via Chrome: both "Google Chrome" and "WhatsApp" are running;
+        // first match in banner order wins, so the browser is never misclaimed as
+        // the native app.
+        let n = MirroredNotification.parse(
+            rawDescription: "Google Chrome, WhatsApp, John: hi", runningAppNames: running
+        )
+        XCTAssertEqual(n?.appName, "Google Chrome")
+        XCTAssertEqual(n?.content, "WhatsApp, John: hi")
+    }
+
+    func testMatchIsCaseInsensitive() {
+        let n = MirroredNotification.parse(
+            rawDescription: "John\nTELEGRAM\nping", runningAppNames: running
+        )
+        XCTAssertEqual(n?.appName, "TELEGRAM")
+    }
+
+    func testNoMatchFallsBackToFirstChunk() {
+        // Sending app not running (e.g. APNs-delivered) -> Sequoia's app-name-first
+        // assumption holds.
+        let n = MirroredNotification.parse(
+            rawDescription: "Mail, You have new mail", runningAppNames: running
+        )
+        XCTAssertEqual(n?.appName, "Mail")
+        XCTAssertEqual(n?.content, "You have new mail")
+    }
+
+    func testEmptyRunningSetBehavesLikeBefore() {
+        let n = MirroredNotification.parse(rawDescription: "Slack, John, hello")
+        XCTAssertEqual(n?.appName, "Slack")
+        XCTAssertEqual(n?.content, "John, hello")
+    }
+}
+
 @MainActor
 final class NotificationMirrorSettingsTests: XCTestCase {
     private func freshStore(_ name: String) -> SettingsStore {
