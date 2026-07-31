@@ -32,6 +32,39 @@ struct BottomRoundedRectangle: Shape {
     }
 }
 
+/// Tiny three-bar "equalizer" for the minimized wing while media is actually playing -
+/// the classic now-playing affordance. Bar heights are a pure function of absolute time
+/// (`barLevel`, tested), sampled by a `TimelineView` at 20fps - so there is no
+/// `repeatForever` @State animation to leak or restart, and the timeline exists only
+/// while the view is rendered: paused/absent media costs literally nothing. Fixed
+/// 12×12 frame so swapping with the static `music.note` never shifts layout.
+struct NowPlayingEqualizer: View {
+    static let barCount = 3
+    /// Distinct sub-2Hz frequencies and spread phases per bar so the motion reads
+    /// organic rather than mechanical, without any randomness (deterministic in time).
+    private static let frequencies: [Double] = [1.2, 1.7, 0.9]
+    private static let phases: [Double] = [0, 2.1, 4.2]
+
+    /// Normalized 0...1 level of one bar at absolute time `t`.
+    static func barLevel(_ index: Int, at t: TimeInterval) -> Double {
+        let i = index % barCount
+        return 0.5 + 0.5 * sin(2 * .pi * frequencies[i] * t + phases[i])
+    }
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .bottom, spacing: 2) {
+                ForEach(0..<Self.barCount, id: \.self) { i in
+                    Capsule(style: .continuous)
+                        .frame(width: 2.5, height: 3 + 8 * Self.barLevel(i, at: t))
+                }
+            }
+        }
+        .frame(width: 12, height: 12, alignment: .bottom)
+    }
+}
+
 /// Press + hover feedback for pill buttons.
 struct PillButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

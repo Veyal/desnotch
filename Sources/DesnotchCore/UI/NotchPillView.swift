@@ -13,8 +13,9 @@ import UniformTypeIdentifiers
 /// Privacy: rows render basenames, 48-char task-title hints, counts, and states - never
 /// full prompts or absolute paths (`AgentSession.projectPath` is a click target only).
 /// Privacy mode (`SettingsStore.privacyModeEnabled`) additionally blanks now-playing
-/// title/artist, agent task titles, calendar event titles, and tray filenames via
-/// `privacyRedacted` - route any new user-content string through it.
+/// title/artist, agent task titles, calendar event titles, tray filenames, and mirrored
+/// notification content via `privacyRedacted` - route any new user-content string
+/// through it.
 public struct NotchPillView: View {
     @ObservedObject public var controller: NowPlayingController
     @ObservedObject public var agentActivity: AgentActivityController
@@ -23,6 +24,7 @@ public struct NotchPillView: View {
     @ObservedObject public var tray: TrayController
     @ObservedObject public var battery: BatteryController
     @ObservedObject public var mediaUse: MediaUseMonitor
+    @ObservedObject public var notificationMirror: NotificationMirrorController
     @ObservedObject public var presentation: NotchPillPresentation
     @ObservedObject private var settings = SettingsStore.shared
     public let hasPhysicalNotch: Bool
@@ -46,6 +48,7 @@ public struct NotchPillView: View {
         tray: TrayController,
         battery: BatteryController,
         mediaUse: MediaUseMonitor,
+        notificationMirror: NotificationMirrorController,
         presentation: NotchPillPresentation,
         hasPhysicalNotch: Bool,
         notchSize: CGSize? = nil,
@@ -58,6 +61,7 @@ public struct NotchPillView: View {
         self.tray = tray
         self.battery = battery
         self.mediaUse = mediaUse
+        self.notificationMirror = notificationMirror
         self.presentation = presentation
         self.hasPhysicalNotch = hasPhysicalNotch
         self.notchSize = notchSize
@@ -71,6 +75,7 @@ public struct NotchPillView: View {
     }
 
     private var hasMedia: Bool { settings.nowPlayingEnabled && controller.hasActiveMedia }
+    private var hasNotification: Bool { settings.notificationMirrorEnabled && notificationMirror.latest != nil }
     private var hasAgents: Bool { settings.agentActivityEnabled && agentActivity.summary.hasActivity }
     private var hasHotProcesses: Bool { settings.processMonitorEnabled && !processMonitor.hotProcesses.isEmpty }
     /// Drives the compact calendar indicator; the expanded glance row shows for anything
@@ -160,6 +165,8 @@ public struct NotchPillView: View {
         .animation(.easeInOut(duration: 0.2), value: mediaUse.micInUse)
         .animation(.easeInOut(duration: 0.2), value: mediaUse.cameraInUse)
         .animation(spring, value: battery.state)
+        .animation(spring, value: hasNotification)
+        .animation(spring, value: notificationMirror.arrivalCount)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // The pill renders on an always-dark surface; force a dark color scheme so
         // `.secondary` text stays legible in Light Mode too.
@@ -335,6 +342,13 @@ public struct NotchPillView: View {
     /// the expanded pill still shows a small placeholder rather than an empty black blob.
     private var pillContent: some View {
         VStack(spacing: 0) {
+            if hasNotification, let banner = notificationMirror.latest {
+                notificationRow(banner)
+                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow
+                    || (showBatteryRow && battery.state != nil) || trayEnabled {
+                    sectionDivider
+                }
+            }
             if hasMedia, let info = controller.info {
                 nowPlayingRow(info)
             }
@@ -372,13 +386,72 @@ public struct NotchPillView: View {
                 }
                 traySection
             }
-            if !trayEnabled && !hasMedia && !hasAgents && !hasHotProcesses && !showCalendarRow && !(showBatteryRow && battery.state != nil) {
+            if !trayEnabled && !hasMedia && !hasAgents && !hasHotProcesses && !showCalendarRow && !(showBatteryRow && battery.state != nil) && !hasNotification {
                 Text("Everything is turned off — see Settings")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
             }
         }
+    }
+
+    /// The mirrored banner row - always the top section (it's the newest event).
+    /// Fixed vertical metrics (two fixed-size lines, capped widths) so arrival and
+    /// expiry never change the pill's measured height mid-animation. `.id` on the
+    /// arrival counter makes every new banner re-run the insertion transition even
+    /// when it replaces a still-visible one.
+    private func notificationRow(_ banner: MirroredNotification) -> some View {
+        HStack(spacing: 8) {
+            Group {
+                if let icon = notificationMirror.sourceIcon(for: banner.appName) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    Image(systemName: "bell.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 18, height: 18)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(banner.appName)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: 150, alignment: .leading)
+                Text(privacyRedacted(banner.content ?? "Notification", fallback: "Notification"))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .frame(maxWidth: 190, alignment: .leading)
+            }
+
+            Spacer(minLength: 4)
+
+            Text(relativeTime(banner.receivedAt))
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .frame(width: 30, alignment: .trailing)
+        }
+        .padding(.vertical, 1)
+        .contentShape(Rectangle())
+        .onTapGesture { notificationMirror.activateSource() }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text("Notification from \(banner.appName)\(settings.privacyModeEnabled ? "" : (banner.content.map { ": \($0)" } ?? ""))"))
+        .accessibilityHint(Text("Opens \(banner.appName)"))
+        .id(notificationMirror.arrivalCount)
+        .transition(
+            reduceMotion
+                ? .opacity
+                : .asymmetric(
+                    insertion: .move(edge: .top)
+                        .combined(with: .opacity)
+                        .combined(with: .scale(scale: 0.92, anchor: .top)),
+                    removal: .opacity
+                )
+        )
     }
 
     /// Shown instead of the event row when access was denied - otherwise the feature
@@ -427,6 +500,8 @@ public struct NotchPillView: View {
             wing {
                 if hasAgents {
                     agentIndicator
+                } else if hasNotification {
+                    notificationIndicator
                 } else if hasMedia && hasHotProcesses {
                     hotProcessIndicator
                 } else if !hasMedia && hasHotProcesses && calendarImminent {
@@ -447,10 +522,24 @@ public struct NotchPillView: View {
             .overlay(content())
     }
 
+    /// Dancing equalizer bars while playing, the familiar static note while paused.
+    /// Reduced motion keeps the note in both states (a state-change icon swap is fine;
+    /// a permanent loop is not). Both variants live in a fixed 12×12 slot so the
+    /// crossfade never shifts the wing's layout.
     private var mediaIndicator: some View {
-        Image(systemName: "music.note")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white)
+        ZStack {
+            if controller.info?.isPlaying == true && !reduceMotion {
+                NowPlayingEqualizer()
+                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+            } else {
+                Image(systemName: "music.note")
+                    .font(.system(size: 12, weight: .semibold))
+                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+            }
+        }
+        .frame(width: 12, height: 12)
+        .foregroundStyle(.white)
+        .animation(spring, value: controller.info?.isPlaying == true)
     }
 
     private var agentIndicator: some View {
@@ -489,14 +578,25 @@ public struct NotchPillView: View {
             .foregroundStyle(.white)
     }
 
+    /// A recent banner is waiting behind a hover; the bell pulses once per arrival.
+    private var notificationIndicator: some View {
+        Image(systemName: "bell.fill")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white)
+            .availabilityGuardedBounce(trigger: notificationMirror.arrivalCount)
+    }
+
     private var compactAccessibilityLabel: String {
         var parts: [String] = []
-        if hasMedia { parts.append("media") }
+        if hasMedia { parts.append(controller.info?.isPlaying == true ? "media playing" : "media paused") }
         if hasAgents {
             parts.append(needsAttention ? "agent needs you" : "\(agentActivity.summary.actionableCount) agents working")
         }
         if hasHotProcesses { parts.append("process may be stuck") }
         if calendarImminent { parts.append("meeting soon") }
+        if hasNotification, let banner = notificationMirror.latest {
+            parts.append("notification from \(banner.appName)")
+        }
         return parts.joined(separator: ", ")
     }
 

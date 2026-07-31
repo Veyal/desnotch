@@ -1,0 +1,98 @@
+import XCTest
+@testable import DesnotchCore
+
+final class MirroredNotificationParsingTests: XCTestCase {
+    func testCommaJoinedBannerParses() {
+        // Sequoia banner button description shape: "AppName, Title, Body".
+        let n = MirroredNotification.parse(rawDescription: "Slack, John Doe, are we still on for 3pm?")
+        XCTAssertEqual(n?.appName, "Slack")
+        XCTAssertEqual(n?.content, "John Doe, are we still on for 3pm?")
+    }
+
+    func testNewlineSeparatedBannerParses() {
+        let n = MirroredNotification.parse(rawDescription: "Messages\nAlex\nrunning late")
+        XCTAssertEqual(n?.appName, "Messages")
+        XCTAssertEqual(n?.content, "Alex, running late")
+    }
+
+    func testAppNameOnlyBannerHasNilContent() {
+        let n = MirroredNotification.parse(rawDescription: "Finder")
+        XCTAssertEqual(n?.appName, "Finder")
+        XCTAssertNil(n?.content)
+    }
+
+    func testEmptyDescriptionRejected() {
+        XCTAssertNil(MirroredNotification.parse(rawDescription: ""))
+        XCTAssertNil(MirroredNotification.parse(rawDescription: "  \n\n  "))
+    }
+
+    func testContentTruncatedToCapWithEllipsis() {
+        let long = String(repeating: "x", count: 100)
+        let n = MirroredNotification.parse(rawDescription: "Mail\n\(long)")
+        XCTAssertEqual(n?.content?.count, MirroredNotification.contentMax + 1) // cap + ellipsis
+        XCTAssertTrue(n?.content?.hasSuffix("…") == true)
+    }
+
+    func testWhitespaceCollapsed() {
+        let n = MirroredNotification.parse(rawDescription: "  Mail  \n  new   message   here ")
+        XCTAssertEqual(n?.appName, "Mail")
+        XCTAssertEqual(n?.content, "new message here")
+    }
+
+    func testSanitizeContentEmptyIsNil() {
+        XCTAssertNil(MirroredNotification.sanitizeContent("   "))
+        XCTAssertEqual(MirroredNotification.sanitizeContent("ok"), "ok")
+    }
+}
+
+@MainActor
+final class NotificationMirrorSettingsTests: XCTestCase {
+    private func freshStore(_ name: String) -> SettingsStore {
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return SettingsStore(defaults: defaults)
+    }
+
+    func testMirrorIsOffByDefault() {
+        let store = freshStore("desnotch.tests.mirror-default")
+        XCTAssertFalse(store.notificationMirrorEnabled)
+    }
+
+    func testMuteListPersistsAcrossStores() {
+        let suite = "desnotch.tests.mirror-mute"
+        let store = freshStore(suite)
+        store.setNotificationApp("Slack", muted: true)
+        XCTAssertTrue(store.mutedNotificationApps.contains("slack"))
+
+        let reloaded = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertTrue(reloaded.mutedNotificationApps.contains("slack"))
+    }
+
+    func testMuteIsCaseInsensitiveAndDeduplicated() {
+        let store = freshStore("desnotch.tests.mirror-case")
+        store.setNotificationApp("Slack", muted: true)
+        store.setNotificationApp("SLACK", muted: true)
+        XCTAssertEqual(store.mutedNotificationApps, ["slack"])
+        store.setNotificationApp("slack", muted: false)
+        XCTAssertTrue(store.mutedNotificationApps.isEmpty)
+    }
+
+    func testControllerPermissionStateTransitions() {
+        let store = freshStore("desnotch.tests.mirror-state")
+        let controller = NotificationMirrorController(
+            presentation: NotchPillPresentation(), settings: store
+        )
+        // Feature off by default -> .off regardless of AX trust.
+        XCTAssertEqual(controller.permission, .off)
+        // Enabling moves off .off; the concrete state depends on the test host's AX
+        // trust (CI runners are untrusted -> .needsPermission), so assert the split.
+        store.notificationMirrorEnabled = true
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05)) // let the sink deliver
+        XCTAssertNotEqual(controller.permission, .off)
+        // Disabling always returns to .off and clears any banner.
+        store.notificationMirrorEnabled = false
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(controller.permission, .off)
+        XCTAssertNil(controller.latest)
+    }
+}

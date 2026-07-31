@@ -5,6 +5,8 @@ import SwiftUI
 /// pollers check the flags on their next tick).
 struct SettingsView: View {
     @ObservedObject var settings = SettingsStore.shared
+    /// Present in the real app; nil keeps previews/tests independent of AX state.
+    var notificationMirror: NotificationMirrorController?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -75,11 +77,62 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Toggle("Notify when an agent needs you", isOn: $settings.notifyAgentNeedsYou)
+
+            Divider()
+                .padding(.vertical, 2)
+
+            Text("Notifications in the notch")
+                .font(.headline)
+            Toggle("Mirror notification banners", isOn: $settings.notificationMirrorEnabled)
+            Text("Shows the app name and one line of each banner as it appears. Nothing is stored, and Privacy mode hides the text. Needs the Accessibility permission to read banners.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let mirror = notificationMirror {
+                NotificationPermissionStatus(controller: mirror)
+            }
         }
         .toggleStyle(.switch)
         .controlSize(.small)
         .padding(20)
         .frame(width: 300)
+    }
+
+    /// Permission status + grant/retry flow for the notification mirror. Three states:
+    /// hidden (feature off), "needs permission" with Grant/Open/Check-again actions,
+    /// and an all-clear line once active. The controller also self-rechecks every 5s
+    /// while denied, so granting in System Settings lights up without a relaunch.
+    private struct NotificationPermissionStatus: View {
+        @ObservedObject var controller: NotificationMirrorController
+
+        var body: some View {
+            switch controller.permission {
+            case .off:
+                EmptyView()
+            case .active:
+                Label("Mirroring banners", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.green)
+            case .needsPermission:
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Accessibility permission needed", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.yellow)
+                    HStack(spacing: 6) {
+                        Button("Grant Access…") { controller.requestPermission() }
+                        Button("Open System Settings") {
+                            NotificationMirrorController.openAccessibilitySettings()
+                        }
+                        Button("Check again") { controller.recheckPermission() }
+                    }
+                    .controlSize(.small)
+                    Text("Enable desnotch under Privacy & Security › Accessibility, then it starts automatically.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 
     /// Label + slider + live value readout on one row, matching the pane's compact style.

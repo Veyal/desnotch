@@ -175,8 +175,27 @@ existing `Task.detached` pattern.
   further for a paused item, so a timer is the only staleness signal). Every path that
   sets `info` must call `updatePausedExpiry()`.
 
+- **Notification mirror** (`Sources/DesnotchCore/NotificationMirror/`, v0.4.x, OFF by
+  default): mirrors other apps' notification banners via an `AXObserver` on the
+  `com.apple.notificationcenterui` process (window-created events → bounded AX text
+  walk). This is deliberately the ONLY approach used: the notifications SQLite DB is
+  Full-Disk-Access-gated since Sequoia (verified locally on 15.5) and `usernoted` XPC
+  is private - do not "upgrade" to either. Needs the Accessibility permission; the
+  Settings pane owns the grant/retry/denied flow and the controller self-rechecks
+  trust every 5s while denied. Privacy invariants: banner content lives ONLY in
+  `NotificationMirrorController.latest` (memory, 60s lifetime), is hard-capped at
+  `MirroredNotification.contentMax`, goes through `privacyRedacted` in the UI, and is
+  never persisted or put in the status menu (menu shows app name only). Muted apps
+  persist as lowercased display names (`SettingsStore.mutedNotificationApps`).
+  Sequoia's SwiftUI Notification Center exposes banner text via
+  `AXAttributedDescription`/`AXDescription`, not static texts - `collectText` tries
+  those per node; parsing tolerates comma-joined and newline-separated shapes
+  (`MirroredNotification.parse`, tested). Banner-shape drift across macOS releases is
+  expected - fix the parser, not the architecture.
+
 Compact wing priority when several things are active: left = media > stuck-process >
-calendar; right = agents > stuck-process. Everything else is one hover away.
+calendar; right = agents > notification > stuck-process. Everything else is one hover
+away.
 
 v0.4.0 additions, one line each: rows are clickable (media → source app via
 `bundleIdentifier`; agent → first running app in `NotchPillView.agentHostBundleIDs`, else

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5.0 — 2026-07-31
+
+- ✓ **Notifications in the notch** (new, off by default): mirrors notification banners
+  as an animated top row in the pill — app icon, app name, one truncated line — with
+  a bell in the compact wing that pulses per arrival. Click jumps to the source app;
+  per-app mute from the status menu. Uses only the Accessibility permission (no Full
+  Disk Access, no private APIs); Settings walks you through granting it, and the
+  feature activates automatically once granted. Nothing is stored: banners live in
+  memory for 60 seconds, content is capped at 64 characters, and Privacy mode reduces
+  the row to "App — Notification".
+- ✓ **Animated now-playing indicator**: the minimized music note becomes a tiny
+  three-bar equalizer that dances while media is actually playing and settles back to
+  the note when paused. Zero cost at rest; Reduce Motion keeps the static note.
+
 ## v0.4.2 — 2026-07-31
 
 - ✓ **Fix: stale "now playing" rows from browser tabs** (e.g. "(5) WhatsApp" showing an

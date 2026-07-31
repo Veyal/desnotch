@@ -16,6 +16,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var trayController: TrayController?
     private var batteryController: BatteryController?
     private var mediaUseMonitor: MediaUseMonitor?
+    private var notificationMirror: NotificationMirrorController?
     private var updateChecker: UpdateChecker?
     private var windowController: NotchWindowController?
     private var settingsWindow: NSWindow?
@@ -51,6 +52,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let trayController = MainActor.assumeIsolated { TrayController() }
         let batteryController = MainActor.assumeIsolated { BatteryController(presentation: presentation) }
         let mediaUseMonitor = MainActor.assumeIsolated { MediaUseMonitor() }
+        let notificationMirror = MainActor.assumeIsolated {
+            NotificationMirrorController(presentation: presentation, settings: .shared)
+        }
         self.nowPlayingController = nowPlayingController
         self.agentActivityController = agentActivityController
         self.calendarController = calendarController
@@ -58,6 +62,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.trayController = trayController
         self.batteryController = batteryController
         self.mediaUseMonitor = mediaUseMonitor
+        self.notificationMirror = notificationMirror
 
         MainActor.assumeIsolated {
             let checker = UpdateChecker()
@@ -75,6 +80,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             tray: trayController,
             battery: batteryController,
             mediaUse: mediaUseMonitor,
+            notificationMirror: notificationMirror,
             presentation: presentation
         ) {
             self.windowController = windowController
@@ -95,6 +101,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let trayC = self.trayController,
                       let bat = self.batteryController,
                       let muse = self.mediaUseMonitor,
+                      let mirror = self.notificationMirror,
                       let wc = NotchWindowController(
                           controller: npc,
                           agentActivity: aac,
@@ -103,6 +110,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                           tray: trayC,
                           battery: bat,
                           mediaUse: muse,
+                          notificationMirror: mirror,
                           presentation: presentation
                       )
                 else { return }
@@ -219,6 +227,28 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
             }
 
+            // Accessibility mirror for the notification row (the panel is unreachable
+            // by assistive tech): jump to the source app, or mute it. App name only -
+            // banner content stays out of the menu (it outlives the 60s pill row).
+            if MainActor.assumeIsolated({ SettingsStore.shared.notificationMirrorEnabled }),
+               let banner = MainActor.assumeIsolated({ notificationMirror?.latest }) {
+                let openItem = NSMenuItem(
+                    title: "Open \(banner.appName) notification",
+                    action: #selector(menuOpenNotificationSource(_:)),
+                    keyEquivalent: ""
+                )
+                openItem.target = self
+                menu.addItem(openItem)
+                let muteItem = NSMenuItem(
+                    title: "Mute notifications from \(banner.appName)",
+                    action: #selector(menuMuteNotificationApp(_:)),
+                    keyEquivalent: ""
+                )
+                muteItem.target = self
+                menu.addItem(muteItem)
+                menu.addItem(NSMenuItem.separator())
+            }
+
             let privacyItem = NSMenuItem(
                 title: "Privacy Mode",
                 action: #selector(togglePrivacyMode(_:)),
@@ -256,6 +286,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "q"
         )
         menu.addItem(quit)
+    }
+
+    @objc func menuOpenNotificationSource(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { notificationMirror?.activateSource() }
+    }
+
+    @objc func menuMuteNotificationApp(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { notificationMirror?.muteLatestApp() }
     }
 
     private static func menuStateLabel(_ state: AgentActivityState) -> String {
@@ -334,7 +372,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 defer: false
             )
             window.title = "desnotch Settings"
-            window.contentView = MainActor.assumeIsolated { NSHostingView(rootView: SettingsView()) }
+            window.contentView = MainActor.assumeIsolated {
+                NSHostingView(rootView: SettingsView(notificationMirror: notificationMirror))
+            }
             window.isReleasedWhenClosed = false
             window.setContentSize(window.contentView?.fittingSize ?? .zero)
             window.center()

@@ -55,6 +55,26 @@ public final class SettingsStore: ObservableObject {
     /// sharing/recording. Defaults OFF, unlike the feature toggles.
     @Published public var privacyModeEnabled: Bool { didSet { set("privacyModeEnabled", privacyModeEnabled) } }
     @Published public var notifyAgentNeedsYou: Bool { didSet { set(AgentAttentionNotifier.defaultsKey, notifyAgentNeedsYou) } }
+    /// Mirror notification banners into the pill. OFF by default (it additionally
+    /// needs the Accessibility permission - two explicit opt-ins, deliberately).
+    @Published public var notificationMirrorEnabled: Bool { didSet { set("notificationMirrorEnabled", notificationMirrorEnabled) } }
+    /// Lowercased display names of apps whose banners are muted in the pill. App
+    /// *names* are harmless metadata - notification content is never persisted.
+    @Published public private(set) var mutedNotificationApps: [String] {
+        didSet { set("mutedNotificationApps", mutedNotificationApps) }
+    }
+
+    public func setNotificationApp(_ appName: String, muted: Bool) {
+        let key = appName.lowercased()
+        var list = mutedNotificationApps
+        if muted {
+            guard !list.contains(key) else { return }
+            list.append(key)
+        } else {
+            list.removeAll { $0 == key }
+        }
+        mutedNotificationApps = list
+    }
 
     // MARK: Pill behavior & sizing
 
@@ -89,6 +109,8 @@ public final class SettingsStore: ObservableObject {
         micCameraIndicatorEnabled = Self.bool(defaults, "micCameraIndicatorEnabled")
         privacyModeEnabled = defaults.object(forKey: "privacyModeEnabled") as? Bool ?? false
         notifyAgentNeedsYou = Self.bool(defaults, AgentAttentionNotifier.defaultsKey)
+        notificationMirrorEnabled = defaults.object(forKey: "notificationMirrorEnabled") as? Bool ?? false
+        mutedNotificationApps = defaults.stringArray(forKey: "mutedNotificationApps") ?? []
 
         pillMode = (defaults.string(forKey: "pillMode")).flatMap(PillVisibilityMode.init(rawValue:)) ?? .hoverAuto
         hoverCollapseDelay = Self.double(defaults, "hoverCollapseDelay", Self.defaultHoverCollapseDelay, Self.hoverCollapseDelayRange)

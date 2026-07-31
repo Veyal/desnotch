@@ -104,3 +104,25 @@ final class StaleNowPlayingTests: XCTestCase {
         XCTAssertNil(info.pausedExpiry())
     }
 }
+
+final class NowPlayingEqualizerTests: XCTestCase {
+    func testBarLevelsBoundedAndDeterministic() {
+        for i in 0..<NowPlayingEqualizer.barCount {
+            for step in 0..<200 {
+                let t = Double(step) * 0.037
+                let level = NowPlayingEqualizer.barLevel(i, at: t)
+                XCTAssertGreaterThanOrEqual(level, 0)
+                XCTAssertLessThanOrEqual(level, 1)
+                XCTAssertEqual(level, NowPlayingEqualizer.barLevel(i, at: t))
+            }
+        }
+    }
+
+    func testBarsMoveIndependently() {
+        // Distinct frequencies/phases: at some sampled instant the bars must differ,
+        // otherwise the "equalizer" would pump as one block.
+        let t = 1.234
+        let levels = (0..<NowPlayingEqualizer.barCount).map { NowPlayingEqualizer.barLevel($0, at: t) }
+        XCTAssertGreaterThan(Set(levels.map { Int($0 * 1000) }).count, 1)
+    }
+}
