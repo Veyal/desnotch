@@ -17,6 +17,14 @@ public final class AgentAttentionNotifier {
     private var authRequested = false
     private var canUseUserNotifications: Bool { Bundle.main.bundleIdentifier != nil }
 
+    /// Call at launch (packaged app): requesting authorization lazily at the first
+    /// notify meant that notification was dropped while the permission prompt showed.
+    /// Requesting up front makes the first real needs-you event actually deliver.
+    public func requestAuthorizationAtLaunch() {
+        guard canUseUserNotifications else { return }
+        requestAuthIfNeeded()
+    }
+
     public func notifyNeedsYou(_ label: String) {
         notify(title: "Agent needs you", body: label)
     }

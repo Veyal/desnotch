@@ -63,12 +63,14 @@ public final class AgentActivityController: ObservableObject {
         // Actionable sessions drive the detail card; idle ones are hidden.
         let actionable = scanned.filter { $0.state != .idle }
 
-        // A stable signature of what the UI shows: counts + per-session (source/project/state).
-        // Re-publish only when it changes, so neither the pill nor the detail card
-        // re-evaluates every 5s when nothing actually moved.
+        // A stable signature of what the UI shows: counts + per-session (source/project/
+        // state/elapsed-minutes). The minutes bucket makes the rows' relative times and
+        // recency ordering refresh about once a minute per session - without it a
+        // working session's "3s" froze until its *state* changed. Re-publish only when
+        // the signature changes, so the pill still doesn't re-evaluate every 5s idle.
         let sig = "\(summary.actionableCount)|\(summary.workingCount)|\(summary.needsYourTurnCount)|\(summary.stalledCount)#"
             + actionable
-                .map { "\($0.source)|\($0.projectLabel)|\($0.state)" }
+                .map { "\($0.source)|\($0.projectLabel)|\($0.state)|\(Int(-$0.lastActivity.timeIntervalSinceNow / 60))" }
                 .sorted().joined(separator: ";")
         guard sig != lastSignature else { return }
         lastSignature = sig

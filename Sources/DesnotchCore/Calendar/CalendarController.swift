@@ -1,3 +1,4 @@
+import Combine
 import EventKit
 import Foundation
 import os
@@ -37,10 +38,28 @@ public final class CalendarController: ObservableObject {
     private let logger = Logger(subsystem: "com.desnotch.app", category: "calendar")
     private var timer: Timer?
     private var changeObserver: NSObjectProtocol?
+    private var settingsObserver: AnyCancellable?
     private var hasAccess = false
+    private var accessRequested = false
 
     public init() {
-        requestAccess()
+        // Only prompt for calendar permission when the feature is actually enabled -
+        // a permission dialog for a toggled-off feature is first-run noise. If the user
+        // enables it later, the settings observer requests access at that moment.
+        if SettingsStore.shared.calendarEnabled {
+            requestAccess()
+        }
+        settingsObserver = SettingsStore.shared.$calendarEnabled
+            .removeDuplicates()
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                if enabled {
+                    self.requestAccess()
+                    self.refresh()
+                } else if self.nextEvent != nil {
+                    self.nextEvent = nil
+                }
+            }
     }
 
     /// Starting within 30 minutes, or already ongoing - enough to keep the pill visible
@@ -55,6 +74,8 @@ public final class CalendarController: ObservableObject {
     }
 
     private func requestAccess() {
+        guard !accessRequested else { return }
+        accessRequested = true
         let handler: (Bool, Error?) -> Void = { [weak self] granted, error in
             Task { @MainActor in
                 guard let self else { return }
@@ -100,17 +121,30 @@ public final class CalendarController: ObservableObject {
             if nextEvent != nil { nextEvent = nil }
             return
         }
+        // events(matching:) is a synchronous store query; EKEventStore is documented
+        // thread-safe, so run it off the main actor - at 30s cadence a many-calendar
+        // query on main was periodic jank right where the pill animates.
+        let store = self.store
+        let lookahead = self.lookahead
+        Task.detached(priority: .utility) { [weak self] in
+            let next = Self.queryNextEvent(store: store, lookahead: lookahead)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if self.nextEvent != next { self.nextEvent = next }
+            }
+        }
+    }
+
+    nonisolated private static func queryNextEvent(store: EKEventStore, lookahead: TimeInterval) -> NextEvent? {
         let now = Date()
         let predicate = store.predicateForEvents(
             withStart: now, end: now.addingTimeInterval(lookahead), calendars: nil
         )
-        let next = store.events(matching: predicate)
+        return store.events(matching: predicate)
             .filter { !$0.isAllDay }
             .sorted { $0.startDate < $1.startDate }
             .first { $0.endDate > now }
-        nextEvent = next.map {
-            NextEvent(title: $0.title ?? "Event", start: $0.startDate, end: $0.endDate)
-        }
+            .map { NextEvent(title: $0.title ?? "Event", start: $0.startDate, end: $0.endDate) }
     }
 
     deinit {

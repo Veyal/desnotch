@@ -69,7 +69,11 @@ struct SettingsView: View {
             Toggle("Volume on scroll", isOn: $settings.volumeScrollEnabled)
             Toggle("Drag timeline to seek", isOn: $settings.timelineSeekEnabled)
             Toggle("Mic/camera in-use dots", isOn: $settings.micCameraIndicatorEnabled)
-            Toggle("Privacy mode (blank titles)", isOn: $settings.privacyModeEnabled)
+            Toggle("Privacy mode", isOn: $settings.privacyModeEnabled)
+            Text("Privacy mode hides song titles, agent task titles, event names, and tray filenames — for screen sharing.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Toggle("Notify when an agent needs you", isOn: $settings.notifyAgentNeedsYou)
         }
         .toggleStyle(.switch)

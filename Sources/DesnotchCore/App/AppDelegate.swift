@@ -38,6 +38,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         configureStatusItem()
 
+        // Ask for notification permission now, not at the first needs-you event - a
+        // lazy request drops the very notification that triggered it.
+        AgentAttentionNotifier.shared.requestAuthorizationAtLaunch()
+
         let presentation = NotchPillPresentation()
         self.presentation = presentation
         let nowPlayingController = NowPlayingController(presentation: presentation)
@@ -126,24 +130,104 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: "desnotch"
         )
         let menu = NSMenu()
+        menu.delegate = self
+        statusItem?.menu = menu
+        statusMenu = menu
+        rebuildMenu()
+    }
 
-        let loginItem = NSMenuItem(
-            title: "Launch at Login",
-            action: #selector(toggleLaunchAtLogin(_:)),
-            keyEquivalent: ""
-        )
-        loginItem.target = self
-        loginItem.state = launchAtLoginEnabled ? .on : .off
-        menu.addItem(loginItem)
+    /// The status menu is rebuilt on every open. It doubles as the keyboard/VoiceOver
+    /// mirror of the pill: media transport, jump-to-agent, and tray items are all
+    /// reachable here, because the pill's own panel is non-activating and hover-driven -
+    /// assistive tech cannot focus it. Rebuilding also keeps the checkbox states honest
+    /// when settings change through the Settings window.
+    private func rebuildMenu() {
+        guard let menu = statusMenu else { return }
+        menu.removeAllItems()
 
-        let privacyItem = NSMenuItem(
-            title: "Privacy Mode",
-            action: #selector(togglePrivacyMode(_:)),
-            keyEquivalent: ""
-        )
-        privacyItem.target = self
-        privacyItem.state = MainActor.assumeIsolated { SettingsStore.shared.privacyModeEnabled } ? .on : .off
-        menu.addItem(privacyItem)
+        MainActor.assumeIsolated {
+            let privacy = SettingsStore.shared.privacyModeEnabled
+
+            if let version = updateChecker?.availableVersion {
+                let item = NSMenuItem(
+                    title: "Update Available (\(version))…",
+                    action: #selector(openReleasesPage(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                menu.addItem(item)
+                menu.addItem(NSMenuItem.separator())
+            }
+
+            if let info = nowPlayingController?.info, info.hasContent {
+                // Header (action-less items auto-disable; they read as section labels).
+                menu.addItem(NSMenuItem(
+                    title: privacy ? "Now Playing" : String((info.title ?? "Now Playing").prefix(40)),
+                    action: nil, keyEquivalent: ""
+                ))
+                let toggle = NSMenuItem(
+                    title: info.isPlaying ? "Pause" : "Play",
+                    action: #selector(menuTogglePlayPause(_:)), keyEquivalent: ""
+                )
+                toggle.target = self
+                menu.addItem(toggle)
+                let next = NSMenuItem(
+                    title: "Next Track", action: #selector(menuNextTrack(_:)), keyEquivalent: ""
+                )
+                next.target = self
+                menu.addItem(next)
+                let previous = NSMenuItem(
+                    title: "Previous Track", action: #selector(menuPreviousTrack(_:)), keyEquivalent: ""
+                )
+                previous.target = self
+                menu.addItem(previous)
+                menu.addItem(NSMenuItem.separator())
+            }
+
+            if let sessions = agentActivityController?.sessions, !sessions.isEmpty {
+                menu.addItem(NSMenuItem(title: "Agents", action: nil, keyEquivalent: ""))
+                for session in sessions.prefix(6) {
+                    let name = privacy ? session.projectLabel : (session.taskTitle ?? session.projectLabel)
+                    let item = NSMenuItem(
+                        title: "\(String(name.prefix(40))) — \(Self.menuStateLabel(session.state))",
+                        action: #selector(menuJumpToAgent(_:)),
+                        keyEquivalent: ""
+                    )
+                    item.target = self
+                    item.representedObject = session.projectPath
+                    menu.addItem(item)
+                }
+                menu.addItem(NSMenuItem.separator())
+            }
+
+            if let trayItems = trayController?.items, !trayItems.isEmpty {
+                let submenu = NSMenu()
+                for url in trayItems {
+                    let name = privacy
+                        ? (url.pathExtension.isEmpty ? "file" : "file.\(url.pathExtension)")
+                        : url.lastPathComponent
+                    let item = NSMenuItem(
+                        title: name, action: #selector(menuOpenTrayItem(_:)), keyEquivalent: ""
+                    )
+                    item.target = self
+                    item.representedObject = url
+                    submenu.addItem(item)
+                }
+                let trayItem = NSMenuItem(title: "Tray", action: nil, keyEquivalent: "")
+                trayItem.submenu = submenu
+                menu.addItem(trayItem)
+                menu.addItem(NSMenuItem.separator())
+            }
+
+            let privacyItem = NSMenuItem(
+                title: "Privacy Mode",
+                action: #selector(togglePrivacyMode(_:)),
+                keyEquivalent: ""
+            )
+            privacyItem.target = self
+            privacyItem.state = privacy ? .on : .off
+            menu.addItem(privacyItem)
+        }
 
         let settingsItem = NSMenuItem(
             title: "Settings…",
@@ -155,39 +239,74 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let loginItem = NSMenuItem(
+            title: "Launch at Login",
+            action: #selector(toggleLaunchAtLogin(_:)),
+            keyEquivalent: ""
+        )
+        loginItem.target = self
+        loginItem.state = launchAtLoginEnabled ? .on : .off
+        menu.addItem(loginItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let quit = NSMenuItem(
             title: "Quit desnotch",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
         menu.addItem(quit)
-        statusItem?.menu = menu
-        statusMenu = menu
     }
 
-    /// Inserted at the top of the status menu when a newer GitHub release exists.
-    private func showUpdateMenuItem(version: String) {
-        guard let menu = statusMenu else { return }
-        guard !menu.items.contains(where: { $0.tag == Self.updateItemTag }) else {
-            menu.items.first { $0.tag == Self.updateItemTag }?.title = "Update Available (\(version))…"
-            return
+    private static func menuStateLabel(_ state: AgentActivityState) -> String {
+        switch state {
+        case .working: return "working"
+        case .needsYourTurn: return "needs you"
+        case .stalled: return "stalled"
+        case .idle: return "idle"
         }
-        let item = NSMenuItem(
-            title: "Update Available (\(version))…",
-            action: #selector(openReleasesPage(_:)),
-            keyEquivalent: ""
-        )
-        item.target = self
-        item.tag = Self.updateItemTag
-        menu.insertItem(item, at: 0)
-        menu.insertItem(NSMenuItem.separator(), at: 1)
-        statusItem?.button?.image = NSImage(
-            systemSymbolName: "music.note.list",
-            accessibilityDescription: "desnotch (update available)"
-        )
     }
 
-    private static let updateItemTag = 0xDE5
+    /// Newer release found: badge the status icon and let the next menu open pick up
+    /// the update item via the full rebuild.
+    private func showUpdateMenuItem(version: String) {
+        rebuildMenu()
+        // A visible badge, not a subtle glyph swap: orange dot beside the status icon.
+        if let button = statusItem?.button {
+            statusItem?.length = NSStatusItem.variableLength
+            button.imagePosition = .imageLeft
+            button.attributedTitle = NSAttributedString(
+                string: "●",
+                attributes: [
+                    .foregroundColor: NSColor.systemOrange,
+                    .font: NSFont.systemFont(ofSize: 7),
+                    .baselineOffset: 4
+                ]
+            )
+            button.toolTip = "desnotch update available"
+        }
+    }
+
+    @objc func menuTogglePlayPause(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { nowPlayingController?.togglePlayPause() }
+    }
+
+    @objc func menuNextTrack(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { nowPlayingController?.next() }
+    }
+
+    @objc func menuPreviousTrack(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { nowPlayingController?.previous() }
+    }
+
+    @objc func menuJumpToAgent(_ sender: NSMenuItem) {
+        AppActivation.activateAgentHost(projectPath: sender.representedObject as? String)
+    }
+
+    @objc func menuOpenTrayItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(url)
+    }
 
     @objc func openReleasesPage(_ sender: NSMenuItem) {
         if let url = URL(string: "https://github.com/Veyal/desnotch/releases/latest") {
@@ -241,4 +360,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.desnotch.app"
+}
+
+extension AppDelegate: NSMenuDelegate {
+    /// Rebuild the dynamic mirror right before the menu shows.
+    public func menuNeedsUpdate(_ menu: NSMenu) {
+        rebuildMenu()
+    }
 }

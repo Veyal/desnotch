@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.4.1 — 2026-07-31
+
+Full remediation of the comprehensive product review:
+
+- ✓ **Fix: pill left at stale coordinates after display/resolution changes** - screen
+  changes now always re-anchor the panel (`applyPlacement`), independent of the
+  grow-only resize guard.
+- ✓ **Keyboard/VoiceOver access**: the status menu rebuilds on every open and mirrors
+  the pill - now-playing transport, jump-to-agent, and a Tray submenu - since the
+  non-activating panel can't be focused by assistive tech. Also fixes stale checkbox
+  states when settings change elsewhere.
+- ✓ **Fix: first needs-you notification was dropped** - notification permission is now
+  requested at launch instead of lazily at first delivery.
+- ✓ **Fix: frozen agent row times/ordering** - publish signature includes an
+  elapsed-minutes bucket, so rows refresh ~1/min.
+- ✓ **Calendar queries moved off the main actor**; calendar permission is requested
+  only when the feature is enabled (including later enablement).
+- ✓ **Scanner caches immutable per-file facts** (task title, cwd, Codex header) instead
+  of re-parsing up to ~1MB per session every 5s.
+- ✓ **Volume scroll passes through** when the output device has no settable volume.
+- ✓ **Mic dot ignores virtual/loopback audio devices** (BlackHole & co.).
+- ✓ **Privacy mode scope made explicit and extended** to now-playing title/artist and
+  tray filenames; Settings describes the exact scope; the menu mirror honors it.
+- ✓ **Media durations over an hour** format as h:mm:ss (`TimeFormatting`, tested).
+- ✓ **Update badge**: visible orange dot on the status icon instead of a glyph swap.
+- ✓ **CI**: GitHub Actions (macos-14) runs `swift build` + `swift test` on push/PR -
+  the first environment where the test suite actually executes.
+- ✓ **Tests**: clock formatting, task-title sanitization rules, now-playing timestamp
+  parsing and position extrapolation. Support types split into `NotchPillSupport.swift`.
+
 ## v0.4.0 — 2026-07-31
 
 The pill becomes actionable:

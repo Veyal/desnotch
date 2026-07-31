@@ -1,18 +1,20 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The single live-activity pill. Minimized by default while anything is active; hovering
-/// expands it to a stacked view (now-playing row when media is active, per-agent list when
-/// agents are active). When nothing is active it hides entirely.
+/// The single live-activity pill: always rendered as a (real or synthetic) notch shape,
+/// minimized to indicator wings by default, expanded on hover/drag/always-on mode to the
+/// stacked sections (now-playing, agents, processes, calendar, battery, tray).
 ///
 /// On a screen with a physical notch the pill hugs the hardware: the minimized state is a
 /// solid-black extension of the notch with the indicators in small "wings" either side of
 /// the cutout (never behind it - that area is opaque hardware), and the expanded state
-/// draws below the cutout. On notch-less screens it is a free-floating capsule/pill.
+/// draws below the cutout. Notch-less screens use the synthetic cutout.
 ///
-/// Privacy: the agent list renders ONLY `AgentSession.projectLabel` (a folder basename),
-/// the `source`, the coarse `state`, and a relative time - never transcript text, prompts,
-/// or absolute paths. Keep additions on that side of the boundary.
+/// Privacy: rows render basenames, 48-char task-title hints, counts, and states - never
+/// full prompts or absolute paths (`AgentSession.projectPath` is a click target only).
+/// Privacy mode (`SettingsStore.privacyModeEnabled`) additionally blanks now-playing
+/// title/artist, agent task titles, calendar event titles, and tray filenames via
+/// `privacyRedacted` - route any new user-content string through it.
 public struct NotchPillView: View {
     @ObservedObject public var controller: NowPlayingController
     @ObservedObject public var agentActivity: AgentActivityController
@@ -288,8 +290,15 @@ public struct NotchPillView: View {
     private var showBatteryRow: Bool { settings.batteryEnabled }
 
     /// Blank sensitive strings while privacy mode is on (screen sharing/recording).
+    /// Scope: now-playing title/artist, agent task titles, calendar event titles, and
+    /// tray filenames - keep any new user-content string behind this too.
     private func privacyRedacted(_ text: String, fallback: String) -> String {
         settings.privacyModeEnabled ? fallback : text
+    }
+
+    /// Generic tray label that keeps only the (non-identifying) file type.
+    private func trayPrivacyName(_ url: URL) -> String {
+        url.pathExtension.isEmpty ? "file" : "file.\(url.pathExtension)"
     }
 
     private func batteryRow(_ state: BatteryController.BatteryState) -> some View {
@@ -458,47 +467,14 @@ public struct NotchPillView: View {
         }
     }
 
-    // MARK: - Click-to-jump actions
+    // MARK: - Click-to-jump actions (shared with the status-menu mirror)
 
     private func activateMediaApp(_ info: NowPlayingInfo) {
-        guard let bundleID = info.bundleIdentifier else { return }
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
-            activate(app)
-        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
-        }
+        AppActivation.activateMediaApp(bundleIdentifier: info.bundleIdentifier)
     }
-
-    /// Terminals/editors that host agent CLIs, in preference order. The session log
-    /// doesn't record which app runs it, so activate the first of these that's running;
-    /// with none running, reveal the project folder instead.
-    private static let agentHostBundleIDs = [
-        "com.googlecode.iterm2",
-        "com.mitchellh.ghostty",
-        "dev.warp.Warp",
-        "com.apple.Terminal",
-        "com.todesktop.230313mzl4w4u92", // Cursor
-        "com.microsoft.VSCode"
-    ]
 
     private func activateAgentHost(_ session: AgentSession) {
-        for bundleID in Self.agentHostBundleIDs {
-            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
-                activate(app)
-                return
-            }
-        }
-        if let path = session.projectPath {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
-        }
-    }
-
-    private func activate(_ app: NSRunningApplication) {
-        if #available(macOS 14.0, *) {
-            app.activate()
-        } else {
-            app.activate(options: [.activateIgnoringOtherApps])
-        }
+        AppActivation.activateAgentHost(projectPath: session.projectPath)
     }
 
     private var hotProcessIndicator: some View {
@@ -550,11 +526,11 @@ public struct NotchPillView: View {
                 artwork(info.artwork, size: 24)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(info.title ?? "Unknown Title")
+                    Text(privacyRedacted(info.title ?? "Unknown Title", fallback: "Now Playing"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    Text(info.artist ?? "")
+                    Text(privacyRedacted(info.artist ?? "", fallback: ""))
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -648,8 +624,7 @@ public struct NotchPillView: View {
     }
 
     private func mmss(_ t: TimeInterval) -> String {
-        let s = max(0, Int(t))
-        return String(format: "%d:%02d", s / 60, s % 60)
+        TimeFormatting.clock(t)
     }
 
     // MARK: - Agent section (inline list)
@@ -838,7 +813,7 @@ public struct NotchPillView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 14, height: 14)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
-            Text(url.lastPathComponent)
+            Text(privacyRedacted(url.lastPathComponent, fallback: trayPrivacyName(url)))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
@@ -931,70 +906,5 @@ public struct NotchPillView: View {
         .buttonStyle(PillButtonStyle())
         .help(label)
         .accessibilityLabel(Text(label))
-    }
-}
-
-/// Rectangle with only the bottom two corners rounded - flush with the screen's top edge,
-/// so the pill reads as an extension of the physical notch. (Custom shape rather than
-/// `UnevenRoundedRectangle`, which needs macOS 13.3; the package targets 13.0.)
-struct BottomRoundedRectangle: Shape {
-    var radius: CGFloat
-
-    /// Animate radius changes so the minimized→expanded morph doesn't snap corners.
-    var animatableData: CGFloat {
-        get { radius }
-        set { radius = newValue }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let r = min(radius, min(rect.width, rect.height) / 2)
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
-        path.addArc(
-            center: CGPoint(x: rect.maxX - r, y: rect.maxY - r),
-            radius: r, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false
-        )
-        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
-        path.addArc(
-            center: CGPoint(x: rect.minX + r, y: rect.maxY - r),
-            radius: r, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false
-        )
-        path.closeSubpath()
-        return path
-    }
-}
-
-/// Press + hover feedback for pill buttons.
-struct PillButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.55 : 1)
-            .scaleEffect(configuration.isPressed ? 0.9 : 1)
-            .animation(.spring(response: 0.2, dampingFraction: 0.6), value: configuration.isPressed)
-    }
-}
-
-private extension View {
-    /// `.contentTransition(.symbolEffect(.replace))` is macOS 14+; fall back to no
-    /// transition on macOS 13 so the play/pause swap still builds for the 13 min target.
-    @ViewBuilder
-    func availabilityGuardedSymbolReplace() -> some View {
-        if #available(macOS 14.0, *) {
-            contentTransition(.symbolEffect(.replace))
-        } else {
-            self
-        }
-    }
-
-    /// `.symbolEffect(.bounce)` is macOS 14+; on 13 the icon change simply doesn't pulse.
-    @ViewBuilder
-    func availabilityGuardedBounce(trigger: Int) -> some View {
-        if #available(macOS 14.0, *) {
-            symbolEffect(.bounce, value: trigger)
-        } else {
-            self
-        }
     }
 }

@@ -182,6 +182,20 @@ default OFF, quick toggle in the status menu) blanks agent task titles and calen
 titles; tray drag-out uses `NSItemProvider(contentsOf:)` (real Finder copies) and
 QuickLook thumbnails cached in `TrayController.thumbnails`.
 
+Review-remediation notes (2026-07-31), keep these invariants: `updateForScreenChange`
+must ALWAYS call `applyPlacement` after the grow-only `resize` (the grow-only guard
+alone leaves the panel at stale coordinates after a resolution/display change). The
+status menu is rebuilt on every open (`AppDelegate.rebuildMenu`, via NSMenuDelegate) and
+is the ONLY keyboard/VoiceOver path to media transport, agent jump, and tray - the panel
+itself is non-activating and unreachable by assistive tech; keep new pill actions
+mirrored there. Notification permission is requested at launch, not lazily (a lazy
+request dropped the triggering notification). Scanner title/cwd/Codex-header facts are
+cached in `AgentActivityScanner` (lock-guarded, nil results retried, cap-bounded) - keep
+new derived-from-file facts behind that cache. The agent publish signature includes an
+elapsed-minutes bucket so row times/ordering refresh ~1/min. Calendar queries run off
+the main actor (`queryNextEvent`) and permission is only requested once the feature is
+enabled. CI (.github/workflows/ci.yml, macos-14) is where tests actually run.
+
 Pill behavior/sizing is user-configurable via `SettingsStore` (Settings window):
 `pillMode` (hover-auto vs always-expanded), `hoverCollapseDelay`, `minimizedWidth/Height`
 (the synthetic cutout - real notch hardware always wins), `expandedWidth` (still floored

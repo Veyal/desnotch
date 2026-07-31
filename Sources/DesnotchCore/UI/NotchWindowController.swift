@@ -106,9 +106,11 @@ public final class NotchWindowController {
             let scale: Float = event.hasPreciseScrollingDeltas ? 0.002 : 0.02
             let delta = Float(event.scrollingDeltaY) * scale
             guard delta != 0 else { return event }
-            if let level = SystemVolume.adjust(by: delta) {
-                MainActor.assumeIsolated { self.presentation.flashVolume(level) }
-            }
+            // Consume the scroll only when the adjustment actually landed; devices with
+            // no settable volume (some DACs/displays) pass the event through instead of
+            // silently eating it.
+            guard let level = SystemVolume.adjust(by: delta) else { return event }
+            MainActor.assumeIsolated { self.presentation.flashVolume(level) }
             return nil
         }
 
@@ -157,6 +159,14 @@ public final class NotchWindowController {
         let windowSize = NotchGeometry.windowSize(forContent: floored)
         let current = panel.frame.size
         guard windowSize.width > current.width || windowSize.height > current.height else { return }
+        applyPlacement(windowSize: windowSize)
+    }
+
+    /// Positions the panel for `currentScreen` at the given size, unconditionally.
+    /// `resize(toContent:)` gates this behind grow-only; screen changes must NOT -
+    /// a resolution switch or display reconnect needs a re-anchor even at the same size,
+    /// or the pill is left at stale (possibly off-screen) coordinates.
+    private func applyPlacement(windowSize: CGSize) {
         let placement = NotchGeometry.placement(for: currentScreen, windowSize: windowSize)
         panel.setFrame(placement.frame, display: false)
         panel.contentView?.frame = NSRect(origin: .zero, size: placement.frame.size)
@@ -173,8 +183,10 @@ public final class NotchWindowController {
             // The pill's notch-aware layout depends on these; rebuild the view.
             rebuildHosting()
         }
-        // Re-anchor to the new screen geometry at the current/last known size.
+        // Grow if the content needs it, then ALWAYS re-anchor to the new screen geometry
+        // (the grow-only guard in resize used to swallow the reposition entirely).
         resize(toContent: lastContentSize())
+        applyPlacement(windowSize: panel.frame.size)
     }
 
     /// The panel takes mouse events only while the cursor is inside the pill's current

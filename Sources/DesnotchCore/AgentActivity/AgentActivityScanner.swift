@@ -73,14 +73,14 @@ public enum AgentActivityScanner {
             guard let turnInProgress = tailClaudeTurnInProgress(url) else { continue }
             guard let state = classify(elapsed: elapsed, turnInProgress: turnInProgress) else { continue }
 
-            let cwd = readClaudeCWD(url)
+            let facts = claudeFacts(for: url)
             sessions.append(
                 AgentSession(
                     source: .claudeCode,
-                    projectLabel: cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+                    projectLabel: facts.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
                         ?? projectLabel(fromEncodedDirectoryName: projectDirName),
-                    taskTitle: readClaudeTaskTitle(url),
-                    projectPath: cwd,
+                    taskTitle: facts.title,
+                    projectPath: facts.cwd,
                     state: state,
                     lastActivity: mtime
                 )
@@ -106,6 +106,81 @@ public enum AgentActivityScanner {
         name.split(separator: "-").last.map(String.init) ?? "project"
     }
 
+    // MARK: - Immutable-fact cache
+
+    /// A session file's cwd, task title, and (Codex) header metadata never change once
+    /// written, but used to be re-read and re-JSON-parsed on every 5s scan (~290KB per
+    /// Claude session, up to 1MB per Codex header). Cache them by path. Only
+    /// successfully-derived values are cached - a nil title may simply not exist *yet*
+    /// in a brand-new session, so nil results retry on the next scan. Lock-guarded:
+    /// scans run one at a time but off the main actor.
+    private static let cacheLock = NSLock()
+    private static var claudeFactsCache: [String: (cwd: String?, title: String?)] = [:]
+    private static var codexHeaderCache: [String: (cwd: String?, automation: Bool)] = [:]
+    private static var codexTitleCache: [String: String] = [:]
+    private static let cacheCap = 512
+
+    /// Test/pressure hatch; also keeps unbounded growth impossible.
+    static func dropCaches() {
+        cacheLock.lock()
+        claudeFactsCache.removeAll()
+        codexHeaderCache.removeAll()
+        codexTitleCache.removeAll()
+        cacheLock.unlock()
+    }
+
+    private static func claudeFacts(for url: URL) -> (cwd: String?, title: String?) {
+        let key = url.path
+        cacheLock.lock()
+        let cached = claudeFactsCache[key]
+        cacheLock.unlock()
+        if let cached, cached.cwd != nil, cached.title != nil { return cached }
+
+        let cwd = cached?.cwd ?? readClaudeCWD(url)
+        let title = cached?.title ?? readClaudeTaskTitle(url)
+        if cwd != nil || title != nil {
+            cacheLock.lock()
+            if claudeFactsCache.count >= cacheCap { claudeFactsCache.removeAll() }
+            claudeFactsCache[key] = (cwd, title)
+            cacheLock.unlock()
+        }
+        return (cwd, title)
+    }
+
+    private static func codexHeader(for url: URL) -> (cwd: String?, automation: Bool)? {
+        let key = url.path
+        cacheLock.lock()
+        let cached = codexHeaderCache[key]
+        cacheLock.unlock()
+        if let cached { return cached }
+
+        guard let firstLine = readUpToNewline(url, maxBytes: 1_048_576),
+            let meta = parseJSONObject(firstLine),
+            let payload = meta["payload"] as? [String: Any]
+        else { return nil }
+        let facts = (payload["cwd"] as? String, isAutomationCodexSession(payload))
+        cacheLock.lock()
+        if codexHeaderCache.count >= cacheCap { codexHeaderCache.removeAll() }
+        codexHeaderCache[key] = facts
+        cacheLock.unlock()
+        return facts
+    }
+
+    private static func codexTitle(for url: URL) -> String? {
+        let key = url.path
+        cacheLock.lock()
+        let cached = codexTitleCache[key]
+        cacheLock.unlock()
+        if let cached { return cached }
+
+        guard let title = readCodexTaskTitle(url) else { return nil }
+        cacheLock.lock()
+        if codexTitleCache.count >= cacheCap { codexTitleCache.removeAll() }
+        codexTitleCache[key] = title
+        cacheLock.unlock()
+        return title
+    }
+
     // MARK: - Task titles
 
     /// Hard cap for the first-prompt-derived task title shown in the pill. Keep this tight:
@@ -116,7 +191,8 @@ public enum AgentActivityScanner {
     /// First non-empty prompt line, whitespace-collapsed and truncated to `taskTitleMax`.
     /// Rejects harness noise: XML-ish wrappers (`<system-reminder>`, `<command-name>`, …)
     /// and Claude Code "Caveat:" preambles.
-    private static func sanitizeTitle(_ raw: String) -> String? {
+    /// Internal (not private) so the rejection/truncation rules are unit-testable.
+    static func sanitizeTitle(_ raw: String) -> String? {
         guard let firstLine = raw
             .split(separator: "\n", omittingEmptySubsequences: true)
             .map({ $0.trimmingCharacters(in: .whitespaces) })
@@ -209,15 +285,12 @@ public enum AgentActivityScanner {
             guard elapsed <= lookbackWindow else { continue }
 
             // Codex session_meta headers are large (~22 KB seen); a fixed 4 KB read used to
-            // truncate mid-JSON and silently drop every Codex session. Read to the newline.
-            guard let firstLine = readUpToNewline(url, maxBytes: 1_048_576),
-                let meta = parseJSONObject(firstLine),
-                let payload = meta["payload"] as? [String: Any]
-            else { continue }
-            guard !isAutomationCodexSession(payload) else { continue }
+            // truncate mid-JSON and silently drop every Codex session. Read to the newline
+            // (cached: the header never changes once written).
+            guard let header = codexHeader(for: url) else { continue }
+            guard !header.automation else { continue }
 
-            let cwd = payload["cwd"] as? String
-            let label = cwd.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "session"
+            let label = header.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "session"
             guard let turnInProgress = tailCodexTurnInProgress(url) else { continue }
             guard let state = classify(elapsed: elapsed, turnInProgress: turnInProgress) else { continue }
 
@@ -225,8 +298,8 @@ public enum AgentActivityScanner {
                 AgentSession(
                     source: .codex,
                     projectLabel: label,
-                    taskTitle: readCodexTaskTitle(url),
-                    projectPath: cwd,
+                    taskTitle: codexTitle(for: url),
+                    projectPath: header.cwd,
                     state: state,
                     lastActivity: mtime
                 )

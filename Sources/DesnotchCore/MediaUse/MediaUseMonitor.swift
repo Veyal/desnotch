@@ -52,7 +52,9 @@ public final class MediaUseMonitor: ObservableObject {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &devices) == noErr
         else { return false }
 
-        for device in devices where hasInputStreams(device) {
+        // Virtual loopback drivers (BlackHole & co.) report "running somewhere"
+        // permanently and would pin the mic dot on; they aren't a real microphone.
+        for device in devices where hasInputStreams(device) && !isVirtualTransport(device) {
             var runningAddr = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
                 mScope: kAudioObjectPropertyScopeGlobal,
@@ -67,6 +69,18 @@ public final class MediaUseMonitor: ObservableObject {
             }
         }
         return false
+    }
+
+    nonisolated private static func isVirtualTransport(_ device: AudioObjectID) -> Bool {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &transport) == noErr else { return false }
+        return transport == kAudioDeviceTransportTypeVirtual
     }
 
     nonisolated private static func hasInputStreams(_ device: AudioObjectID) -> Bool {
