@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.2 — 2026-07-31
+
+- ✓ **Fix: stale "now playing" rows from browser tabs** (e.g. "(5) WhatsApp" showing an
+  audio player with nothing playing). Browser media sessions are never unregistered
+  while the tab lives, so residue lingered in the pill for hours. Non-playing items
+  with sub-second durations (notification pings) are now filtered outright, and any
+  paused session expires from the pill 15 minutes after its last position change.
+  Playing media is never hidden and never expires; pause/seek keep the timeline
+  position continuous. Regression-tested against the observed WhatsApp Web payload.
+
 ## v0.4.1 — 2026-07-31
 
 Full remediation of the comprehensive product review:

@@ -24,6 +24,7 @@ public final class NowPlayingController: ObservableObject {
     private let toggleCoalesceWindow: TimeInterval = 0.25
 
     private var reconcileTimer: Timer?
+    private var pausedExpiryTimer: Timer?
     private var lastToggleAt: Date?
     private let bridge = MediaRemoteBridge.shared
 
@@ -44,7 +45,31 @@ public final class NowPlayingController: ObservableObject {
         // A real update has arrived, so a pending optimistic toggle is confirmed; no
         // need for the reconciliation fallback.
         reconcileTimer?.invalidate()
+        updatePausedExpiry()
         // Expansion is driven by the view (needs-attention || hover), so nothing to push here.
+    }
+
+    /// The stream is change-driven, so a paused item never gets another update - a
+    /// timer is the only way to notice it has gone stale. Sessions that arrive
+    /// already past retention (e.g. app launch with hours-old browser residue) are
+    /// dropped immediately.
+    private func updatePausedExpiry() {
+        pausedExpiryTimer?.invalidate()
+        pausedExpiryTimer = nil
+        guard let info, info.hasContent, let expiry = info.pausedExpiry() else { return }
+        let delay = expiry.timeIntervalSinceNow
+        guard delay > 0 else {
+            self.info = nil
+            return
+        }
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let current = self.info, !current.isPlaying else { return }
+                self.info = nil
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        pausedExpiryTimer = timer
     }
 
     public func togglePlayPause() {
@@ -65,8 +90,13 @@ public final class NowPlayingController: ObservableObject {
             return
         }
         lastToggleAt = now
+        // Re-anchor the position at the flip moment: keeps the timeline continuous
+        // and stamps when a pause happened, which is what paused-retention counts from.
+        optimistic.elapsed = optimistic.position(at: now)
         optimistic.isPlaying.toggle()
+        optimistic.elapsedAt = now
         info = optimistic
+        updatePausedExpiry()
         bridge.send(.togglePlayPause)
         scheduleReconciliation()
     }
@@ -91,6 +121,7 @@ public final class NowPlayingController: ObservableObject {
         optimistic.elapsed = clamped
         optimistic.elapsedAt = Date()
         info = optimistic
+        updatePausedExpiry()
         bridge.seek(to: clamped)
         scheduleReconciliation()
     }
@@ -115,6 +146,7 @@ public final class NowPlayingController: ObservableObject {
                 guard let result else { return }
                 if result.hasContent {
                     self.info = result
+                    self.updatePausedExpiry()
                 } else if !self.hasActiveMedia {
                     self.info = nil
                 }

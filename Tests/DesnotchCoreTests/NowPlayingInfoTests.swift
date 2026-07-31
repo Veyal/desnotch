@@ -50,3 +50,57 @@ final class NowPlayingInfoTests: XCTestCase {
         XCTAssertNotEqual(a, b)
     }
 }
+
+final class StaleNowPlayingTests: XCTestCase {
+    /// Regression: real payload observed from WhatsApp Web in Safari - the page's
+    /// media session lingers after a 40ms notification ping with the page title
+    /// ("(5) WhatsApp") and must never surface as an audio-player row.
+    func testResidualNotificationPingHasNoContent() {
+        let info = NowPlayingInfo(adapterPayload: [
+            "title": "(5) WhatsApp",
+            "artist": "",
+            "playing": false,
+            "playbackRate": 0,
+            "elapsedTime": 0,
+            "duration": 0.04049886621315193,
+            "bundleIdentifier": "com.apple.WebKit.GPU"
+        ])
+        XCTAssertTrue(info.isResidualBlip)
+        XCTAssertFalse(info.hasContent)
+    }
+
+    func testSubSecondDurationStillShowsWhilePlaying() {
+        // Some sources misreport duration for live streams; never hide real playback.
+        let info = NowPlayingInfo(adapterPayload: [
+            "title": "Live Radio", "playing": true, "duration": 0.0
+        ])
+        XCTAssertFalse(info.isResidualBlip)
+        XCTAssertTrue(info.hasContent)
+    }
+
+    func testPausedTrackWithRealDurationIsNotABlip() {
+        let info = NowPlayingInfo(adapterPayload: [
+            "title": "Song", "playing": false, "duration": 180.0
+        ])
+        XCTAssertFalse(info.isResidualBlip)
+        XCTAssertTrue(info.hasContent)
+    }
+
+    func testPausedExpiryCountsFromAdapterTimestamp() {
+        let pausedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let info = NowPlayingInfo(adapterPayload: [
+            "title": "Song", "playing": false, "duration": 180.0,
+            "timestamp": pausedAt.timeIntervalSince1970
+        ])
+        XCTAssertEqual(
+            info.pausedExpiry()!.timeIntervalSince1970,
+            pausedAt.timeIntervalSince1970 + NowPlayingInfo.pausedRetention,
+            accuracy: 0.001
+        )
+    }
+
+    func testPlayingMediaNeverExpires() {
+        let info = NowPlayingInfo(adapterPayload: ["title": "Song", "playing": true])
+        XCTAssertNil(info.pausedExpiry())
+    }
+}

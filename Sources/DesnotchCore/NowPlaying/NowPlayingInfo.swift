@@ -45,9 +45,32 @@ public struct NowPlayingInfo: Equatable {
             && lhs.bundleIdentifier == rhs.bundleIdentifier
     }
 
+    /// Paused media stays visible this long after its last position change
+    /// (`elapsedAt`, the adapter timestamp) before the pill gives up on it. Browser
+    /// media sessions in particular are never unregistered while the tab lives, so
+    /// a finished WhatsApp Web voice note otherwise sits in the pill for hours.
+    public static let pausedRetention: TimeInterval = 15 * 60
+
+    /// A non-playing item whose whole "track" is under a second is a notification
+    /// ping or UI sound left behind in a page's media session (observed: WhatsApp
+    /// Web residue titled "(5) WhatsApp", duration 0.04s), not media worth a pill.
+    /// Deliberately not applied while playing: some sources misreport duration for
+    /// live streams, and hiding real playback would be worse than a 40ms flash.
+    public var isResidualBlip: Bool {
+        guard !isPlaying, let duration else { return false }
+        return duration < 1
+    }
+
+    /// When this item, if it stays paused, should be dropped from the pill.
+    /// `nil` while playing (playing media never expires).
+    public func pausedExpiry() -> Date? {
+        guard !isPlaying else { return nil }
+        return elapsedAt.addingTimeInterval(Self.pausedRetention)
+    }
+
     /// Whether there is enough information here to be worth showing a pill for.
     public var hasContent: Bool {
-        title != nil || artist != nil
+        (title != nil || artist != nil) && !isResidualBlip
     }
 
     public init(adapterPayload payload: [String: Any]) {

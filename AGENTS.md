@@ -165,6 +165,15 @@ existing `Task.detached` pattern.
   Position is extrapolated client-side (`position(at:)`) and ticked by a 1s `TimelineView`
   only while rendered - no extra adapter polling. Hidden when the source reports no
   duration (radio/streams).
+- **Stale-session policy** (`NowPlayingInfo.hasContent`/`pausedExpiry`): browser media
+  sessions are never unregistered while the tab lives, so residue lingers system-wide
+  (observed: WhatsApp Web's 40ms notification ping titled "(5) WhatsApp" reported for
+  hours). Non-playing items with sub-second duration are filtered outright (never while
+  playing - streams misreport duration); anything paused expires from the pill
+  `pausedRetention` (15 min) after its adapter timestamp, via a timer in
+  `NowPlayingController.updatePausedExpiry` (the change-driven stream sends nothing
+  further for a paused item, so a timer is the only staleness signal). Every path that
+  sets `info` must call `updatePausedExpiry()`.
 
 Compact wing priority when several things are active: left = media > stuck-process >
 calendar; right = agents > stuck-process. Everything else is one hover away.
