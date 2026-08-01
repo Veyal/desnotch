@@ -8,6 +8,17 @@ public enum PillVisibilityMode: String {
     case alwaysOn
 }
 
+/// How much motion the pill uses. Governs the shared curves, arrival transitions,
+/// and whether continuously looping motion is permitted at all.
+public enum AnimationStyle: String, CaseIterable {
+    /// Restrained spring on meaningful events, short opacity crossfades (default).
+    case subtle
+    /// Looser, bouncier spring with a little more travel and scale on arrivals.
+    case dynamic
+    /// Near-instant opacity only; matches what Reduce Motion forces system-wide.
+    case minimal
+}
+
 /// Which indicator the minimized wing shows for now-playing media.
 public enum MusicIndicatorStyle: String, CaseIterable {
     /// Animated equalizer bars while playing, static note while paused (default).
@@ -100,6 +111,9 @@ public final class SettingsStore: ObservableObject {
     @Published public var musicIndicatorStyle: MusicIndicatorStyle {
         didSet { set("musicIndicatorStyle", musicIndicatorStyle.rawValue) }
     }
+    @Published public var animationStyle: AnimationStyle {
+        didSet { set("animationStyle", animationStyle.rawValue) }
+    }
 
     @Published public var hoverCollapseDelay: Double {
         didSet { clampAndSet(\.hoverCollapseDelay, "hoverCollapseDelay", Self.hoverCollapseDelayRange) }
@@ -135,8 +149,13 @@ public final class SettingsStore: ObservableObject {
         mutedNotificationApps = defaults.stringArray(forKey: "mutedNotificationApps") ?? []
 
         pillMode = (defaults.string(forKey: "pillMode")).flatMap(PillVisibilityMode.init(rawValue:)) ?? .hoverAuto
+        // Default is the STATIC note, not the equalizer: an always-visible pill must
+        // not run a perpetual animation for ordinary activity. Equalizer stays one
+        // click away in Settings for anyone who wants it.
         musicIndicatorStyle = (defaults.string(forKey: "musicIndicatorStyle"))
-            .flatMap(MusicIndicatorStyle.init(rawValue:)) ?? .equalizer
+            .flatMap(MusicIndicatorStyle.init(rawValue:)) ?? .note
+        animationStyle = (defaults.string(forKey: "animationStyle"))
+            .flatMap(AnimationStyle.init(rawValue:)) ?? .subtle
         hoverCollapseDelay = Self.double(defaults, "hoverCollapseDelay", Self.defaultHoverCollapseDelay, Self.hoverCollapseDelayRange)
         minimizedWidth = Self.double(defaults, "minimizedWidth", Self.defaultMinimizedWidth, Self.minimizedWidthRange)
         minimizedHeight = Self.double(defaults, "minimizedHeight", Self.defaultMinimizedHeight, Self.minimizedHeightRange)

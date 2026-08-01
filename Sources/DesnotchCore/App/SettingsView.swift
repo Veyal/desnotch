@@ -29,6 +29,12 @@ struct SettingsView: View {
             .font(.system(size: 11))
             .disabled(!settings.nowPlayingEnabled)
             .opacity(settings.nowPlayingEnabled ? 1 : 0.4)
+            if settings.musicIndicatorStyle == .equalizer {
+                Text("The equalizer animates continuously while music plays. It's off by default for that reason, and Minimal/Reduce Motion falls back to the note.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if settings.musicIndicatorStyle == .albumArt {
                 Text("Album art falls back to the equalizer when a track has none, and is hidden by Privacy mode.")
                     .font(.system(size: 10))
@@ -52,6 +58,23 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+
+            HStack(spacing: 8) {
+                Text("Animation")
+                    .frame(width: 105, alignment: .leading)
+                Picker("Animation style", selection: $settings.animationStyle) {
+                    Text("Subtle").tag(AnimationStyle.subtle)
+                    Text("Dynamic").tag(AnimationStyle.dynamic)
+                    Text("Minimal").tag(AnimationStyle.minimal)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .font(.system(size: 11))
+            Text("Subtle springs open on real events and fades everything else. Minimal removes motion, matching macOS Reduce Motion — which always wins when it's on.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             slider(
                 "Collapse delay",

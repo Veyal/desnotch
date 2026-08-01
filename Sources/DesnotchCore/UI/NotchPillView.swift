@@ -68,10 +68,34 @@ public struct NotchPillView: View {
         self.onSizeChange = onSizeChange
     }
 
-    private var spring: Animation {
-        reduceMotion
-            ? .easeInOut(duration: 0.22)
-            : .spring(response: 0.5, dampingFraction: 0.82)
+    /// The pill's whole motion vocabulary for the current settings + Reduce Motion.
+    /// Every animation below reads from this - don't hand-roll curves in a row.
+    private var motion: NotchAnimation.Motion {
+        NotchAnimation.resolve(style: settings.animationStyle, reduceMotion: reduceMotion)
+    }
+
+    /// The event spring (shape growth, sections appearing).
+    private var spring: Animation { motion.primary }
+
+    /// Transition for content arriving in an expanded row - fade always, plus a small
+    /// grow/slide when the vocabulary allows it.
+    private var arrivalTransition: AnyTransition {
+        guard motion.arrivalSlides || motion.arrivalScale != 1 else { return .opacity }
+        var insertion = AnyTransition.opacity
+        if motion.arrivalScale != 1 {
+            insertion = insertion.combined(with: .scale(scale: motion.arrivalScale, anchor: .top))
+        }
+        if motion.arrivalSlides {
+            insertion = insertion.combined(with: .move(edge: .top))
+        }
+        return .asymmetric(insertion: insertion, removal: .opacity)
+    }
+
+    /// Swap transition for the small wing indicators.
+    private var indicatorTransition: AnyTransition {
+        motion.arrivalScale == 1
+            ? .opacity
+            : .opacity.combined(with: .scale(scale: 0.6))
     }
 
     private var hasMedia: Bool { settings.nowPlayingEnabled && controller.hasActiveMedia }
@@ -161,9 +185,10 @@ public struct NotchPillView: View {
         .animation(spring, value: isDropTargeted)
         .animation(spring, value: presentation.openFlash)
         .animation(spring, value: tray.items)
-        .animation(.easeInOut(duration: 0.15), value: presentation.volumeFlash == nil)
-        .animation(.easeInOut(duration: 0.2), value: mediaUse.micInUse)
-        .animation(.easeInOut(duration: 0.2), value: mediaUse.cameraInUse)
+        .animation(motion.secondary, value: presentation.volumeFlash == nil)
+        .animation(motion.secondary, value: mediaUse.micInUse)
+        .animation(motion.secondary, value: mediaUse.cameraInUse)
+        .animation(spring, value: settings.animationStyle)
         .animation(spring, value: battery.state)
         .animation(spring, value: hasNotification)
         .animation(spring, value: notificationMirror.arrivalCount)
@@ -448,16 +473,7 @@ public struct NotchPillView: View {
         .accessibilityLabel(Text("Notification from \(banner.appName)\(settings.privacyModeEnabled ? "" : (banner.content.map { ": \($0)" } ?? ""))"))
         .accessibilityHint(Text("Opens \(banner.appName)"))
         .id(notificationMirror.arrivalCount)
-        .transition(
-            reduceMotion
-                ? .opacity
-                : .asymmetric(
-                    insertion: .move(edge: .top)
-                        .combined(with: .opacity)
-                        .combined(with: .scale(scale: 0.92, anchor: .top)),
-                    removal: .opacity
-                )
-        )
+        .transition(arrivalTransition)
     }
 
     /// Shown instead of the event row when access was denied - otherwise the feature
@@ -538,7 +554,7 @@ public struct NotchPillView: View {
             style: settings.musicIndicatorStyle,
             hasArtwork: controller.info?.artwork != nil,
             isPlaying: controller.info?.isPlaying == true,
-            reduceMotion: reduceMotion,
+            allowsLooping: motion.allowsLooping,
             privacyMode: settings.privacyModeEnabled
         )
         return ZStack {
@@ -552,15 +568,15 @@ public struct NotchPillView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
                         // Dimmed while paused: a state signal with zero ongoing cost.
                         .opacity(controller.info?.isPlaying == true ? 1 : 0.55)
-                        .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                        .transition(indicatorTransition)
                 }
             case .equalizer:
                 NowPlayingEqualizer()
-                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                    .transition(indicatorTransition)
             case .note:
                 Image(systemName: "music.note")
                     .font(.system(size: 12, weight: .semibold))
-                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                    .transition(indicatorTransition)
             }
         }
         .frame(width: 14, height: 14)
@@ -576,7 +592,9 @@ public struct NotchPillView: View {
                 .foregroundStyle(needsAttention ? .yellow : .white)
                 // One-shot bounce whenever the needs-you count changes, so the flip is
                 // noticeable without hovering (the icon swap alone was silent).
-                .availabilityGuardedBounce(trigger: agentActivity.summary.needsYourTurnCount)
+                .availabilityGuardedBounce(
+                    trigger: agentActivity.summary.needsYourTurnCount, enabled: motion.allowsPulse
+                )
             Text("\(agentActivity.summary.actionableCount)")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white)
@@ -610,7 +628,9 @@ public struct NotchPillView: View {
         Image(systemName: "bell.fill")
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.white)
-            .availabilityGuardedBounce(trigger: notificationMirror.arrivalCount)
+            .availabilityGuardedBounce(
+                trigger: notificationMirror.arrivalCount, enabled: motion.allowsPulse
+            )
     }
 
     private var compactAccessibilityLabel: String {
@@ -680,7 +700,7 @@ public struct NotchPillView: View {
                 ) {
                     controller.togglePlayPause()
                 }
-                .availabilityGuardedSymbolReplace()
+                .availabilityGuardedSymbolReplace(enabled: motion.allowsPulse)
                 controlButton(systemName: "forward.fill", label: "Next track") {
                     controller.next()
                 }
@@ -714,11 +734,15 @@ public struct NotchPillView: View {
                             .fill(Color.white)
                             .frame(width: geo.size.width * fraction, height: 3)
                         if settings.timelineSeekEnabled {
-                            // The knob is the draggability affordance; it grows while scrubbing.
+                            // The knob is the draggability affordance; it grows while
+                            // scrubbing - but growth is geometric, so Minimal/Reduce
+                            // Motion keeps it a constant size (it still tracks the drag,
+                            // which is direct manipulation, not decoration).
+                            let knob: CGFloat = (motion.allowsGeometry && scrubPosition != nil) ? 9 : 6
                             Circle()
                                 .fill(Color.white)
-                                .frame(width: scrubPosition != nil ? 9 : 6, height: scrubPosition != nil ? 9 : 6)
-                                .offset(x: geo.size.width * fraction - (scrubPosition != nil ? 4.5 : 3))
+                                .frame(width: knob, height: knob)
+                                .offset(x: geo.size.width * fraction - knob / 2)
                         }
                     }
                     .frame(maxHeight: .infinity)
@@ -731,7 +755,7 @@ public struct NotchPillView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .animation(.easeOut(duration: 0.12), value: scrubPosition != nil)
+        .animation(motion.secondary, value: scrubPosition != nil)
         .accessibilityHidden(true)
     }
 
@@ -919,12 +943,7 @@ public struct NotchPillView: View {
             } else {
                 ForEach(tray.items, id: \.self) { url in
                     trayRow(url)
-                        .transition(
-                            .asymmetric(
-                                insertion: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9, anchor: .top)),
-                                removal: .opacity.combined(with: .scale(scale: 0.9))
-                            )
-                        )
+                        .transition(arrivalTransition)
                 }
             }
         }

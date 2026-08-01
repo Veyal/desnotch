@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 
 /// Parsed snapshot of one now-playing update from `MediaRemoteBridge`.
@@ -92,7 +93,7 @@ public struct NowPlayingInfo: Equatable {
         if let base64 = payload["artworkData"] as? String,
             let data = Data(base64Encoded: base64)
         {
-            artwork = ArtworkCache.downsampled(data: data, for: uniqueIdentifier)
+            artwork = ArtworkCache.downsampled(data: data)
         } else {
             artwork = nil
         }
@@ -133,19 +134,26 @@ public struct NowPlayingInfo: Equatable {
     }
 }
 
-/// Decoded-and-downsampled artwork cache.
+/// Decoded-and-downsampled artwork cache, keyed on a hash of the artwork bytes.
 ///
 /// The adapter sends the full-resolution artwork (~1 MB) on every update, even on a
 /// play/pause flip. Decoding it to an `NSImage` on every tick is wasteful for a 16/24pt
-/// view, so decode results are downsampled to a view-appropriate size and cached keyed
-/// on the track's `uniqueIdentifier` - a re-delivery of the same track reuses the
-/// cached image without re-decoding.
+/// view, so decode results are downsampled to a view-appropriate size and cached.
+///
+/// The key MUST identify the bytes. It used to be the track's `uniqueIdentifier`, or
+/// the first 8 bytes hexed when that was nil, and both forms bound the wrong image:
+/// the first 8 bytes of a JPEG are the fixed JFIF/EXIF header (verified: three
+/// different album arts from one encoder produced one identical key), so every track
+/// collided and the first decode was replayed forever; and keying on the identifier
+/// alone never re-checked the bytes, so a burst that delivered a new track with stale
+/// artwork poisoned that id permanently. Content addressing fixes both, and is a
+/// bonus for albums whose tracks share one cover: identical bytes decode once.
 enum ArtworkCache {
     private static let cache = NSCache<NSString, NSImage>()
     private static let maxDimension: CGFloat = 128 // ~64pt @2x, enough for the 24pt view
 
-    static func downsampled(data: Data, for identifier: String?) -> NSImage? {
-        let key = identifier ?? data.shaPrefix
+    static func downsampled(data: Data) -> NSImage? {
+        let key = data.contentKey
         if let cached = cache.object(forKey: key as NSString) {
             return cached
         }
@@ -171,12 +179,13 @@ enum ArtworkCache {
     }
 }
 
-private extension Data {
-    /// A short, stable key for artwork blobs with no track identifier.
-    var shaPrefix: String {
-        // First 8 bytes hexed is plenty to distinguish distinct artwork blobs without
-        // a real hash dependency; collisions only cost a redundant decode.
-        let bytes = prefix(8).map { String(format: "%02x", $0) }.joined()
-        return "art-\(bytes)"
+extension Data {
+    /// Content-addressed cache key: a full SHA-256 over every byte, so two distinct
+    /// artworks can never share a key no matter how much of a common header they
+    /// share. Hashing ~1 MB costs microseconds - far less than the image decode it
+    /// avoids on a cache hit. Internal (not private) so the regression test can
+    /// assert the collision that the old first-8-bytes key produced.
+    var contentKey: String {
+        "art-" + SHA256.hash(data: self).map { String(format: "%02x", $0) }.joined()
     }
 }

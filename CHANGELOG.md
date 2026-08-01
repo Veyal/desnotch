@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.8.0 — 2026-08-01
+
+- ✓ **Animation style** (Settings › Animation: Subtle / Dynamic / Minimal, default
+  Subtle): one motion vocabulary for the whole pill — a restrained spring on real
+  events, short fades for everything else. Minimal removes motion entirely, and
+  macOS Reduce Motion always wins regardless of the setting. Press feedback, the
+  play/pause symbol swap, the scrub knob, tray rows, and the needs-you/notification
+  pulses all follow it; several of those previously animated even under Reduce Motion.
+- ✓ **Nothing loops by default**: the minimized music indicator now defaults to the
+  static note. The equalizer animates continuously while music plays, so it is opt-in
+  from Settings › Music indicator (an explicit existing choice is preserved).
+- ✓ **Clicking an agent row opens the terminal actually running it** instead of
+  whichever terminal happened to be first in a fixed list. The owning app is resolved
+  from the agent process's working directory and its process ancestry, with the old
+  behavior as fallback (agents inside tmux/cmux still fall back). The lookup is
+  time-bounded and the newest click wins.
+- ✓ **Fix: album art stuck on the previous song.** The artwork cache keyed on data
+  that didn't identify the image — for JPEG artwork every track produced the same key,
+  so the first track's cover was reused forever, and a track id could be permanently
+  bound to stale artwork. The key is now a SHA-256 of the artwork bytes. Affected both
+  next and previous, and the expanded row as well as the new Album art indicator.
+
 ## v0.7.0 — 2026-07-31
 
 - ✓ **Hide the macOS banner after mirroring** (Settings, off by default): when a

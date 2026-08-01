@@ -207,6 +207,22 @@ Compact wing priority when several things are active: left = media > stuck-proce
 calendar; right = agents > notification > stuck-process. Everything else is one hover
 away.
 
+**Motion vocabulary (v0.8.0)**: every animation resolves through
+`NotchAnimation.resolve(style:reduceMotion:)` - don't hand-roll curves in a row.
+Reduce Motion maps to exactly the `.minimal` vocabulary regardless of the user's
+style, `allowsGeometry` gates size/position effects (press scale, scrub knob, row
+slides), `allowsPulse` gates one-shot symbol effects, and `allowsLooping` gates the
+equalizer - the app's only perpetual animation, which is why `musicIndicatorStyle`
+defaults to `.note`. The pill is always on screen: nothing may loop for ordinary
+activity without the user opting in.
+
+Agent row clicks resolve the *owning* host app via the agent process's cwd (`lsof`)
+plus process ancestry (`ps`), not the first running terminal
+(`AppActivation.owningHostPID`). Parsing/walking is pure and tested; the subprocess
+helper shares one deadline and escalates to SIGKILL so it can never block, and the
+newest click cancels any in-flight lookup. tmux/cmux ancestry doesn't reach a
+terminal app, so those fall back to the old first-running-host guess.
+
 v0.4.0 additions, one line each: rows are clickable (media → source app via
 `bundleIdentifier`; agent → first running app in `NotchPillView.agentHostBundleIDs`, else
 reveal `AgentSession.projectPath` - a click-to-jump-only field, NEVER rendered); the
