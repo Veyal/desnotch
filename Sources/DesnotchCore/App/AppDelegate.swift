@@ -365,9 +365,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openSettings(_ sender: NSMenuItem) {
         if settingsWindow == nil {
+            // Resizable vertically: the pane scrolls, and sizing it to the content's
+            // full fitting height (what this used to do) grew the window taller than
+            // the screen and left the bottom rows unreachable.
             let window = NSWindow(
                 contentRect: .zero,
-                styleMask: [.titled, .closable],
+                styleMask: [.titled, .closable, .resizable],
                 backing: .buffered,
                 defer: false
             )
@@ -376,7 +379,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSHostingView(rootView: SettingsView(notificationMirror: notificationMirror))
             }
             window.isReleasedWhenClosed = false
-            window.setContentSize(window.contentView?.fittingSize ?? .zero)
+
+            let width = SettingsView.contentWidth
+            let available = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
+            // Comfortably tall by default, but never taller than the screen it opens on.
+            let height = min(620, available * 0.85)
+            window.setContentSize(NSSize(width: width, height: height))
+            // Width is fixed (the pane is a fixed-width column); height is the user's.
+            window.contentMinSize = NSSize(width: width, height: 240)
+            window.contentMaxSize = NSSize(width: width, height: .greatestFiniteMagnitude)
             window.center()
             settingsWindow = window
         }

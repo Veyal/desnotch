@@ -3,12 +3,31 @@ import SwiftUI
 /// The Settings window content: one toggle per feature. Bound straight to
 /// `SettingsStore.shared`; changes apply immediately (the pill re-renders and the
 /// pollers check the flags on their next tick).
+///
+/// The pane is taller than many screens, so the content lives in a `ScrollView` and
+/// the window is sized/resized against the visible screen frame (see
+/// `AppDelegate.openSettings`) - a hosting view sized to `fittingSize` alone grew the
+/// window past the screen and stranded the bottom rows unreachable.
 struct SettingsView: View {
     @ObservedObject var settings = SettingsStore.shared
     /// Present in the real app; nil keeps previews/tests independent of AX state.
     var notificationMirror: NotificationMirrorController?
 
+    /// Fixed pane width, shared with the window sizing so both stay in step.
+    static let contentWidth: CGFloat = 300
+
     var body: some View {
+        ScrollView(.vertical) {
+            content
+                // Fills the scroll view's width, which is `contentWidth` minus the
+                // scroller when the user runs "Show scroll bars: Always" - content
+                // narrows instead of being clipped.
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: Self.contentWidth)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Pill sections")
                 .font(.headline)
@@ -147,7 +166,9 @@ struct SettingsView: View {
         .toggleStyle(.switch)
         .controlSize(.small)
         .padding(20)
-        .frame(width: 300)
+        // Extra breathing room so the last control never sits flush against the
+        // window edge when scrolled to the bottom.
+        .padding(.bottom, 8)
     }
 
     /// Permission status + grant/retry flow for the notification mirror. Three states:

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.1 — 2026-08-01
+
+- ✓ **Fix: Settings window couldn't reach its lower half.** The window was sized to the
+  full height of its content, which had outgrown the screen, and it had no scrolling and
+  no resize control — so the bottom rows (including the notification permission flow)
+  were unreachable. The pane now scrolls, and the window opens at a height that fits the
+  screen and can be resized vertically. Same width, controls, and layout as before.
+
 ## v0.8.0 — 2026-08-01
 
 - ✓ **Animation style** (Settings › Animation: Subtle / Dynamic / Minimal, default
