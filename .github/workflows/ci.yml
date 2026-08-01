@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    # macOS runner with Xcode: the dev Mac mini has only Command Line Tools (no XCTest),
+    # so this is the ONLY place the test suite actually executes. Keep it green.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build -v 2>&1 | tail -20
+      - name: Test
+        run: swift test 2>&1 | tail -40
