@@ -1,19 +1,16 @@
 # desnotch
 
-Lightweight native macOS notch app: media now-playing live activity with animated open/close,
-plus an ambient AI coding-agent activity indicator.
+Lightweight native macOS notch app for media, local coding-agent activity, and other ambient
+system status.
 
-desnotch turns the MacBook notch into a small "Dynamic Island"-style live activity: when
-something is playing system-wide (Music, Safari video, Spotify, etc.) a small artwork indicator
-sits at the notch, and the full pill - artwork, title, artist, and play/pause/next/previous
-controls that actually control playback - animates open briefly on a real change (a new track, or
-play/pause) before animating closed again, like a toast rather than a persistent panel. Hover the
-indicator to reopen it manually; move the mouse away to close it again.
+desnotch keeps a compact pill visible at the top of the screen and expands it on hover. It can
+show system-wide now-playing artwork and transport controls, local Claude Code/Codex/Pi/OpenCode
+activity, calendar glance, process and media-use status, battery changes, notification banners,
+and a file tray.
 
-When nothing is playing, the same pill can instead surface a generic summary of local Claude
-Code / Codex CLI session activity (e.g. "3 agents: 2 working, 1 needs you") - see
-`AGENTS.md` for the detection approach, state model, and now-playing/agent-activity priority
-rule.
+The status-bar menu provides the keyboard and VoiceOver path for media transport, agent actions,
+tray items, notification actions, privacy mode, settings, launch at login, and quit. See
+`AGENTS.md` for load-bearing privacy, geometry, and runtime invariants.
 
 ## Running in development
 
@@ -23,7 +20,9 @@ Requires Xcode's command line tools (for `swift`) - no Xcode GUI project needed.
 swift run
 ```
 
-`swift build` also works standalone. Both run from a clean checkout with zero manual setup.
+`swift build` also works standalone. `swift test` requires an XCTest-capable Xcode toolchain;
+the GitHub Actions macOS runner is the authoritative test environment for this machine, whose
+Command Line Tools installation does not include XCTest.
 
 The app has no dock icon (`LSUIElement`/accessory activation policy). A menu bar status item
 provides a reliable Quit and a Launch-at-Login toggle (the notch panel itself can't become the
@@ -36,11 +35,12 @@ SIGTERM/SIGINT are handled and clean up the perl adapter subprocess instead of o
 scripts/build-app.sh
 ```
 
-This runs `swift build -c release`, bundles the binary into `dist/desnotch.app` with a minimal
-`Info.plist` (version from the latest git tag), places the MediaRemote adapter under
-`Contents/Resources/MediaRemoteAdapter`, and ad-hoc codesigns it inside-out (no `--deep`, so
-each component has its own signature as notarization requires). No notarization is attempted
-for this MVP, so Gatekeeper will warn on other machines; right-click > Open (or
+This runs `swift build -c release`, bundles the host-architecture binary into `dist/desnotch.app`
+with a minimal `Info.plist` (version from the latest git tag), places the MediaRemote adapter
+under `Contents/Resources/MediaRemoteAdapter`, and ad-hoc codesigns it inside-out (no `--deep`,
+so each component has its own signature). The current development host produces an arm64 app;
+the universal adapter does not make the application universal. No notarization is attempted, so
+Gatekeeper will warn on other machines; right-click > Open (or
 `xattr -dr com.apple.quarantine dist/desnotch.app`) to run it anyway. Drag `dist/desnotch.app`
 to `/Applications`, or run it directly with `open dist/desnotch.app`.
 
@@ -48,9 +48,13 @@ to `/Applications`, or run it directly with `open dist/desnotch.app`.
 
 - **Now-playing data & control**: via the private `MediaRemote.framework`, since there is no
   public API for system-wide now-playing state. As of macOS 15.4, Apple entitlement-gated the
-  relevant call, so it can no longer be called in-process (see `Sources/desnotch/MediaRemote/Vendor/MediaRemoteAdapter/NOTICE.md`
-  for how this app works around that). Update delivery stays notification/stream-driven, never
-  polled, so the app is idle-cheap (near-zero CPU at rest).
+  relevant call, so the app uses the vendored adapter subprocess described in
+  `Sources/DesnotchCore/MediaRemote/Vendor/MediaRemoteAdapter/NOTICE.md`. Packaged apps resolve
+  it from `Contents/Resources/MediaRemoteAdapter`; `swift run` uses the SwiftPM resource.
+  Updates stay notification/stream-driven, never polled, so idle CPU stays near zero.
+- **Notification mirror**: optional and off by default. It uses an Accessibility observer for
+  notification banners, keeps banner content in memory only, and does not scrape the notification
+  database.
 - **Notch geometry**: on a MacBook with a physical notch, the pill is sized and positioned
   using `NSScreen.safeAreaInsets` / `auxiliaryTopLeftArea` / `auxiliaryTopRightArea` to hug
   the actual notch cutout. On a screen with no notch (this project was developed on a
@@ -59,15 +63,12 @@ to `/Applications`, or run it directly with `open dist/desnotch.app`.
 
 See `AGENTS.md` for implementation details load-bearing for anyone continuing this project.
 
-## MVP limitations
+## Current Boundaries
 
-- **No system notification mirroring/interception.** macOS has no reliable public API for
-  reading other apps' notifications, and the private routes for it (Notification Center
-  database scraping, etc.) are fragile and break across OS updates. Out of scope for this
-  MVP by design - see the task brief.
 - **Real notch geometry is untested on this dev machine.** This project was developed on a
   Mac mini, which has no physical notch, so notch-hugging geometry only ever exercised the
   fallback path here. Final animation/geometry polish against a *real* notch cutout should
   happen on an actual notched MacBook.
-- Menu bar management, a file tray, widgets, and a settings UI are all explicitly out of
-  scope for this first cut.
+- Notification mirroring is Accessibility- and macOS-version-dependent.
+- Universal application builds and notarization/Developer ID signing are not produced by the
+  current release script.
