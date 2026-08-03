@@ -23,8 +23,9 @@ public final class UpdateChecker {
             return // dev binary: no version identity, nothing to compare against
         }
         check()
-        let timer = Timer(timeInterval: checkInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.check() }
+        let owner = self
+        let timer = Timer(timeInterval: checkInterval, repeats: true) { [weak owner] _ in
+            Task { @MainActor in owner?.check() }
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
@@ -32,26 +33,27 @@ public final class UpdateChecker {
 
     private func check() {
         guard let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return }
-        let task = URLSession.shared.dataTask(with: Self.latestReleaseURL) { [weak self] data, _, error in
+        let owner = self
+        let task = URLSession.shared.dataTask(with: Self.latestReleaseURL) { [weak owner] data, _, error in
             guard let data,
                 let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let tag = obj["tag_name"] as? String
             else {
                 if let error {
                     Task { @MainActor in
-                        self?.logger.notice("update check failed: \(error.localizedDescription, privacy: .public)")
+                        owner?.logger.notice("update check failed: \(error.localizedDescription, privacy: .public)")
                     }
                 }
                 return
             }
             let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             Task { @MainActor in
-                guard let self else { return }
+                guard let owner else { return }
                 guard Self.isVersion(latest, newerThan: current) else { return }
-                self.availableVersion = latest
-                if self.notifiedVersion != latest {
-                    self.notifiedVersion = latest
-                    self.onUpdateAvailable?(latest)
+                owner.availableVersion = latest
+                if owner.notifiedVersion != latest {
+                    owner.notifiedVersion = latest
+                    owner.onUpdateAvailable?(latest)
                 }
             }
         }
