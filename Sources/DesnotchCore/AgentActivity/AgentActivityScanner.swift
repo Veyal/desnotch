@@ -103,7 +103,8 @@ public enum AgentActivityScanner {
 
     /// Legacy fallback: last dash-separated segment of the encoded directory name.
     private static func projectLabel(fromEncodedDirectoryName name: String) -> String {
-        name.split(separator: "-").last.map(String.init) ?? "project"
+        guard !name.isEmpty else { return "project" }
+        return name
     }
 
     // MARK: - Immutable-fact cache

@@ -99,4 +99,11 @@ public struct AgentActivitySummary: Equatable {
         let noun = actionableCount == 1 ? "agent" : "agents"
         return "\(actionableCount) \(noun): \(clauses.joined(separator: ", "))"
     }
+
+    public static func == (lhs: AgentActivitySummary, rhs: AgentActivitySummary) -> Bool {
+        lhs.workingCount == rhs.workingCount
+            && lhs.needsYourTurnCount == rhs.needsYourTurnCount
+            && lhs.stalledCount == rhs.stalledCount
+            && lhs.idleCount == rhs.idleCount
+    }
 }
