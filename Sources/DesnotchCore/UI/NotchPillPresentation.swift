@@ -40,11 +40,10 @@ public final class NotchPillPresentation: ObservableObject {
             }
         } else {
             guard isHovering, exitTimer == nil else { return }
-            let owner = self
-            let timer = Timer(timeInterval: hoverExitDelay, repeats: false) { [weak owner] _ in
-                Task { @MainActor in
-                    owner?.exitTimer = nil
-                    owner?.isHovering = false
+            let timer = Timer(timeInterval: hoverExitDelay, repeats: false) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.exitTimer = nil
+                    self?.isHovering = false
                 }
             }
             RunLoop.main.add(timer, forMode: .common)
@@ -56,9 +55,8 @@ public final class NotchPillPresentation: ObservableObject {
     public func flashVolume(_ level: Float) {
         volumeFlash = level
         volumeFlashTimer?.invalidate()
-        let owner = self
-        let timer = Timer(timeInterval: 1.2, repeats: false) { [weak owner] _ in
-            Task { @MainActor in owner?.volumeFlash = nil }
+        let timer = Timer(timeInterval: 1.2, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.volumeFlash = nil }
         }
         RunLoop.main.add(timer, forMode: .common)
         volumeFlashTimer = timer
@@ -68,9 +66,8 @@ public final class NotchPillPresentation: ObservableObject {
     public func flashOpen(for duration: TimeInterval = 1.5) {
         openFlash = true
         openFlashTimer?.invalidate()
-        let owner = self
-        let timer = Timer(timeInterval: duration, repeats: false) { [weak owner] _ in
-            Task { @MainActor in owner?.openFlash = false }
+        let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.openFlash = false }
         }
         RunLoop.main.add(timer, forMode: .common)
         openFlashTimer = timer
