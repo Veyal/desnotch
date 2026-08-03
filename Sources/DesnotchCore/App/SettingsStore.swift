@@ -59,7 +59,7 @@ public final class SettingsStore: ObservableObject {
     public static let expandedWidthRange: ClosedRange<Double> = 260...480
     public static let defaultExpandedWidth = 300.0
 
-    public static func clamp(_ value: Double, to range: ClosedRange<Double>) -> Double {
+    nonisolated public static func clamp(_ value: Double, to range: ClosedRange<Double>) -> Double {
         min(max(value, range.lowerBound), range.upperBound)
     }
 

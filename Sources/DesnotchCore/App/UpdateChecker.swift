@@ -60,7 +60,7 @@ public final class UpdateChecker {
 
     /// Dotted-numeric comparison ("0.4.1" vs "0.4"); missing components count as 0,
     /// non-numeric components as 0. Public + pure so it's unit-testable.
-    public static func isVersion(_ candidate: String, newerThan current: String) -> Bool {
+    nonisolated public static func isVersion(_ candidate: String, newerThan current: String) -> Bool {
         let a = candidate.split(separator: ".").map { Int($0) ?? 0 }
         let b = current.split(separator: ".").map { Int($0) ?? 0 }
         for i in 0..<max(a.count, b.count) {
