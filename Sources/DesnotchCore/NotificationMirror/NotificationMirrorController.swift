@@ -103,7 +103,7 @@ public final class NotificationMirrorController: ObservableObject {
     private func schedulePermissionRecheck() {
         guard permissionTimer == nil else { return }
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, self.permission == .needsPermission else { return }
                 if NotificationCenterObserver.isTrusted {
                     self.applyEnabled(true)
@@ -154,7 +154,7 @@ public final class NotificationMirrorController: ObservableObject {
     private func scheduleExpiry() {
         expiryTimer?.invalidate()
         let timer = Timer(timeInterval: Self.latestLifetime, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.latest = nil }
+            MainActor.assumeIsolated { [weak self] in self?.latest = nil }
         }
         RunLoop.main.add(timer, forMode: .common)
         expiryTimer = timer

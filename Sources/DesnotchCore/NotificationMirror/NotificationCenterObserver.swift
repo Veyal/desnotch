@@ -58,7 +58,7 @@ final class NotificationCenterObserver {
             ) { [weak self] note in
                 let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
                 guard app?.bundleIdentifier == notificationCenterBundleID else { return }
-                Task { @MainActor in self?.attach() }
+                MainActor.assumeIsolated { [weak self] in self?.attach() }
             }
         }
     }
@@ -139,7 +139,7 @@ final class NotificationCenterObserver {
     private func scheduleRetry() {
         retryTimer?.invalidate()
         let timer = Timer(timeInterval: 15, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.attach() }
+            MainActor.assumeIsolated { [weak self] in self?.attach() }
         }
         RunLoop.main.add(timer, forMode: .common)
         retryTimer = timer

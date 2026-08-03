@@ -63,7 +63,7 @@ public final class NowPlayingController: ObservableObject {
             return
         }
         let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, let current = self.info, !current.isPlaying else { return }
                 self.info = nil
             }
@@ -133,7 +133,7 @@ public final class NowPlayingController: ObservableObject {
     private func scheduleReconciliation() {
         reconcileTimer?.invalidate()
         let timer = Timer(timeInterval: reconciliationDelay, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.reconcileWithGet() }
+            MainActor.assumeIsolated { [weak self] in self?.reconcileWithGet() }
         }
         RunLoop.main.add(timer, forMode: .common)
         reconcileTimer = timer
@@ -141,7 +141,7 @@ public final class NowPlayingController: ObservableObject {
 
     private func reconcileWithGet() {
         bridge.getOnce { [weak self] result in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard let result else { return }
                 if result.hasContent {

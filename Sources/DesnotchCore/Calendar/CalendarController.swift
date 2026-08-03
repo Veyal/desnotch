@@ -77,7 +77,7 @@ public final class CalendarController: ObservableObject {
         guard !accessRequested else { return }
         accessRequested = true
         let handler: (Bool, Error?) -> Void = { [weak self] granted, error in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let error {
                     self.logger.error("calendar access request failed: \(error.localizedDescription)")
@@ -103,7 +103,7 @@ public final class CalendarController: ObservableObject {
 
     private func startRefreshing() {
         let t = Timer(timeInterval: refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            MainActor.assumeIsolated { [weak self] in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -111,7 +111,7 @@ public final class CalendarController: ObservableObject {
         changeObserver = NotificationCenter.default.addObserver(
             forName: .EKEventStoreChanged, object: store, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            MainActor.assumeIsolated { [weak self] in self?.refresh() }
         }
     }
 
