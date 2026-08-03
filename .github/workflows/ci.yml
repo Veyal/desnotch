@@ -13,6 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: swift build -v 2>&1 | tail -20
+        run: swift build -v
       - name: Test
-        run: swift test 2>&1 | tail -40
+        run: swift test
