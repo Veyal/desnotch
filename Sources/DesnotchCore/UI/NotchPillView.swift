@@ -817,30 +817,34 @@ public struct NotchPillView: View {
 
             Spacer(minLength: 4)
 
-            Text(stateLabel(session.state))
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(stateColor(session.state))
-
-            Text(relativeTime(session.lastActivity))
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .frame(width: 30, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(stateLabel(session.state))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(stateColor(session.state))
+                Text(freshness(session.lastActivity))
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(minWidth: 52, alignment: .trailing)
         }
         .padding(.vertical, 1)
         .contentShape(Rectangle())
         .onTapGesture { activateAgentHost(session) }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("\(session.source.displayName) · \(session.projectLabel) · \(session.taskTitle ?? "") · \(stateLabel(session.state))"))
+        .accessibilityLabel(Text("\(session.source.displayName) · \(session.projectLabel) · \(session.taskTitle ?? "") · \(stateLabel(session.state)) · \(stateReason(session.state)) · \(freshness(session.lastActivity))"))
         .accessibilityHint(Text("Opens your terminal"))
     }
 
     private func stateLabel(_ state: AgentActivityState) -> String {
-        switch state {
-        case .working: return "working"
-        case .needsYourTurn: return "needs you"
-        case .stalled: return "stalled"
-        case .idle: return "idle"
-        }
+        state.presentationLabel
+    }
+
+    private func stateReason(_ state: AgentActivityState) -> String {
+        state.presentationReason
+    }
+
+    private func freshness(_ date: Date) -> String {
+        AgentActivityPresentation.freshness(for: date)
     }
 
     private func stateColor(_ state: AgentActivityState) -> Color {

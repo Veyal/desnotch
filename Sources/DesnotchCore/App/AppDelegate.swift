@@ -197,7 +197,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 for session in sessions.prefix(6) {
                     let name = privacy ? session.projectLabel : (session.taskTitle ?? session.projectLabel)
                     let item = NSMenuItem(
-                        title: "\(String(name.prefix(40))) — \(Self.menuStateLabel(session.state))",
+                        title: "\(String(name.prefix(40))) — \(Self.menuStateLabel(session.state)) · \(Self.menuFreshness(session.lastActivity))",
                         action: #selector(menuJumpToAgent(_:)),
                         keyEquivalent: ""
                     )
@@ -297,12 +297,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func menuStateLabel(_ state: AgentActivityState) -> String {
-        switch state {
-        case .working: return "working"
-        case .needsYourTurn: return "needs you"
-        case .stalled: return "stalled"
-        case .idle: return "idle"
-        }
+        state.presentationLabel
+    }
+
+    private static func menuFreshness(_ date: Date) -> String {
+        AgentActivityPresentation.freshness(for: date)
     }
 
     /// Newer release found: badge the status icon and let the next menu open pick up
