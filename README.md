@@ -36,13 +36,14 @@ scripts/build-app.sh
 ```
 
 This runs `swift build -c release`, bundles the host-architecture binary into `dist/desnotch.app`
-with a minimal `Info.plist` (version from the latest git tag), places the MediaRemote adapter
-under `Contents/Resources/MediaRemoteAdapter`, and ad-hoc codesigns it inside-out (no `--deep`,
-so each component has its own signature). The current development host produces an arm64 app;
-the universal adapter does not make the application universal. No notarization is attempted, so
-Gatekeeper will warn on other machines; right-click > Open (or
-`xattr -dr com.apple.quarantine dist/desnotch.app`) to run it anyway. Drag `dist/desnotch.app`
-to `/Applications`, or run it directly with `open dist/desnotch.app`.
+with a minimal `Info.plist` (version from the latest git tag, or `VERSION=...`), places the
+MediaRemote adapter under `Contents/Resources/MediaRemoteAdapter`, validates version/build
+metadata and required resources, then ad-hoc codesigns it inside-out (no `--deep`, so each
+component has its own signature). The current development host produces an arm64 app; the
+universal adapter does not make the application universal. The script performs no notarization,
+Developer ID signing, credential handling, or upload. Gatekeeper may warn on other machines;
+right-click > Open (or `xattr -dr com.apple.quarantine dist/desnotch.app`) to run it anyway. Drag
+`dist/desnotch.app` to `/Applications`, or run it directly with `open dist/desnotch.app`.
 
 ## How it works
 
