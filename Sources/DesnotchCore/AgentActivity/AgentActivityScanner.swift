@@ -61,7 +61,7 @@ public enum AgentActivityScanner {
             guard url.pathExtension == "jsonl" else { continue }
             guard url.pathComponents.count > rootDepth else { continue }
 
-            let projectDirName = url.pathComponents[rootDepth]
+            let projectDirName = url.deletingLastPathComponent().lastPathComponent
             let fileName = url.lastPathComponent
             if fileName.hasPrefix("agent-") { continue }
             if url.pathComponents.contains("subagents") { continue }
