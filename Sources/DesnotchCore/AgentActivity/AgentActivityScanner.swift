@@ -93,7 +93,9 @@ public enum AgentActivityScanner {
     /// Reads the real working directory from a Claude Code transcript's header lines (a
     /// `user`/`assistant` entry carries `cwd`). Only the first chunk is scanned.
     private static func readClaudeCWD(_ url: URL) -> String? {
-        guard let text = readUpToNewline(url, maxBytes: 32_768) else { return nil }
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return nil }
+        let prefix = data.prefix(32_768)
+        guard let text = String(data: prefix, encoding: .utf8) else { return nil }
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let obj = parseJSONObject(String(line)) else { continue }
             if let cwd = obj["cwd"] as? String, !cwd.isEmpty { return cwd }
