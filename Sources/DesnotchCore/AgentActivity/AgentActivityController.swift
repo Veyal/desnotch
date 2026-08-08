@@ -70,7 +70,7 @@ public final class AgentActivityController: ObservableObject {
         // the signature changes, so the pill still doesn't re-evaluate every 5s idle.
         let sig = "\(summary.actionableCount)|\(summary.workingCount)|\(summary.needsYourTurnCount)|\(summary.stalledCount)#"
             + actionable
-                .map { "\($0.source)|\($0.projectLabel)|\($0.state)|\(Int(-$0.lastActivity.timeIntervalSinceNow / 60))" }
+                .map { "\($0.source)|\($0.projectLabel)|\($0.state)|\(AgentActivityPresentation.freshness(for: $0.lastActivity, now: Date()))" }
                 .sorted().joined(separator: ";")
         guard sig != lastSignature else { return }
         lastSignature = sig

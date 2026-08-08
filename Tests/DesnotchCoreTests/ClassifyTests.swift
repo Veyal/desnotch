@@ -25,4 +25,19 @@ final class ClassifyTests: XCTestCase {
     func testIdleAfterNeedsWindow() {
         XCTAssertEqual(AgentActivityScanner.classify(elapsed: 10 * 60, turnInProgress: false), .idle)
     }
+
+    func testPresentationLabelsStayGeneric() {
+        XCTAssertEqual(AgentActivityState.working.presentationLabel, "running")
+        XCTAssertEqual(AgentActivityState.needsYourTurn.presentationLabel, "waiting you")
+        XCTAssertEqual(AgentActivityState.stalled.presentationLabel, "no recent progress")
+        XCTAssertEqual(AgentActivityState.idle.presentationLabel, "finished")
+        XCTAssertEqual(AgentActivityState.working.presentationReason, "processing")
+    }
+
+    func testFreshnessBucketsAvoidSecondChurn() {
+        let now = Date()
+        XCTAssertEqual(AgentActivityPresentation.freshness(for: now, now: now), "now")
+        XCTAssertEqual(AgentActivityPresentation.freshness(for: now.addingTimeInterval(-61), now: now), "updated 1m")
+        XCTAssertEqual(AgentActivityPresentation.freshness(for: now.addingTimeInterval(-3601), now: now), "updated 1h")
+    }
 }

@@ -8,6 +8,24 @@ public enum AgentActivityState {
     case needsYourTurn
     case stalled
     case idle
+
+    public var presentationLabel: String {
+        switch self {
+        case .working: return "running"
+        case .needsYourTurn: return "waiting you"
+        case .stalled: return "no recent progress"
+        case .idle: return "finished"
+        }
+    }
+
+    public var presentationReason: String {
+        switch self {
+        case .working: return "processing"
+        case .needsYourTurn: return "awaiting input"
+        case .stalled: return "no recent progress"
+        case .idle: return "finished"
+        }
+    }
 }
 
 public enum AgentSource {
@@ -69,6 +87,15 @@ public struct AgentSession: Identifiable {
     }
 }
 
+public enum AgentActivityPresentation {
+    public static func freshness(for date: Date, now: Date = Date()) -> String {
+        let minutes = max(0, Int(now.timeIntervalSince(date) / 60))
+        if minutes == 0 { return "now" }
+        if minutes < 60 { return "updated \(minutes)m" }
+        return "updated \(minutes / 60)h"
+    }
+}
+
 /// Aggregated counts the pill actually renders - individual session identities/paths never
 /// reach the view layer, only these counts and generic labels.
 public struct AgentActivitySummary: Equatable {
@@ -104,6 +131,5 @@ public struct AgentActivitySummary: Equatable {
         lhs.workingCount == rhs.workingCount
             && lhs.needsYourTurnCount == rhs.needsYourTurnCount
             && lhs.stalledCount == rhs.stalledCount
-            && lhs.idleCount == rhs.idleCount
     }
 }
