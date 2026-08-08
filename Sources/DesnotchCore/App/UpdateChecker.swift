@@ -13,6 +13,7 @@ public final class UpdateChecker {
     public private(set) var availableVersion: String?
 
     private static let latestReleaseURL = URL(string: "https://api.github.com/repos/Veyal/desnotch/releases/latest")!
+    static let requestTimeout: TimeInterval = 15
     private let checkInterval: TimeInterval = 24 * 3600
     private let logger = Logger(subsystem: "com.desnotch.app", category: "updates")
     private var timer: Timer?
@@ -31,11 +32,16 @@ public final class UpdateChecker {
     }
 
     private func check() {
-        guard let current = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return }
-        let task = URLSession.shared.dataTask(with: Self.latestReleaseURL) { [weak self] data, _, error in
+        guard let currentRaw = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              let current = Self.normalizedVersion(currentRaw) else { return }
+
+        var request = URLRequest(url: Self.latestReleaseURL)
+        request.timeoutInterval = Self.requestTimeout
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("desnotch-update-checker", forHTTPHeaderField: "User-Agent")
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let data,
-                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let tag = obj["tag_name"] as? String
+                  let latest = Self.releaseVersion(data: data, response: response)
             else {
                 if let error {
                     Task { @MainActor [weak self] in
@@ -44,7 +50,6 @@ public final class UpdateChecker {
                 }
                 return
             }
-            let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard Self.isVersion(latest, newerThan: current) else { return }
@@ -56,6 +61,25 @@ public final class UpdateChecker {
             }
         }
         task.resume()
+    }
+
+    nonisolated static func releaseVersion(data: Data, response: URLResponse?) -> String? {
+        guard let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawTag = obj["tag_name"] as? String else { return nil }
+        return normalizedVersion(rawTag)
+    }
+
+    /// Accepts non-empty dotted numeric release versions, with one optional leading `v`.
+    nonisolated public static func normalizedVersion(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutPrefix = trimmed.first == "v" || trimmed.first == "V" ? String(trimmed.dropFirst()) : trimmed
+        guard !withoutPrefix.isEmpty,
+              withoutPrefix.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({ part in
+                  !part.isEmpty && part.allSatisfy(\.isNumber)
+              }) else { return nil }
+        return withoutPrefix
     }
 
     /// Dotted-numeric comparison ("0.4.1" vs "0.4"); missing components count as 0,
