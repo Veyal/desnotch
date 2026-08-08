@@ -42,6 +42,7 @@ public final class NotificationMirrorController: ObservableObject {
     private var expiryTimer: Timer?
     private var permissionTimer: Timer?
     private var cancellable: AnyCancellable?
+    private var recentDuplicateKeys: [String: Date] = [:]
 
     public init(presentation: NotchPillPresentation, settings: SettingsStore) {
         self.presentation = presentation
@@ -83,6 +84,8 @@ public final class NotificationMirrorController: ObservableObject {
             permissionTimer?.invalidate()
             permissionTimer = nil
             expiryTimer?.invalidate()
+            expiryTimer = nil
+            recentDuplicateKeys.removeAll()
             latest = nil
             permission = .off
             return
@@ -93,6 +96,7 @@ public final class NotificationMirrorController: ObservableObject {
             observer.start()
             permission = .active
         } else {
+            observer.stop()
             permission = .needsPermission
             schedulePermissionRecheck()
         }
@@ -104,9 +108,12 @@ public final class NotificationMirrorController: ObservableObject {
         guard permissionTimer == nil else { return }
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.permission == .needsPermission else { return }
+                guard let self, self.settings.notificationMirrorEnabled else { return }
                 if NotificationCenterObserver.isTrusted {
                     self.applyEnabled(true)
+                } else {
+                    self.observer.stop()
+                    self.permission = .needsPermission
                 }
             }
         }
@@ -137,13 +144,15 @@ public final class NotificationMirrorController: ObservableObject {
             "Banner parsed: appMatchedRunning=\(runningNames.contains(parsed.appName.lowercased())), hasContent=\(parsed.content != nil)"
         )
         guard !isMuted(parsed.appName) else { return false }
-        if let latest,
-            latest.appName == parsed.appName,
-            latest.content == parsed.content,
-            parsed.receivedAt.timeIntervalSince(latest.receivedAt) < Self.duplicateWindow {
-            // Same banner re-reported - already mirrored, so still ours to dismiss.
+        let key = parsed.deduplicationKey
+        recentDuplicateKeys = recentDuplicateKeys.filter {
+            parsed.receivedAt.timeIntervalSince($0.value) < Self.duplicateWindow
+        }
+        if let previous = recentDuplicateKeys[key],
+           parsed.receivedAt.timeIntervalSince(previous) < Self.duplicateWindow {
             return settings.dismissSystemBanners
         }
+        recentDuplicateKeys[key] = parsed.receivedAt
         latest = parsed
         arrivalCount += 1
         presentation.flashOpen(for: 4.0)

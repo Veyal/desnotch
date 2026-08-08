@@ -16,7 +16,12 @@ public struct MirroredNotification: Equatable {
     /// (`AgentActivityScanner.taskTitleMax`) but a little roomier for message previews.
     public static let contentMax = 64
 
-    /// AX scaffolding the banner walk can pick up that is never notification content:
+    public var deduplicationKey: String {
+        let app = Self.collapse(appName).lowercased()
+        let body = Self.collapse(content ?? "").lowercased()
+        return app + "\u{1F}" + body
+    }
+
     /// the host window's own title and the banner's action buttons. Filtered before
     /// app identification - critically, "Notification Center" is also the *running
     /// process's* display name, so without this filter the running-app promotion

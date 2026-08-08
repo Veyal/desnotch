@@ -34,7 +34,8 @@ final class NotificationCenterObserver {
     private var observedApp: AXUIElement?
     private var observedPID: pid_t = 0
     private var retryTimer: Timer?
-    private var workspaceObserver: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var isStarted = false
 
     /// Whether the app currently holds the Accessibility permission.
     static var isTrusted: Bool { AXIsProcessTrusted() }
@@ -47,35 +48,55 @@ final class NotificationCenterObserver {
     }
 
     func start() {
-        guard Self.isTrusted else { return }
+        guard Self.isTrusted else {
+            stop()
+            return
+        }
+        guard !isStarted else {
+            attach()
+            return
+        }
+        isStarted = true
         attach()
-        // Re-attach if Notification Center relaunches (its banners live in a fresh
-        // process with a new PID; the old AXObserver dies silently with it).
-        if workspaceObserver == nil {
-            workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers = [
+            center.addObserver(
                 forName: NSWorkspace.didLaunchApplicationNotification,
                 object: nil, queue: .main
             ) { [weak self] note in
                 let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
                 guard app?.bundleIdentifier == notificationCenterBundleID else { return }
                 MainActor.assumeIsolated { [weak self] in self?.attach() }
+            },
+            center.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: nil, queue: .main
+            ) { [weak self] note in
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                guard app?.bundleIdentifier == notificationCenterBundleID else { return }
+                MainActor.assumeIsolated { [weak self] in
+                    guard let self, self.isStarted else { return }
+                    self.detach()
+                    self.scheduleRetry()
+                }
             }
-        }
+        ]
     }
 
     func stop() {
+        isStarted = false
         detach()
         retryTimer?.invalidate()
         retryTimer = nil
-        if let workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
-            self.workspaceObserver = nil
-        }
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach(center.removeObserver)
+        workspaceObservers.removeAll()
     }
 
     // MARK: - Attachment
 
     private func attach() {
+        guard isStarted, Self.isTrusted else { return }
         guard let app = NSRunningApplication.runningApplications(
             withBundleIdentifier: notificationCenterBundleID
         ).first else {

@@ -39,9 +39,23 @@ final class MirroredNotificationParsingTests: XCTestCase {
         XCTAssertEqual(n?.content, "new message here")
     }
 
-    func testSanitizeContentEmptyIsNil() {
-        XCTAssertNil(MirroredNotification.sanitizeContent("   "))
-        XCTAssertEqual(MirroredNotification.sanitizeContent("ok"), "ok")
+    func testDeduplicationKeyNormalizesAppAndContent() {
+        let a = MirroredNotification(appName: " Slack ", content: "Hello   World", receivedAt: Date())
+        let b = MirroredNotification(appName: "slack", content: "hello world", receivedAt: Date())
+        XCTAssertEqual(a.deduplicationKey, b.deduplicationKey)
+    }
+
+
+    func testParsedDeduplicationKeyNormalizesWhitespaceAndCase() {
+        let first = MirroredNotification.parse(
+            rawDescription: " Slack \n New   message ",
+            receivedAt: Date(timeIntervalSince1970: 100)
+        )!
+        let second = MirroredNotification.parse(
+            rawDescription: "slack\nnew message",
+            receivedAt: Date(timeIntervalSince1970: 101)
+        )!
+        XCTAssertEqual(first.deduplicationKey, second.deduplicationKey)
     }
 }
 
@@ -180,6 +194,19 @@ final class NotificationMirrorSettingsTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05)) // let the sink deliver
         XCTAssertNotEqual(controller.permission, .off)
         // Disabling always returns to .off and clears any banner.
+        store.notificationMirrorEnabled = false
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(controller.permission, .off)
+        XCTAssertNil(controller.latest)
+    }
+
+    func testDisablingMirrorIsIdempotent() {
+        let store = freshStore("desnotch.tests.mirror-idempotent")
+        let controller = NotificationMirrorController(
+            presentation: NotchPillPresentation(), settings: store
+        )
+        store.notificationMirrorEnabled = false
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         store.notificationMirrorEnabled = false
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         XCTAssertEqual(controller.permission, .off)
