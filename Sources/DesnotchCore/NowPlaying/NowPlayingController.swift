@@ -26,6 +26,7 @@ public final class NowPlayingController: ObservableObject {
     private var reconcileTimer: Timer?
     private var pausedExpiryTimer: Timer?
     private var lastToggleAt: Date?
+    private var cachedPlayingInfo: NowPlayingInfo?
     private let bridge = MediaRemoteBridge.shared
 
     /// Whether there's anything to show at all - drives the collapsed indicator's
@@ -39,8 +40,18 @@ public final class NowPlayingController: ObservableObject {
         }
     }
 
+    static func fallback(for newInfo: NowPlayingInfo?, cachedPlayingInfo: NowPlayingInfo?) -> NowPlayingInfo? {
+        guard let newInfo, !newInfo.isPlaying, newInfo.isShortForegroundItem,
+              let cachedPlayingInfo, cachedPlayingInfo.isPlaying
+        else { return newInfo }
+        return cachedPlayingInfo
+    }
+
     private func applyRemote(_ newInfo: NowPlayingInfo?) {
-        info = newInfo
+        if let newInfo, newInfo.isPlaying, !newInfo.isShortForegroundItem {
+            cachedPlayingInfo = newInfo
+        }
+        info = Self.fallback(for: newInfo, cachedPlayingInfo: cachedPlayingInfo)
 
         // A real update has arrived, so a pending optimistic toggle is confirmed; no
         // need for the reconciliation fallback.

@@ -103,6 +103,36 @@ final class StaleNowPlayingTests: XCTestCase {
         let info = NowPlayingInfo(adapterPayload: ["title": "Song", "playing": true])
         XCTAssertNil(info.pausedExpiry())
     }
+
+    func testFinishedShortForegroundItemRestoresCachedPlayingMusic() {
+        let music = NowPlayingInfo(adapterPayload: [
+            "title": "Song", "playing": true, "duration": 180.0
+        ])
+        let voiceMessage = NowPlayingInfo(adapterPayload: [
+            "title": "Voice message", "playing": false, "duration": 12.0
+        ])
+
+        let result = NowPlayingController.fallback(for: voiceMessage, cachedPlayingInfo: music)
+
+        XCTAssertEqual(result, music)
+    }
+
+    func testPausedMusicDoesNotRestoreCachedPlayingMusic() {
+        let music = NowPlayingInfo(adapterPayload: [
+            "title": "Song", "playing": true, "duration": 180.0
+        ])
+        let pausedMusic = NowPlayingInfo(adapterPayload: [
+            "title": "Other song", "playing": false, "duration": 180.0
+        ])
+
+        let result = NowPlayingController.fallback(for: pausedMusic, cachedPlayingInfo: music)
+
+        XCTAssertEqual(result, pausedMusic)
+        XCTAssertEqual(
+            result?.pausedExpiry()?.timeIntervalSince(result?.elapsedAt ?? .distantPast),
+            NowPlayingInfo.pausedRetention
+        )
+    }
 }
 
 final class ArtworkCacheTests: XCTestCase {

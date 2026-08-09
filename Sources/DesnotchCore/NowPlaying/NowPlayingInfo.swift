@@ -52,6 +52,8 @@ public struct NowPlayingInfo: Equatable {
     /// a finished WhatsApp Web voice note otherwise sits in the pill for hours.
     public static let pausedRetention: TimeInterval = 15 * 60
 
+    public static let shortForegroundDuration: TimeInterval = 60
+
     /// A non-playing item whose whole "track" is under a second is a notification
     /// ping or UI sound left behind in a page's media session (observed: WhatsApp
     /// Web residue titled "(5) WhatsApp", duration 0.04s), not media worth a pill.
@@ -60,6 +62,11 @@ public struct NowPlayingInfo: Equatable {
     public var isResidualBlip: Bool {
         guard !isPlaying, let duration else { return false }
         return duration < 1
+    }
+
+    public var isShortForegroundItem: Bool {
+        guard let duration else { return false }
+        return duration > 0 && duration <= Self.shortForegroundDuration
     }
 
     /// When this item, if it stays paused, should be dropped from the pill.
