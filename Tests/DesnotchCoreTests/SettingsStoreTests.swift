@@ -30,6 +30,13 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.expandedWidth, SettingsStore.defaultExpandedWidth)
         XCTAssertTrue(store.trayEnabled)
         XCTAssertTrue(store.nowPlayingEnabled)
+        XCTAssertEqual(store.transcriptionBaseURL, SettingsStore.defaultTranscriptionBaseURL)
+        XCTAssertEqual(store.transcriptionModel, SpeechTranscriptionClient.defaultModel)
+        XCTAssertEqual(store.agentBackend, .codexCLI)
+        XCTAssertEqual(store.agentWorkingDirectory, NSHomeDirectory())
+        XCTAssertFalse(store.agentAutoRunReadOnly)
+        XCTAssertEqual(store.agentCommandTimeout, SettingsStore.defaultAgentCommandTimeout)
+        XCTAssertEqual(store.agentOutputLimitKB, SettingsStore.defaultAgentOutputLimitKB)
     }
 
     // MARK: Persistence
@@ -43,6 +50,12 @@ final class SettingsStoreTests: XCTestCase {
         store.minimizedHeight = 34
         store.expandedWidth = 360
         store.trayEnabled = false
+        store.transcriptionBaseURL = "https://speech.example/v1"
+        store.transcriptionModel = "custom-transcribe"
+        store.agentWorkingDirectory = "/tmp"
+        store.agentAutoRunReadOnly = true
+        store.agentCommandTimeout = 45
+        store.agentOutputLimitKB = 64
 
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.pillMode, .alwaysOn)
@@ -51,6 +64,14 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.minimizedHeight, 34)
         XCTAssertEqual(reloaded.expandedWidth, 360)
         XCTAssertFalse(reloaded.trayEnabled)
+        XCTAssertEqual(reloaded.transcriptionBaseURL, "https://speech.example/v1")
+        XCTAssertEqual(reloaded.transcriptionModel, "custom-transcribe")
+        XCTAssertEqual(reloaded.agentWorkingDirectory, "/tmp")
+        XCTAssertTrue(reloaded.agentAutoRunReadOnly)
+        XCTAssertEqual(reloaded.agentCommandTimeout, 45)
+        XCTAssertEqual(reloaded.agentOutputLimitKB, 64)
+        XCTAssertNil(defaults.string(forKey: "apiKey"))
+        XCTAssertNil(defaults.string(forKey: "openAIAPIKey"))
     }
 
     @MainActor
@@ -76,6 +97,14 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.minimizedWidth, SettingsStore.minimizedWidthRange.lowerBound)
         store.expandedWidth = 10_000
         XCTAssertEqual(store.expandedWidth, SettingsStore.expandedWidthRange.upperBound)
+        store.agentCommandTimeout = 1
+        XCTAssertEqual(store.agentCommandTimeout, SettingsStore.agentCommandTimeoutRange.lowerBound)
+        store.agentOutputLimitKB = 10_000
+        XCTAssertEqual(store.agentOutputLimitKB, SettingsStore.agentOutputLimitKBRange.upperBound)
+        store.transcriptionBaseURL = String(repeating: "x", count: 600)
+        XCTAssertEqual(store.transcriptionBaseURL.count, 512)
+        store.transcriptionModel = "   "
+        XCTAssertEqual(store.transcriptionModel, SettingsStore.defaultTranscriptionModel)
 
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.hoverCollapseDelay, SettingsStore.hoverCollapseDelayRange.upperBound)

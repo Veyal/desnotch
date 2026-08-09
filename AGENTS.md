@@ -262,6 +262,34 @@ fixed-width rule intact). All numeric knobs are clamped to their `SettingsStore.
 bounds on read AND write - keep new knobs on that pattern. Tests:
 `SettingsStoreTests.swift` (isolated UserDefaults suite; runs under Xcode/CI only).
 
+## Voice actions and agent command safety
+
+`Sources/DesnotchCore/Voice/` owns push-to-talk recording (`AVAudioEngine`, temporary WAV,
+20 MiB/5 min caps), the OpenAI-compatible multipart transcription client, Keychain-only API
+key storage, and Accessibility-aware paste. `DictationController` is the single voice state
+machine for Dictate and Talk to Agent; cancellation must tear down recording/upload and temp
+files. The default model is `gpt-4o-mini-transcribe`, but provider root/model are settings.
+Provider URLs require HTTPS except for explicit loopback HTTP, and transcript/response sizes are
+hard-capped before paste or agent submission. Never put the API key in UserDefaults, argv, logs,
+UI state, or error text.
+
+`Sources/DesnotchCore/AgentCommand/` deliberately chooses Codex CLI as a read-only planning
+transport. The spoken prompt goes over stdin (not process argv), Codex runs with
+`--sandbox read-only --ephemeral`, and only `DESNOTCH_COMMAND_JSON` inside an agent-message
+event can become a proposal; never treat Codex's own `command_execution` events as proposals.
+Proposed commands execute directly as executable + argv, never through an implicit shell.
+Only the policy's tiny argv allowlist may auto-run, and file operands must resolve through
+symlinks to remain inside the configured working directory. Writes/deletes/installs,
+network/remote access, sudo, credential paths, shells/interpreters, and unknown commands need
+a fresh, one-shot confirmation from the pill or status menu. Cancellation/timeout must stop
+the owned process group while both output pipes remain drained.
+
+Voice transcripts, command proposals, and output are transient, capped, and secret-redacted.
+The rotating audit JSONL stores metadata/byte counts only: never raw prompts, transcripts,
+commands, output, API keys, or absolute working directories. Privacy mode must redact these
+strings visually, in the status menu, and in accessibility labels. Both quick actions and
+confirmation/cancel are mirrored in `AppDelegate.rebuildMenu`, since the panel is non-activating.
+
 ## Build/run
 
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal

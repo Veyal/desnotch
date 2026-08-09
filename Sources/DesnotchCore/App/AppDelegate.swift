@@ -30,11 +30,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        let smokeTestMode = ProcessInfo.processInfo.environment["DESNOTCH_SMOKE_TEST"] == "1"
         // Single-instance guard: if another desnotch is already running, bow out.
-        let running = NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleIdentifier)
-        if running.contains(where: { $0 != NSRunningApplication.current }) {
-            NSApp.terminate(nil)
-            return
+        if !smokeTestMode {
+            let running = NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleIdentifier)
+            if running.contains(where: { $0 != NSRunningApplication.current }) {
+                NSApp.terminate(nil)
+                return
+            }
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -42,13 +45,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Ask for notification permission now, not at the first needs-you event - a
         // lazy request drops the very notification that triggered it.
-        AgentAttentionNotifier.shared.requestAuthorizationAtLaunch()
+        if !smokeTestMode {
+            AgentAttentionNotifier.shared.requestAuthorizationAtLaunch()
+        }
 
         let presentation = NotchPillPresentation()
         self.presentation = presentation
         let nowPlayingController = NowPlayingController(presentation: presentation)
         let agentActivityController = AgentActivityController(presentation: presentation)
-        let calendarController = MainActor.assumeIsolated { CalendarController() }
+        let calendarController = MainActor.assumeIsolated {
+            CalendarController(permissionRequestsEnabled: !smokeTestMode)
+        }
         let processMonitorController = MainActor.assumeIsolated { ProcessMonitorController() }
         let quickActionsController = MainActor.assumeIsolated { QuickActionsController() }
         let trayController = MainActor.assumeIsolated { TrayController() }
@@ -67,13 +74,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.mediaUseMonitor = mediaUseMonitor
         self.notificationMirror = notificationMirror
 
-        MainActor.assumeIsolated {
+        if !smokeTestMode { MainActor.assumeIsolated {
             let checker = UpdateChecker()
             checker.onUpdateAvailable = { [weak self] version in
                 self?.showUpdateMenuItem(version: version)
             }
             self.updateChecker = checker
-        }
+        } }
 
         if let windowController = NotchWindowController(
             controller: nowPlayingController,
@@ -134,7 +141,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { quickActionsController?.stopDisplayAwake() }
+        stopOwnedProcesses()
+    }
+
+    /// Shared by normal AppKit termination and the signal sources in `main.swift`.
+    public func stopOwnedProcesses() {
+        MainActor.assumeIsolated {
+            quickActionsController?.shutdownVoiceActions()
+            quickActionsController?.stopDisplayAwake()
+        }
         MediaRemoteBridge.shared.stopStreaming()
     }
 
@@ -265,6 +280,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             displayAwakeItem.target = self
             displayAwakeItem.state = quickActionsController?.isDisplayAwake == true ? .on : .off
             menu.addItem(displayAwakeItem)
+
+            let dictateItem = NSMenuItem(
+                title: Self.voiceMenuTitle(mode: .dictate, state: quickActionsController?.dictation.state),
+                action: #selector(toggleDictation(_:)),
+                keyEquivalent: ""
+            )
+            dictateItem.target = self
+            menu.addItem(dictateItem)
+
+            let agentVoiceItem = NSMenuItem(
+                title: Self.voiceMenuTitle(mode: .talkToAgent, state: quickActionsController?.dictation.state),
+                action: #selector(toggleTalkToAgent(_:)),
+                keyEquivalent: ""
+            )
+            agentVoiceItem.target = self
+            menu.addItem(agentVoiceItem)
+
+            addVoiceAndAgentStatus(to: menu, privacy: privacy)
             menu.addItem(NSMenuItem.separator())
 
             let privacyItem = NSMenuItem(
@@ -381,6 +414,127 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             quickActionsController?.toggleDisplayAwake()
             sender.state = quickActionsController?.isDisplayAwake == true ? .on : .off
         }
+    }
+
+    @objc func toggleDictation(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { quickActionsController?.toggleDictation() }
+    }
+
+    @objc func toggleTalkToAgent(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { quickActionsController?.toggleTalkToAgent() }
+    }
+
+    @objc func confirmAgentCommand(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { quickActionsController?.confirmAgentCommand() }
+    }
+
+    @objc func cancelVoiceAction(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { quickActionsController?.cancelVoiceActions() }
+    }
+
+    @MainActor
+    private func addVoiceAndAgentStatus(to menu: NSMenu, privacy: Bool) {
+        guard let quickActionsController else { return }
+        let dictation = quickActionsController.dictation.state
+        let agent = quickActionsController.agentCommand
+        guard dictation != .idle || agent.state != .idle else { return }
+
+        let submenu = NSMenu()
+        submenu.addItem(NSMenuItem(
+            title: "Voice: \(Self.dictationMenuStatus(dictation))",
+            action: nil,
+            keyEquivalent: ""
+        ))
+        if case .success(_, let text) = dictation {
+            submenu.addItem(NSMenuItem(
+                title: privacy ? "Transcript hidden" : Self.oneLine(text, max: 80),
+                action: nil,
+                keyEquivalent: ""
+            ))
+        }
+
+        if agent.state != .idle {
+            submenu.addItem(NSMenuItem(title: "Agent: \(agent.state.label)", action: nil, keyEquivalent: ""))
+            if let latest = agent.transcript.last {
+                submenu.addItem(NSMenuItem(
+                    title: privacy ? "Agent transcript hidden" : Self.oneLine(latest, max: 80),
+                    action: nil,
+                    keyEquivalent: ""
+                ))
+            }
+            if let proposal = agent.proposedCommand {
+                submenu.addItem(NSMenuItem(
+                    title: privacy ? "Command proposal hidden" : Self.oneLine(proposal.displayString, max: 80),
+                    action: nil,
+                    keyEquivalent: ""
+                ))
+            }
+            let commandOutput = agent.output.stdout.isEmpty ? agent.output.stderr : agent.output.stdout
+            if !commandOutput.isEmpty {
+                submenu.addItem(NSMenuItem(
+                    title: privacy ? "Command output hidden" : Self.oneLine(commandOutput, max: 80),
+                    action: nil,
+                    keyEquivalent: ""
+                ))
+            }
+            if agent.state == .awaitingConfirmation {
+                let confirm = NSMenuItem(
+                    title: "Confirm Proposed Command",
+                    action: #selector(confirmAgentCommand(_:)),
+                    keyEquivalent: ""
+                )
+                confirm.target = self
+                submenu.addItem(confirm)
+            }
+        }
+
+        if Self.voiceActionCanCancel(dictation) || [.proposing, .awaitingConfirmation, .executing].contains(agent.state) {
+            let cancel = NSMenuItem(
+                title: "Cancel Voice / Agent Action",
+                action: #selector(cancelVoiceAction(_:)),
+                keyEquivalent: ""
+            )
+            cancel.target = self
+            submenu.addItem(cancel)
+        }
+        let item = NSMenuItem(title: "Voice & Agent Status", action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        menu.addItem(item)
+    }
+
+    private static func voiceMenuTitle(mode: DictationMode, state: DictationState?) -> String {
+        guard let state else { return mode == .dictate ? "Dictate" : "Talk to Agent" }
+        switch state {
+        case .recording(let active) where active == mode:
+            return mode == .dictate ? "Stop Dictation" : "Send to Agent"
+        case .requestingPermission(let active) where active == mode,
+             .uploading(let active) where active == mode:
+            return "Cancel Voice Action"
+        default:
+            return mode == .dictate ? "Dictate" : "Talk to Agent"
+        }
+    }
+
+    private static func dictationMenuStatus(_ state: DictationState) -> String {
+        switch state {
+        case .idle: return "Idle"
+        case .requestingPermission: return "Waiting for microphone permission"
+        case .recording: return "Recording"
+        case .uploading: return "Uploading for transcription"
+        case .success: return "Transcription complete"
+        case .error(_, let message): return oneLine(message, max: 80)
+        }
+    }
+
+    private static func voiceActionCanCancel(_ state: DictationState) -> Bool {
+        switch state {
+        case .requestingPermission, .recording, .uploading: return true
+        default: return false
+        }
+    }
+
+    private static func oneLine(_ value: String, max: Int) -> String {
+        String(value.replacingOccurrences(of: "\n", with: " ").prefix(max))
     }
 
     private var launchAtLoginEnabled: Bool {

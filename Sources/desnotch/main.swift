@@ -25,17 +25,16 @@ app.mainMenu = mainMenu
 // let a dispatch source observe it.
 signal(SIGTERM, SIG_IGN)
 signal(SIGINT, SIG_IGN)
+let delegate = AppDelegate()
+app.delegate = delegate
 let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 let shutdown = {
-    MediaRemoteBridge.shared.stopStreaming()
+    delegate.stopOwnedProcesses()
     exit(0)
 }
 termSource.setEventHandler(handler: shutdown)
 intSource.setEventHandler(handler: shutdown)
 termSource.resume()
 intSource.resume()
-
-let delegate = AppDelegate()
-app.delegate = delegate
 app.run()

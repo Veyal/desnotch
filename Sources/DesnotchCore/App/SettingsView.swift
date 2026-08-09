@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Settings window content: one toggle per feature. Bound straight to
@@ -12,6 +13,11 @@ struct SettingsView: View {
     @ObservedObject var settings = SettingsStore.shared
     /// Present in the real app; nil keeps previews/tests independent of AX state.
     var notificationMirror: NotificationMirrorController?
+    private let speechKeyStore = SpeechKeychainStore()
+
+    @State private var apiKeyDraft = ""
+    @State private var apiKeyStatus = "No API key stored"
+    @State private var pasteAccessibilityTrusted = false
 
     /// Fixed pane width, shared with the window sizing so both stay in step.
     static let contentWidth: CGFloat = 300
@@ -145,6 +151,105 @@ struct SettingsView: View {
             Divider()
                 .padding(.vertical, 2)
 
+            Text("Voice actions")
+                .font(.headline)
+            TextField("Provider base URL", text: $settings.transcriptionBaseURL)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Transcription provider base URL")
+            if QuickActionsController.validProviderURL(settings.transcriptionBaseURL) == nil {
+                Label("Use HTTPS, or HTTP only for localhost", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.yellow)
+            }
+            TextField("Transcription model", text: $settings.transcriptionModel)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Transcription model")
+            Text("Default: \(SpeechTranscriptionClient.defaultModel). Audio is uploaded only after you stop recording.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            SecureField("API key", text: $apiKeyDraft)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Transcription API key")
+            HStack(spacing: 6) {
+                Button("Save Key") { saveAPIKey() }
+                    .disabled(apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Remove Key") { removeAPIKey() }
+                Spacer(minLength: 0)
+            }
+            Text(apiKeyStatus)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Text("The key is stored only in macOS Keychain. It is never written to preferences, logs, transcripts, or the audit file.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                Button("Microphone Settings…") { openPrivacyPane("Privacy_Microphone") }
+                if pasteAccessibilityTrusted {
+                    Label("Paste access granted", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.green)
+                }
+            }
+            HStack(spacing: 6) {
+                Button(pasteAccessibilityTrusted ? "Check Paste Access" : "Grant Paste Access…") {
+                    let paster = AccessibilityPasteController()
+                    _ = paster.requestTrust()
+                    pasteAccessibilityTrusted = paster.isTrusted
+                }
+                Button("Accessibility Settings…") {
+                    AccessibilityPasteController.openAccessibilitySettings()
+                }
+            }
+            Text("Dictate needs Microphone access to record and Accessibility access to paste into the app that was focused before you used the notch.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+                .padding(.vertical, 2)
+
+            Text("Agent voice control")
+                .font(.headline)
+            Picker("Agent backend", selection: $settings.agentBackend) {
+                Text("Codex CLI (read-only planner)").tag(AgentBackend.codexCLI)
+            }
+            TextField("Working directory", text: $settings.agentWorkingDirectory)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Agent working directory")
+            HStack(spacing: 6) {
+                Button("Choose Folder…") { chooseAgentWorkingDirectory() }
+                Spacer(minLength: 0)
+            }
+            if QuickActionsController.validWorkingDirectory(settings.agentWorkingDirectory) == nil {
+                Label("Choose an existing folder", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.yellow)
+            }
+            Toggle("Auto-run strict read-only commands", isOn: $settings.agentAutoRunReadOnly)
+            Text("Only a small local inspection allowlist can run automatically. Writes, deletes, installs, network or remote access, sudo, credentials, shells, and unknown commands always wait for confirmation in the pill or status menu.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            slider(
+                "Command timeout",
+                value: $settings.agentCommandTimeout,
+                range: SettingsStore.agentCommandTimeoutRange,
+                format: { "\(Int($0))s" }
+            )
+            slider(
+                "Output limit",
+                value: $settings.agentOutputLimitKB,
+                range: SettingsStore.agentOutputLimitKBRange,
+                format: { "\(Int($0))K" }
+            )
+
+            Divider()
+                .padding(.vertical, 2)
+
             Text("Notifications in the notch")
                 .font(.headline)
             Toggle("Mirror notification banners", isOn: $settings.notificationMirrorEnabled)
@@ -169,6 +274,7 @@ struct SettingsView: View {
         // Extra breathing room so the last control never sits flush against the
         // window edge when scrolled to the bottom.
         .padding(.bottom, 8)
+        .onAppear { refreshCredentialAndPermissionState() }
     }
 
     /// Permission status + grant/retry flow for the notification mirror. Three states:
@@ -225,5 +331,50 @@ struct SettingsView: View {
                 .frame(width: 38, alignment: .trailing)
         }
         .font(.system(size: 11))
+    }
+
+    private func saveAPIKey() {
+        let value = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        do {
+            try speechKeyStore.save(value)
+            apiKeyDraft = ""
+            apiKeyStatus = "API key stored in Keychain"
+        } catch {
+            apiKeyDraft = ""
+            apiKeyStatus = "Could not store the API key"
+        }
+    }
+
+    private func removeAPIKey() {
+        do {
+            try speechKeyStore.remove()
+            apiKeyDraft = ""
+            apiKeyStatus = "No API key stored"
+        } catch {
+            apiKeyStatus = "Could not remove the API key"
+        }
+    }
+
+    private func refreshCredentialAndPermissionState() {
+        apiKeyStatus = speechKeyStore.load() == nil
+            ? "No API key stored"
+            : "API key stored in Keychain"
+        pasteAccessibilityTrusted = AccessibilityPasteController().isTrusted
+    }
+
+    private func chooseAgentWorkingDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = QuickActionsController.validWorkingDirectory(settings.agentWorkingDirectory)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.agentWorkingDirectory = url.standardizedFileURL.path
+    }
+
+    private func openPrivacyPane(_ pane: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") else { return }
+        NSWorkspace.shared.open(url)
     }
 }

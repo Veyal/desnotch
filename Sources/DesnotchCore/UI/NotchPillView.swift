@@ -477,6 +477,216 @@ public struct NotchPillView: View {
             .help(quickActions.isDisplayAwake ? "Allow display sleep" : "Keep display awake")
             .accessibilityLabel(Text("Keep display awake"))
             .accessibilityValue(Text(quickActions.isDisplayAwake ? "On" : "Off"))
+
+            voiceActionButton(
+                mode: .dictate,
+                title: voiceButtonTitle(for: .dictate),
+                systemName: voiceButtonIcon(for: .dictate),
+                tint: voiceButtonTint(for: .dictate)
+            ) {
+                quickActions.toggleDictation()
+            }
+
+            voiceActionButton(
+                mode: .talkToAgent,
+                title: voiceButtonTitle(for: .talkToAgent),
+                systemName: voiceButtonIcon(for: .talkToAgent),
+                tint: voiceButtonTint(for: .talkToAgent)
+            ) {
+                quickActions.toggleTalkToAgent()
+            }
+
+            if quickActions.dictation.state != .idle {
+                voiceStatusRow
+            }
+            if quickActions.agentCommand.state != .idle {
+                agentCommandStatus
+            }
+        }
+    }
+
+    private func voiceActionButton(
+        mode: DictationMode,
+        title: String,
+        systemName: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: systemName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 14)
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 4)
+                if quickActions.dictation.mode == mode {
+                    Text(voiceStateShortLabel)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(quickActions.dictation.mode == mode ? tint.opacity(0.14) : Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(quickActions.dictation.mode == mode ? tint.opacity(0.35) : Color.white.opacity(0.1), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PillButtonStyle())
+        .accessibilityLabel(Text(title))
+        .accessibilityHint(Text(mode == .dictate ? "Records, transcribes, and pastes into the focused app" : "Records, transcribes, and sends the prompt to Codex CLI"))
+    }
+
+    private var voiceStatusRow: some View {
+        let label: String
+        let color: Color
+        switch quickActions.dictation.state {
+        case .idle:
+            label = ""
+            color = .secondary
+        case .requestingPermission:
+            label = "Waiting for microphone permission…"
+            color = .yellow
+        case .recording:
+            label = "Recording — press again to stop"
+            color = .red
+        case .uploading:
+            label = "Uploading for transcription…"
+            color = .cyan
+        case .success(_, let transcript):
+            label = privacyRedacted(transcript, fallback: "Transcript hidden")
+            color = .green
+        case .error(_, let message):
+            label = message
+            color = .red
+        }
+        return HStack(alignment: .top, spacing: 6) {
+            Image(systemName: color == .red ? "exclamationmark.circle.fill" : "waveform")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 12)
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundStyle(color)
+                .lineLimit(2)
+                .frame(maxWidth: 230, alignment: .leading)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(label))
+    }
+
+    private var agentCommandStatus: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(quickActions.agentCommand.state == .awaitingConfirmation ? .yellow : .cyan)
+                Text(quickActions.agentCommand.state.label)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+
+            if let latest = quickActions.agentCommand.transcript.last {
+                Text(privacyRedacted(latest, fallback: "Agent transcript hidden"))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: 230, alignment: .leading)
+            }
+
+            if let proposal = quickActions.agentCommand.proposedCommand {
+                Text(privacyRedacted(proposal.displayString, fallback: "Command proposal hidden"))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .frame(maxWidth: 230, alignment: .leading)
+            }
+
+            if let reason = quickActions.agentCommand.confirmationReason {
+                Text(reason)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.yellow)
+                    .lineLimit(2)
+                    .frame(maxWidth: 230, alignment: .leading)
+            }
+
+            if quickActions.agentCommand.state == .awaitingConfirmation {
+                HStack(spacing: 6) {
+                    Button("Confirm command") { quickActions.confirmAgentCommand() }
+                        .buttonStyle(PillButtonStyle())
+                    Button("Cancel") { quickActions.cancelVoiceActions() }
+                        .buttonStyle(PillButtonStyle())
+                }
+                .font(.system(size: 9, weight: .semibold))
+            } else if [.proposing, .executing].contains(quickActions.agentCommand.state) {
+                Button("Cancel") { quickActions.cancelVoiceActions() }
+                    .buttonStyle(PillButtonStyle())
+                    .font(.system(size: 9, weight: .semibold))
+            }
+
+            let commandOutput = quickActions.agentCommand.output.stdout.isEmpty
+                ? quickActions.agentCommand.output.stderr
+                : quickActions.agentCommand.output.stdout
+            if !commandOutput.isEmpty {
+                Text(privacyRedacted(commandOutput, fallback: "Command output hidden"))
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .frame(maxWidth: 230, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.04)))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func voiceButtonTitle(for mode: DictationMode) -> String {
+        guard quickActions.dictation.mode == mode else {
+            return mode == .dictate ? "Dictate" : "Talk to Agent"
+        }
+        switch quickActions.dictation.state {
+        case .recording: return mode == .dictate ? "Stop Dictation" : "Send to Agent"
+        case .requestingPermission, .uploading: return "Cancel Voice Action"
+        default: return mode == .dictate ? "Dictate" : "Talk to Agent"
+        }
+    }
+
+    private func voiceButtonIcon(for mode: DictationMode) -> String {
+        guard quickActions.dictation.mode == mode else {
+            return mode == .dictate ? "mic.fill" : "bubble.left.and.waveform.fill"
+        }
+        switch quickActions.dictation.state {
+        case .recording: return "stop.circle.fill"
+        case .uploading: return "arrow.up.circle.fill"
+        default: return mode == .dictate ? "mic.fill" : "bubble.left.and.waveform.fill"
+        }
+    }
+
+    private func voiceButtonTint(for mode: DictationMode) -> Color {
+        guard quickActions.dictation.mode == mode else { return .white }
+        if case .recording = quickActions.dictation.state { return .red }
+        return mode == .dictate ? .cyan : .purple
+    }
+
+    private var voiceStateShortLabel: String {
+        switch quickActions.dictation.state {
+        case .requestingPermission: return "Permission"
+        case .recording: return "Listening"
+        case .uploading: return "Uploading"
+        case .success: return "Done"
+        case .error: return "Error"
+        case .idle: return ""
         }
     }
 
@@ -767,7 +977,10 @@ public struct NotchPillView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("\(info.title ?? "Unknown Title")\(info.artist.map { ", \($0)" } ?? "")"))
+        .accessibilityLabel(Text(privacyRedacted(
+            "\(info.title ?? "Unknown Title")\(info.artist.map { ", \($0)" } ?? "")",
+            fallback: "Now Playing"
+        )))
     }
 
     /// Elapsed/total readout with a thin progress bar. `TimelineView` ticks it every
@@ -891,7 +1104,7 @@ public struct NotchPillView: View {
         .contentShape(Rectangle())
         .onTapGesture { activateAgentHost(session) }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("\(session.source.displayName) · \(session.projectLabel) · \(session.taskTitle ?? "") · \(stateLabel(session.state)) · \(stateReason(session.state)) · \(freshness(session.lastActivity))"))
+        .accessibilityLabel(Text("\(session.source.displayName) · \(session.projectLabel) · \(privacyRedacted(session.taskTitle ?? session.projectLabel, fallback: session.projectLabel)) · \(stateLabel(session.state)) · \(stateReason(session.state)) · \(freshness(session.lastActivity))"))
         .accessibilityHint(Text("Opens your terminal"))
     }
 
@@ -1037,7 +1250,7 @@ public struct NotchPillView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(PillButtonStyle())
-            .accessibilityLabel(Text("Remove \(url.lastPathComponent) from tray"))
+            .accessibilityLabel(Text("Remove \(privacyRedacted(url.lastPathComponent, fallback: trayPrivacyName(url))) from tray"))
         }
         .padding(.vertical, 1)
         .contentShape(Rectangle())
@@ -1046,7 +1259,7 @@ public struct NotchPillView: View {
         // Finder performs a real copy (the plain NSURL provider only carried a URL type,
         // which Finder ignores).
         .onDrag { NSItemProvider(contentsOf: url) ?? NSItemProvider(object: url as NSURL) }
-        .help(url.lastPathComponent)
+        .help(privacyRedacted(url.lastPathComponent, fallback: trayPrivacyName(url)))
     }
 
     // MARK: - Calendar glance
@@ -1069,7 +1282,7 @@ public struct NotchPillView: View {
         }
         .padding(.vertical, 1)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("Next event: \(event.title), \(timeUntil(event))"))
+        .accessibilityLabel(Text("Next event: \(privacyRedacted(event.title, fallback: "Busy")), \(timeUntil(event))"))
     }
 
     private func timeUntil(_ event: CalendarController.NextEvent) -> String {

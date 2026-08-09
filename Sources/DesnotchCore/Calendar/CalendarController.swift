@@ -42,18 +42,18 @@ public final class CalendarController: ObservableObject {
     private var hasAccess = false
     private var accessRequested = false
 
-    public init() {
+    public init(permissionRequestsEnabled: Bool = true) {
         // Only prompt for calendar permission when the feature is actually enabled -
         // a permission dialog for a toggled-off feature is first-run noise. If the user
         // enables it later, the settings observer requests access at that moment.
-        if SettingsStore.shared.calendarEnabled {
+        if permissionRequestsEnabled && SettingsStore.shared.calendarEnabled {
             requestAccess()
         }
         settingsObserver = SettingsStore.shared.$calendarEnabled
             .removeDuplicates()
             .sink { [weak self] enabled in
                 guard let self else { return }
-                if enabled {
+                if enabled && permissionRequestsEnabled {
                     self.requestAccess()
                     self.refresh()
                 } else if self.nextEvent != nil {
