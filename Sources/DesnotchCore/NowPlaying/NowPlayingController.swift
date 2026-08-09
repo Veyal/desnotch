@@ -40,7 +40,7 @@ public final class NowPlayingController: ObservableObject {
         }
     }
 
-    static func fallback(for newInfo: NowPlayingInfo?, cachedPlayingInfo: NowPlayingInfo?) -> NowPlayingInfo? {
+    nonisolated static func fallback(for newInfo: NowPlayingInfo?, cachedPlayingInfo: NowPlayingInfo?) -> NowPlayingInfo? {
         guard let newInfo, !newInfo.isPlaying, newInfo.isShortForegroundItem,
               let cachedPlayingInfo, cachedPlayingInfo.isPlaying
         else { return newInfo }
