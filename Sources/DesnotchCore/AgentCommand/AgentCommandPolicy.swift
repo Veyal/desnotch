@@ -113,8 +113,18 @@ public struct AgentCommandPolicy {
     private func isSafePath(_ argument: String, cwd: URL) -> Bool {
         guard !argument.isEmpty, !argument.hasPrefix("/"), !argument.hasPrefix("~"), !argument.contains("\0") else { return false }
         let base = cwd.standardizedFileURL.resolvingSymlinksInPath()
-        let target = base.appendingPathComponent(argument).standardizedFileURL.resolvingSymlinksInPath()
-        return target.path == base.path || target.path.hasPrefix(base.path.hasSuffix("/") ? base.path : base.path + "/")
+        let prefix = base.path.hasSuffix("/") ? base.path : base.path + "/"
+        // resolvingSymlinksInPath is a no-op when the full path does not exist, so a
+        // symlinked directory followed by a not-yet-existing file would slip through a
+        // whole-path check. Resolve component by component instead: each existing
+        // symlinked component is resolved, and every intermediate step must stay
+        // inside the base directory.
+        var target = base
+        for component in argument.split(separator: "/") where component != "." {
+            target = target.appendingPathComponent(String(component)).standardizedFileURL.resolvingSymlinksInPath()
+            guard target.path == base.path || target.path.hasPrefix(prefix) else { return false }
+        }
+        return true
     }
 
     private func isWellFormed(_ proposal: AgentCommandProposal) -> Bool {
