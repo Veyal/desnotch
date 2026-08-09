@@ -88,7 +88,9 @@ final class SpeechFoundationTests: XCTestCase {
         ]
         let client = SpeechTranscriptionClient(baseURL: endpoint, apiKey: { "secret" }, transport: transport)
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try Data().write(to: file); defer { try? FileManager.default.removeItem(at: file) }
-        XCTAssertEqual(try await client.transcribe(fileURL: file), "hello"); XCTAssertEqual(transport.requests.count, 2)
+        let transcript = try await client.transcribe(fileURL: file)
+        XCTAssertEqual(transcript, "hello")
+        XCTAssertEqual(transport.requests.count, 2)
         XCTAssertEqual(transport.requestedMaxBytes, SpeechTranscriptionClient.maxResponseBytes)
     }
 

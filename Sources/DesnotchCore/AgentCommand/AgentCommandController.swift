@@ -341,7 +341,7 @@ public final class AgentCommandController: ObservableObject {
     /// Repository-local .git/config can point diff.external, fsmonitor, hooks, or
     /// the pager at an arbitrary program, turning an approved read-only git
     /// invocation into code execution; force those off for every git run.
-    static func hardenedArguments(executable: URL, arguments: [String]) -> [String] {
+    nonisolated static func hardenedArguments(executable: URL, arguments: [String]) -> [String] {
         guard executable.lastPathComponent == "git" else { return arguments }
         var hardened = arguments
         if let subcommandIndex = hardened.firstIndex(where: { !$0.hasPrefix("-") }),
