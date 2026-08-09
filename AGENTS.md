@@ -298,6 +298,9 @@ confirmation/cancel are mirrored in `AppDelegate.rebuildMenu`, since the panel i
 
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal
 `.app` bundle + ad-hoc codesign). No Xcode project - SPM executable target only.
+`scripts/permission-status.sh` executes the packaged binary with `DESNOTCH_PERMISSION_PROBE=1`
+to report that bundle identity's Accessibility/Microphone/Calendar state without prompting or
+starting the app; use `REQUIRE_GRANTED=1` only after the owner has granted all three.
 
 ## Maintaining this file
 

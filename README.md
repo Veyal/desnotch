@@ -123,6 +123,8 @@ CI runs `scripts/smoke-test.sh` after packaging. Locally, use `scripts/smoke-tes
 plist keys, icon and adapter resources, executable architecture, strict nested signatures, and
 obvious orphaned adapter processes. `scripts/runtime-smoke-test.sh` launches the packaged binary
 in non-interactive smoke mode, verifies the adapter starts, sends SIGTERM, and proves both owned
-processes exit. `MANUAL=1 scripts/smoke-test.sh` prints the interactive permission/media/menu/
-termination/notch/Intel checklist; those checks require a desktop session and appropriate
-hardware.
+processes exit. `scripts/permission-status.sh` reports the packaged app's own Accessibility,
+Microphone, and Calendar authorization state without prompting; after granting them, run
+`REQUIRE_GRANTED=1 scripts/permission-status.sh` to make missing grants fail the check.
+`MANUAL=1 scripts/smoke-test.sh` prints the interactive permission/media/menu/termination/notch/
+Intel checklist; those checks require a desktop session and appropriate hardware.

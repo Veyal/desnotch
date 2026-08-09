@@ -5,7 +5,7 @@ remaining work that is not already implemented in the current source tree.
 
 ## P0 — release confidence
 
-- [ ] Confirm the hardened GitHub Actions workflow passes both `swift build` and `swift test` on
+- [x] Confirm the hardened GitHub Actions workflow passes both `swift build` and `swift test` on
   `macos-14`. Local XCTest execution is unavailable with the installed Command Line Tools.
 - [ ] Run a packaged-app smoke test on a machine with the required Accessibility/Calendar/media
   permissions and verify clean startup, menu actions, media control, and termination cleanup.
@@ -59,4 +59,7 @@ remaining work that is not already implemented in the current source tree.
 - [x] Mirror both actions in status menu for keyboard and VoiceOver access.
 - [x] Add settings for provider URL, model, key management, agent backend, and policy.
 - [x] Update packaged app `Info.plist` with microphone and Accessibility guidance.
-- [ ] Run `swift build`, `swift test`, packaged-app smoke test, and permission-flow test.
+- [x] Run `swift build`, `swift test` in CI, packaged-app static/runtime smoke tests, and the
+  non-prompting permission-status probe.
+- [ ] Run the permission-granted interactive Dictate/Talk, paste, confirmation, menu-parity, and
+  denial/retry flows in a real desktop session.

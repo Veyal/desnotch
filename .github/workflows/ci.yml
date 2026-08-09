@@ -20,5 +20,7 @@ jobs:
         run: scripts/build-app.sh
       - name: Packaged bundle smoke checks
         run: scripts/smoke-test.sh dist/desnotch.app
+      - name: Packaged permission-status probe
+        run: scripts/permission-status.sh dist/desnotch.app
       - name: Packaged runtime startup and cleanup
         run: scripts/runtime-smoke-test.sh dist/desnotch.app

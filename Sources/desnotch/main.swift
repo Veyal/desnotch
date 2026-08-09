@@ -1,6 +1,23 @@
 import AppKit
 import DesnotchCore
 
+// Non-prompting diagnostics for packaged-app smoke tests. This exits before
+// NSApplication setup and the single-instance guard, so it can inspect this
+// bundle's own TCC identity without disturbing an installed desnotch process.
+if ProcessInfo.processInfo.environment["DESNOTCH_PERMISSION_PROBE"] == "1" {
+    do {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(PermissionSnapshot.current())
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data([0x0A]))
+        exit(EXIT_SUCCESS)
+    } catch {
+        FileHandle.standardError.write(Data("permission probe failed\n".utf8))
+        exit(EXIT_FAILURE)
+    }
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 

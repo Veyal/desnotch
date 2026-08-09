@@ -45,6 +45,7 @@ if [[ "${MANUAL:-0}" == 1 ]]; then
   cat <<'CHECKLIST'
 Manual checklist (requires a packaged app and a real desktop session):
   [ ] Launch and confirm the status-menu Quit path terminates desnotch and its adapter.
+  [ ] Run REQUIRE_GRANTED=1 scripts/permission-status.sh and confirm all required grants.
   [ ] Grant Calendar, Microphone, and Accessibility when prompted; verify denied/retry guidance.
   [ ] Play/pause media and verify the pill updates; test volume scroll and menu transport.
   [ ] Start/stop Dictate from both pill and status menu; verify transcription pastes into the previously focused text field and cancellation leaves no temp audio file.

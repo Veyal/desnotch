@@ -17,8 +17,9 @@
 - **Distribution readiness:** production icon and microphone metadata, host/static
   and runtime bundle smoke checks, optional validated universal arm64+x86_64 builds,
   configurable bundle identity, and opt-in Developer ID/hardened-runtime/notarization
-  support. External signing and physical-notch/Intel runtime checks remain gated on
-  the corresponding credentials and hardware.
+  support. A non-prompting packaged-app probe reports its own Accessibility,
+  Microphone, and Calendar authorization state. External signing and physical-notch/
+  Intel runtime checks remain gated on the corresponding credentials and hardware.
 - **Privacy fixes:** agent task titles, media metadata, calendar titles, and tray filenames no
   longer leak through VoiceOver labels or tooltips while Privacy mode is enabled.
 
