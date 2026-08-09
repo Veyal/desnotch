@@ -158,10 +158,11 @@ existing `Task.detached` pattern.
   action is exposed only for recognized HTTP(S) conferencing hosts found in the event URL,
   bounded location, or bounded notes. Location/notes are never rendered or persisted, and the
   same Join action must remain mirrored in the status menu.
-- **Stuck-process detector** (`ProcessMonitorController`): samples `ps -axo pid,pcpu,comm`
-  every 30s; a process sustaining ≥90% CPU for ≥10 min is flagged (pill section + one
-  notification per streak). The sustained window is the point - don't "simplify" it to a
-  single high-CPU sample, that just flags every compile.
+- **Stuck-process detector** (`ProcessMonitorController`): derives interval CPU from accumulated
+  `ps` CPU time every 30s (5s while a flag is visible); a process sustaining ≥90% CPU for ≥10
+  min is flagged (pill section + one notification per streak). Do not use `ps %cpu` here - it is
+  a decaying average and leaves recovered processes looking hot. The sustained window is the point;
+  don't "simplify" it to a single high-CPU sample, which would flag every compile.
 - **Utility actions**: Privacy mode is the pill's only always-present action. Keep the
   low-frequency display-awake control in the status menu; `DisplayAwakeController` owns its
   `/usr/bin/caffeinate -d -w <desnotch-pid>` subprocess, which is session-scoped and must stop on
