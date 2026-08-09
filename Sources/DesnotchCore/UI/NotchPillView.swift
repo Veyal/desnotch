@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// The single live-activity pill: always rendered as a (real or synthetic) notch shape,
 /// minimized to indicator wings by default, expanded on hover/drag/always-on mode to the
-/// stacked sections (now-playing, agents, processes, calendar, battery, tray).
+/// stacked sections (now-playing, agents, processes, calendar, battery, quick actions, tray).
 ///
 /// On a screen with a physical notch the pill hugs the hardware: the minimized state is a
 /// solid-black extension of the notch with the indicators in small "wings" either side of
@@ -21,6 +21,7 @@ public struct NotchPillView: View {
     @ObservedObject public var agentActivity: AgentActivityController
     @ObservedObject public var calendar: CalendarController
     @ObservedObject public var processMonitor: ProcessMonitorController
+    @ObservedObject public var quickActions: QuickActionsController
     @ObservedObject public var tray: TrayController
     @ObservedObject public var battery: BatteryController
     @ObservedObject public var mediaUse: MediaUseMonitor
@@ -45,6 +46,7 @@ public struct NotchPillView: View {
         agentActivity: AgentActivityController,
         calendar: CalendarController,
         processMonitor: ProcessMonitorController,
+        quickActions: QuickActionsController,
         tray: TrayController,
         battery: BatteryController,
         mediaUse: MediaUseMonitor,
@@ -58,6 +60,7 @@ public struct NotchPillView: View {
         self.agentActivity = agentActivity
         self.calendar = calendar
         self.processMonitor = processMonitor
+        self.quickActions = quickActions
         self.tray = tray
         self.battery = battery
         self.mediaUse = mediaUse
@@ -190,6 +193,7 @@ public struct NotchPillView: View {
         .animation(motion.secondary, value: mediaUse.cameraInUse)
         .animation(spring, value: settings.animationStyle)
         .animation(spring, value: battery.state)
+        .animation(motion.secondary, value: quickActions.isDisplayAwake)
         .animation(spring, value: hasNotification)
         .animation(spring, value: notificationMirror.arrivalCount)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -321,6 +325,11 @@ public struct NotchPillView: View {
 
     private var showBatteryRow: Bool { settings.batteryEnabled }
 
+    private var hasContentBeforeQuickActions: Bool {
+        hasNotification || hasMedia || hasAgents || hasHotProcesses || showCalendarRow
+            || (showBatteryRow && battery.state != nil)
+    }
+
     /// Blank sensitive strings while privacy mode is on (screen sharing/recording).
     /// Scope: now-playing title/artist, agent task titles, calendar event titles, and
     /// tray filenames - keep any new user-content string behind this too.
@@ -405,18 +414,69 @@ public struct NotchPillView: View {
                 }
                 batteryRow(state)
             }
+            if hasContentBeforeQuickActions {
+                sectionDivider
+            }
+            quickActionsSection
             if trayEnabled {
-                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow || (showBatteryRow && battery.state != nil) {
-                    sectionDivider
-                }
+                sectionDivider
                 traySection
             }
-            if !trayEnabled && !hasMedia && !hasAgents && !hasHotProcesses && !showCalendarRow && !(showBatteryRow && battery.state != nil) && !hasNotification {
-                Text("Everything is turned off — see Settings")
-                    .font(.system(size: 10))
+        }
+    }
+
+    // MARK: - Quick actions
+
+    private var quickActionsSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 4)
+                Text("quick actions")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
+
+            Button {
+                quickActions.toggleDisplayAwake()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "cup.and.saucer.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(quickActions.isDisplayAwake ? Color.yellow : Color.white)
+                        .frame(width: 14)
+                    Text("Keep display awake")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Spacer(minLength: 4)
+                    Text(quickActions.isDisplayAwake ? "On" : "Off")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(quickActions.isDisplayAwake ? Color.yellow : Color.secondary)
+                    Image(systemName: quickActions.isDisplayAwake ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(quickActions.isDisplayAwake ? Color.yellow : Color.secondary)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(quickActions.isDisplayAwake ? Color.yellow.opacity(0.14) : Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(
+                            quickActions.isDisplayAwake ? Color.yellow.opacity(0.35) : Color.white.opacity(0.1),
+                            lineWidth: 1
+                        )
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PillButtonStyle())
+            .help(quickActions.isDisplayAwake ? "Allow display sleep" : "Keep display awake")
+            .accessibilityLabel(Text("Keep display awake"))
+            .accessibilityValue(Text(quickActions.isDisplayAwake ? "On" : "Off"))
         }
     }
 

@@ -154,6 +154,10 @@ existing `Task.detached` pattern.
   every 30s; a process sustaining ≥90% CPU for ≥10 min is flagged (pill section + one
   notification per streak). The sustained window is the point - don't "simplify" it to a
   single high-CPU sample, that just flags every compile.
+- **Quick actions** (`QuickActionsController`): the first action toggles an owned
+  `/usr/bin/caffeinate -d -w <desnotch-pid>` subprocess to keep the display awake. It is
+  session-scoped, mirrored in the status menu, and must stop on toggle-off/app exit. Never
+  discover or terminate caffeinate processes the user launched outside desnotch.
 
 - **File tray** (`TrayController`): drop files onto the notch shape (SwiftUI `.onDrop` of
   `.fileURL`); stores path references only (UserDefaults-persisted, dead paths pruned on

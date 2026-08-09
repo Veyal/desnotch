@@ -13,6 +13,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentActivityController: AgentActivityController?
     private var calendarController: CalendarController?
     private var processMonitorController: ProcessMonitorController?
+    private var quickActionsController: QuickActionsController?
     private var trayController: TrayController?
     private var batteryController: BatteryController?
     private var mediaUseMonitor: MediaUseMonitor?
@@ -49,6 +50,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let agentActivityController = AgentActivityController(presentation: presentation)
         let calendarController = MainActor.assumeIsolated { CalendarController() }
         let processMonitorController = MainActor.assumeIsolated { ProcessMonitorController() }
+        let quickActionsController = MainActor.assumeIsolated { QuickActionsController() }
         let trayController = MainActor.assumeIsolated { TrayController() }
         let batteryController = MainActor.assumeIsolated { BatteryController(presentation: presentation) }
         let mediaUseMonitor = MainActor.assumeIsolated { MediaUseMonitor() }
@@ -59,6 +61,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.agentActivityController = agentActivityController
         self.calendarController = calendarController
         self.processMonitorController = processMonitorController
+        self.quickActionsController = quickActionsController
         self.trayController = trayController
         self.batteryController = batteryController
         self.mediaUseMonitor = mediaUseMonitor
@@ -77,6 +80,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             agentActivity: agentActivityController,
             calendar: calendarController,
             processMonitor: processMonitorController,
+            quickActions: quickActionsController,
             tray: trayController,
             battery: batteryController,
             mediaUse: mediaUseMonitor,
@@ -98,6 +102,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let aac = self.agentActivityController,
                       let cal = self.calendarController,
                       let pmc = self.processMonitorController,
+                      let quick = self.quickActionsController,
                       let trayC = self.trayController,
                       let bat = self.batteryController,
                       let muse = self.mediaUseMonitor,
@@ -107,6 +112,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                           agentActivity: aac,
                           calendar: cal,
                           processMonitor: pmc,
+                          quickActions: quick,
                           tray: trayC,
                           battery: bat,
                           mediaUse: muse,
@@ -128,6 +134,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { quickActionsController?.stopDisplayAwake() }
         MediaRemoteBridge.shared.stopStreaming()
     }
 
@@ -249,6 +256,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
             }
 
+            menu.addItem(NSMenuItem(title: "Quick Actions", action: nil, keyEquivalent: ""))
+            let displayAwakeItem = NSMenuItem(
+                title: "Keep Display Awake",
+                action: #selector(toggleDisplayAwake(_:)),
+                keyEquivalent: ""
+            )
+            displayAwakeItem.target = self
+            displayAwakeItem.state = quickActionsController?.isDisplayAwake == true ? .on : .off
+            menu.addItem(displayAwakeItem)
+            menu.addItem(NSMenuItem.separator())
+
             let privacyItem = NSMenuItem(
                 title: "Privacy Mode",
                 action: #selector(togglePrivacyMode(_:)),
@@ -355,6 +373,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             SettingsStore.shared.privacyModeEnabled.toggle()
             sender.state = SettingsStore.shared.privacyModeEnabled ? .on : .off
+        }
+    }
+
+    @objc func toggleDisplayAwake(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated {
+            quickActionsController?.toggleDisplayAwake()
+            sender.state = quickActionsController?.isDisplayAwake == true ? .on : .off
         }
     }
 
