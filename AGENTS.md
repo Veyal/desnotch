@@ -150,10 +150,11 @@ existing `Task.detached` pattern.
   an expanded row; it keeps the pill alive on its own only when imminent (<30 min or
   ongoing). Usage-description keys live in `scripts/build-app.sh`'s Info.plist. If access is
   denied or can't be prompted (headless/SSH bare binary), the row just never appears.
-- **Stuck-process detector** (`ProcessMonitorController`): samples `ps -axo pid,pcpu,comm`
-  every 30s; a process sustaining ≥90% CPU for ≥10 min is flagged (pill section + one
-  notification per streak). The sustained window is the point - don't "simplify" it to a
-  single high-CPU sample, that just flags every compile.
+- **Stuck-process detector** (`ProcessMonitorController`): derives interval CPU from accumulated
+  `ps` CPU time every 30s (5s while a flag is visible); a process sustaining ≥90% CPU for ≥10
+  min is flagged (pill section + one notification per streak). Do not use `ps %cpu` here - it is
+  a decaying average and leaves recovered processes looking hot. The sustained window is the point;
+  don't "simplify" it to a single high-CPU sample, which would flag every compile.
 
 - **File tray** (`TrayController`): drop files onto the notch shape (SwiftUI `.onDrop` of
   `.fileURL`); stores path references only (UserDefaults-persisted, dead paths pruned on
