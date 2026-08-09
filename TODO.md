@@ -7,8 +7,9 @@ remaining work that is not already implemented in the current source tree.
 
 - [x] Confirm the hardened GitHub Actions workflow passes both `swift build` and `swift test` on
   `macos-14`. Local XCTest execution is unavailable with the installed Command Line Tools.
-- [ ] Run a packaged-app smoke test on a machine with the required Accessibility/Calendar/media
-  permissions and verify clean startup, menu actions, media control, and termination cleanup.
+- [x] Run the packaged app with Accessibility, Microphone, and Calendar granted; verify clean
+  startup, status-menu parity, owned display-awake start/stop, menu Quit, and adapter cleanup.
+- [ ] Verify now-playing menu transport and volume scroll with an active real media session.
 
 ## P1 — hardware and distribution
 
