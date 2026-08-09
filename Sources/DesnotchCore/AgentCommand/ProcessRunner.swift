@@ -182,10 +182,14 @@ public final class AgentProcessRunner: @unchecked Sendable {
     /// policy-approved read-only command into arbitrary code execution.
     static func sanitizedEnvironment(base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var environment: [String: String] = [
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0"
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "PAGER": "cat"
         ]
-        for key in ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "TERM"] {
+        for key in ["HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME"] {
             if let value = base[key] { environment[key] = value }
         }
         return environment

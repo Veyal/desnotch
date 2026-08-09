@@ -87,16 +87,21 @@ public final class AgentCommandController: ObservableObject {
         state = .proposing
         audit?.record(event: "agent_request", outcome: "started", byteCount: trimmed.utf8.count)
 
+        let deliveries = AgentEventDeliveryTracker()
         agentTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await backend.stream(prompt: safePrompt, cwd: cwd, timeout: timeout) { [weak self] event in
-                    Task { @MainActor [weak self] in
+                    deliveries.submit { @MainActor [weak self] in
                         self?.receive(event, runID: runID)
                     }
                 }
                 try Task.checkCancellation()
-                await Task.yield()
+                // The decoder invokes callbacks synchronously before the backend
+                // returns, but their MainActor hops may still be queued. Drain them
+                // deterministically so the request cannot become `.finished` before
+                // its final proposal arrives.
+                await deliveries.drain()
                 guard activeRunID == runID else { return }
                 if result.truncated { appendTranscript("Agent output was truncated.") }
                 if state == .proposing { state = .finished }
@@ -338,12 +343,18 @@ public final class AgentCommandController: ObservableObject {
     /// invocation into code execution; force those off for every git run.
     static func hardenedArguments(executable: URL, arguments: [String]) -> [String] {
         guard executable.lastPathComponent == "git" else { return arguments }
+        var hardened = arguments
+        if let subcommandIndex = hardened.firstIndex(where: { !$0.hasPrefix("-") }),
+           ["diff", "log", "show"].contains(hardened[subcommandIndex].lowercased()) {
+            hardened.insert(contentsOf: ["--no-ext-diff", "--no-textconv"], at: subcommandIndex + 1)
+        }
         return [
             "-c", "core.fsmonitor=false",
             "-c", "diff.external=",
             "-c", "core.hooksPath=/dev/null",
-            "-c", "core.pager=cat"
-        ] + arguments
+            "-c", "core.pager=cat",
+            "--no-pager"
+        ] + hardened
     }
 
     private static func findExecutable(_ command: String) -> URL? {
@@ -367,5 +378,30 @@ public final class AgentCommandController: ObservableObject {
         let cwd: String
         let backend: AgentBackend
         let expiresAt: Date
+    }
+}
+
+private final class AgentEventDeliveryTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tasks: [Task<Void, Never>] = []
+
+    func submit(_ operation: @escaping @MainActor @Sendable () -> Void) {
+        let task = Task { @MainActor in operation() }
+        lock.lock()
+        tasks.append(task)
+        lock.unlock()
+    }
+
+    func drain() async {
+        let pending = takeTasks()
+        for task in pending { await task.value }
+    }
+
+    private func takeTasks() -> [Task<Void, Never>] {
+        lock.lock()
+        let pending = tasks
+        tasks.removeAll()
+        lock.unlock()
+        return pending
     }
 }

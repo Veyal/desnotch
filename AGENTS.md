@@ -270,8 +270,10 @@ key storage, and Accessibility-aware paste. `DictationController` is the single 
 machine for Dictate and Talk to Agent; cancellation must tear down recording/upload and temp
 files. The default model is `gpt-4o-mini-transcribe`, but provider root/model are settings.
 Provider URLs require HTTPS except for explicit loopback HTTP, and transcript/response sizes are
-hard-capped before paste or agent submission. Never put the API key in UserDefaults, argv, logs,
-UI state, or error text.
+hard-capped during download and before paste/agent submission; redirects are refused so an
+Authorization header never crosses the validated origin. Recorder terminal limits notify the
+controller through `SpeechRecording.onAutoStop` so the UI cannot remain stuck in recording.
+Never put the API key in UserDefaults, argv, logs, UI state, or error text.
 
 `Sources/DesnotchCore/AgentCommand/` deliberately chooses Codex CLI as a read-only planning
 transport. The spoken prompt goes over stdin (not process argv), Codex runs with
@@ -282,7 +284,9 @@ Only the policy's tiny argv allowlist may auto-run, and file operands must resol
 symlinks to remain inside the configured working directory. Writes/deletes/installs,
 network/remote access, sudo, credential paths, shells/interpreters, and unknown commands need
 a fresh, one-shot confirmation from the pill or status menu. Cancellation/timeout must stop
-the owned process group while both output pipes remain drained.
+the owned process group while both output pipes remain drained. The runner's explicit environment
+must keep loader/language/Git overrides out; automatic Git inspection also disables hooks,
+external diff/text conversion, fsmonitor, prompts, and pagers.
 
 Voice transcripts, command proposals, and output are transient, capped, and secret-redacted.
 The rotating audit JSONL stores metadata/byte counts only: never raw prompts, transcripts,

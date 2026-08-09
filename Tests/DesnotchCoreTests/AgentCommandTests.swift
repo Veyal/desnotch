@@ -204,6 +204,33 @@ final class AgentCommandTests: XCTestCase {
         XCTAssertLessThanOrEqual(counter.value, cap)
     }
 
+    func testProcessRunnerSanitizesDangerousEnvironmentOverrides() {
+        let environment = AgentProcessRunner.sanitizedEnvironment(base: [
+            "HOME": "/tmp/home",
+            "PATH": "/tmp/attacker",
+            "GIT_EXTERNAL_DIFF": "/tmp/evil",
+            "PERL5OPT": "-Mbad",
+            "DYLD_INSERT_LIBRARIES": "/tmp/evil.dylib"
+        ])
+        XCTAssertEqual(environment["HOME"], "/tmp/home")
+        XCTAssertEqual(environment["GIT_CONFIG_GLOBAL"], "/dev/null")
+        XCTAssertEqual(environment["PATH"], "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+        XCTAssertNil(environment["GIT_EXTERNAL_DIFF"])
+        XCTAssertNil(environment["PERL5OPT"])
+        XCTAssertNil(environment["DYLD_INSERT_LIBRARIES"])
+    }
+
+    func testGitExecutionDisablesPagersExternalDiffAndTextConversion() {
+        let arguments = AgentCommandController.hardenedArguments(
+            executable: URL(fileURLWithPath: "/usr/bin/git"),
+            arguments: ["show", "HEAD"]
+        )
+        XCTAssertTrue(arguments.contains("--no-pager"))
+        XCTAssertTrue(arguments.contains("--no-ext-diff"))
+        XCTAssertTrue(arguments.contains("--no-textconv"))
+        XCTAssertTrue(arguments.contains("core.hooksPath=/dev/null"))
+    }
+
     @MainActor
     func testControllerRequiresConfirmationThenRunsCommand() async throws {
         let backend = StubBackend(proposal: AgentCommandProposal(command: "echo", arguments: ["hello"]))
@@ -219,6 +246,20 @@ final class AgentCommandTests: XCTestCase {
         controller.confirm()
         try await waitUntil { controller.state == .finished }
         XCTAssertEqual(controller.output.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "hello")
+    }
+
+    @MainActor
+    func testControllerDrainsBackgroundProposalBeforeFinishing() async throws {
+        let controller = AgentCommandController(
+            cwd: FileManager.default.temporaryDirectory,
+            backend: BackgroundBackend(proposal: AgentCommandProposal(command: "echo", arguments: ["hello"])),
+            automaticReadOnly: false,
+            timeout: 5,
+            outputByteCap: 4_096
+        )
+        controller.submit(transcribedPrompt: "say hello")
+        try await waitUntil { controller.state == .awaitingConfirmation }
+        XCTAssertEqual(controller.proposedCommand?.command, "echo")
     }
 
     private func assertConfirmation(_ decision: AgentCommandPolicyDecision) {
@@ -249,6 +290,21 @@ final class AgentCommandTests: XCTestCase {
             XCTAssertEqual(timeout, 5)
             onEvent(AgentCommandEvent(kind: .status, text: "Planning"))
             onEvent(AgentCommandEvent(kind: .proposal, proposal: proposal))
+            return AgentCommandOutput()
+        }
+    }
+
+    private struct BackgroundBackend: AgentCommandBackend {
+        let proposal: AgentCommandProposal
+        func stream(
+            prompt: String,
+            cwd: URL,
+            timeout: TimeInterval,
+            onEvent: @escaping @Sendable (AgentCommandEvent) -> Void
+        ) async throws -> AgentCommandOutput {
+            await Task.detached {
+                onEvent(AgentCommandEvent(kind: .proposal, proposal: proposal))
+            }.value
             return AgentCommandOutput()
         }
     }

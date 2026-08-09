@@ -57,8 +57,9 @@ public final class SpeechRecorder: SpeechRecording {
     private let engine: AVAudioEngine
     private let permission: MicrophonePermissionProviding
     private let fileManager: FileManager
-    private let stateLock = NSLock()
+    private let stateLock = NSCondition()
     private var recording = false
+    private var activeWrites = 0
     private var audioFile: AVAudioFile?
     private var outputURL: URL?
     private var startedAt: Date?
@@ -89,15 +90,18 @@ public final class SpeechRecorder: SpeechRecording {
             terminalError = nil
             finishedURL = nil
             writtenBytes = 0
+            activeWrites = 0
             recording = true
         }
         // The tap runs on the realtime render thread: no file stats or long
         // critical sections here. Bytes are tracked arithmetically; the exact
         // size limit is still enforced against the real file in `stop()`.
         let bytesPerFrame = max(1, Int(format.streamDescription.pointee.mBytesPerFrame))
+        let channelMultiplier = format.isInterleaved ? 1 : max(1, Int(format.channelCount))
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self else { return }
-            guard self.withStateLock({ self.recording }) else { return }
+            guard self.beginWrite() else { return }
+            defer { self.endWrite() }
             do {
                 try file.write(from: buffer)
             } catch {
@@ -107,7 +111,7 @@ public final class SpeechRecorder: SpeechRecording {
                 return
             }
             let total = self.withStateLock { () -> Int in
-                self.writtenBytes += Int(buffer.frameLength) * bytesPerFrame
+                self.writtenBytes += Int(buffer.frameLength) * bytesPerFrame * channelMultiplier
                 return self.writtenBytes
             }
             if total >= Self.maxBytes {
@@ -155,15 +159,16 @@ public final class SpeechRecorder: SpeechRecording {
     public func cancel() { finishCapture(reason: nil); cleanupFile() }
 
     private func finishCapture(reason: SpeechRecorderError?) {
-        // Hitting the duration cap is a normal end of capture, not an error: the
-        // captured audio stays usable and the owner is asked to stop/transcribe.
+        // Hitting the duration cap is a normal end of capture. Other terminal
+        // reasons remain errors, but every self-stop notifies the owner so the UI
+        // cannot remain stranded in `.recording`.
         let autoStopped = reason == .durationLimitReached
+        let shouldNotifyOwner = reason != nil
         let shouldFinish = withStateLock {
             guard recording else { return false }
             recording = false
             terminalError = autoStopped ? nil : reason
             finishedURL = outputURL
-            audioFile = nil
             return true
         }
         guard shouldFinish else { return }
@@ -171,7 +176,8 @@ public final class SpeechRecorder: SpeechRecording {
         stopWorkItem = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        if autoStopped {
+        waitForWritesToFinish()
+        if shouldNotifyOwner {
             DispatchQueue.main.async { [weak self] in self?.onAutoStop?() }
         }
     }
@@ -195,6 +201,28 @@ public final class SpeechRecorder: SpeechRecording {
         stateLock.lock()
         defer { stateLock.unlock() }
         return try body()
+    }
+
+    private func beginWrite() -> Bool {
+        withStateLock {
+            guard recording else { return false }
+            activeWrites += 1
+            return true
+        }
+    }
+
+    private func endWrite() {
+        withStateLock {
+            activeWrites -= 1
+            if activeWrites == 0 { stateLock.broadcast() }
+        }
+    }
+
+    private func waitForWritesToFinish() {
+        stateLock.lock()
+        while activeWrites > 0 { stateLock.wait() }
+        audioFile = nil
+        stateLock.unlock()
     }
     deinit { cancel() }
 }
