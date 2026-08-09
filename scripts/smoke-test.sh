@@ -30,8 +30,11 @@ fi
 codesign --verify --strict --verbose=2 "$ADAPTER/MediaRemoteAdapter.framework"
 codesign --verify --strict --verbose=2 "$APP_BUNDLE"
 
-# A previously crashed app must not leave the adapter owned by launchd.
-if ps -axo pid=,ppid=,command= | awk '$2 == 1 && $0 ~ /mediaremote-adapter\.pl/ {found=1} END {exit found ? 0 : 1}'; then
+# A previously crashed app must not leave the adapter owned by launchd. Only
+# adapters launched from this bundle count: unrelated tools (nowplaying-cli,
+# media-control) run the same script from their own paths.
+BUNDLE_ABS="$(cd "$APP_BUNDLE" && pwd)"
+if ps -axo pid=,ppid=,command= | awk -v bundle="$BUNDLE_ABS" '$2 == 1 && index($0, bundle) && $0 ~ /mediaremote-adapter\.pl/ {found=1} END {exit found ? 0 : 1}'; then
   echo "error: orphaned mediaremote-adapter process detected" >&2
   exit 1
 fi

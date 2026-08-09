@@ -203,6 +203,7 @@ public final class AgentCommandController: ObservableObject {
             awaitConfirmation(for: proposal, reason: reason)
         case .blocked(let reason):
             pendingProposal = nil
+            proposedCommand = nil
             confirmationReason = reason
             state = .failed
             audit?.record(event: "command_proposal", outcome: "blocked", policy: "blocked")
@@ -253,6 +254,7 @@ public final class AgentCommandController: ObservableObject {
         state = .executing
         output = AgentCommandOutput()
         audit?.record(event: "command_execute", outcome: "started")
+        let arguments = Self.hardenedArguments(executable: executable, arguments: proposal.arguments)
         let runner = AgentProcessRunner(outputByteCap: outputByteCap)
         commandRunner = runner
         commandTask = Task { [weak self] in
@@ -260,7 +262,7 @@ public final class AgentCommandController: ObservableObject {
             do {
                 let result = try await runner.run(
                     executable: executable,
-                    arguments: proposal.arguments,
+                    arguments: arguments,
                     cwd: cwd,
                     timeout: timeout
                 )
@@ -329,6 +331,19 @@ public final class AgentCommandController: ObservableObject {
         proposedCommand = nil
         confirmationReason = nil
         output = AgentCommandOutput()
+    }
+
+    /// Repository-local .git/config can point diff.external, fsmonitor, hooks, or
+    /// the pager at an arbitrary program, turning an approved read-only git
+    /// invocation into code execution; force those off for every git run.
+    static func hardenedArguments(executable: URL, arguments: [String]) -> [String] {
+        guard executable.lastPathComponent == "git" else { return arguments }
+        return [
+            "-c", "core.fsmonitor=false",
+            "-c", "diff.external=",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "core.pager=cat"
+        ] + arguments
     }
 
     private static func findExecutable(_ command: String) -> URL? {

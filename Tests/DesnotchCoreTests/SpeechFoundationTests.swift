@@ -16,6 +16,7 @@ final class SpeechFoundationTests: XCTestCase {
     }
     private final class Recorder: SpeechRecording {
         var isRecording = false
+        var onAutoStop: (() -> Void)?
         func start() async throws { isRecording = true }
         func stop() async throws -> URL { isRecording = false; return URL(fileURLWithPath: "/tmp/test.wav") }
         func cancel() { isRecording = false }

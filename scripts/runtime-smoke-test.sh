@@ -12,7 +12,7 @@ ADAPTER_SCRIPT="$APP_BUNDLE/Contents/Resources/MediaRemoteAdapter/mediaremote-ad
   exit 1
 }
 
-SMOKE_LOG="$(mktemp -t desnotch-runtime-smoke).log"
+SMOKE_LOG="$(mktemp -t desnotch-runtime-smoke)"
 DESNOTCH_SMOKE_TEST=1 "$EXECUTABLE" >"$SMOKE_LOG" 2>&1 &
 APP_PID=$!
 

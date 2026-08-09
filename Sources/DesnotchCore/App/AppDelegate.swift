@@ -441,7 +441,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let submenu = NSMenu()
         submenu.addItem(NSMenuItem(
-            title: "Voice: \(Self.dictationMenuStatus(dictation))",
+            title: "Voice: \(Self.dictationMenuStatus(dictation, privacy: privacy))",
             action: nil,
             keyEquivalent: ""
         ))
@@ -515,14 +515,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func dictationMenuStatus(_ state: DictationState) -> String {
+    private static func dictationMenuStatus(_ state: DictationState, privacy: Bool) -> String {
         switch state {
         case .idle: return "Idle"
         case .requestingPermission: return "Waiting for microphone permission"
         case .recording: return "Recording"
         case .uploading: return "Uploading for transcription"
         case .success: return "Transcription complete"
-        case .error(_, let message): return oneLine(message, max: 80)
+        case .error(_, let message): return privacy ? "Voice action failed" : oneLine(message, max: 80)
         }
     }
 

@@ -28,7 +28,9 @@ public final class AccessibilityPasteController: AccessibilityPasting {
         let temporaryChangeCount = pasteboard.changeCount
         down.flags = .maskCommand; up.flags = .maskCommand
         down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        // Give slower apps time to service the synthetic Cmd-V before the
+        // clipboard is swapped back, or they paste the previous contents.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             // If the user copied something during the brief paste window, their new
             // clipboard wins; never overwrite it with our saved snapshot.
             guard pasteboard.changeCount == temporaryChangeCount else { return }

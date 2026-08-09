@@ -70,6 +70,7 @@ public final class AgentProcessRunner: @unchecked Sendable {
                     executable.path
                 ] + arguments
                 process.currentDirectoryURL = cwd
+                process.environment = Self.sanitizedEnvironment()
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
@@ -127,7 +128,13 @@ public final class AgentProcessRunner: @unchecked Sendable {
                     }
 
                     process.waitUntilExit()
-                    readers.wait()
+                    // A quickly-exiting child can leave a descendant holding the
+                    // pipe write ends; bound the drain instead of blocking until
+                    // the full timeout on output that already arrived.
+                    if readers.wait(timeout: .now() + 2) == .timedOut {
+                        processBox.killOwnedGroup()
+                        _ = readers.wait(timeout: .now() + 3)
+                    }
                     timeoutSource.cancel()
                     let reason = processBox.finish()
                     switch reason {
@@ -168,6 +175,20 @@ public final class AgentProcessRunner: @unchecked Sendable {
 
     private func unregister(_ box: AgentProcessBox) {
         activeLock.lock(); active.removeValue(forKey: ObjectIdentifier(box)); activeLock.unlock()
+    }
+
+    /// Commands run with a minimal, explicit environment: inherited variables like
+    /// GIT_EXTERNAL_DIFF, GIT_SSH, PERL5OPT, or DYLD_* could otherwise turn a
+    /// policy-approved read-only command into arbitrary code execution.
+    static func sanitizedEnvironment(base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var environment: [String: String] = [
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0"
+        ]
+        for key in ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "TERM"] {
+            if let value = base[key] { environment[key] = value }
+        }
+        return environment
     }
 }
 
@@ -229,6 +250,13 @@ private final class AgentProcessBox: @unchecked Sendable {
         return reason
     }
 
+    func killOwnedGroup() {
+        lock.lock()
+        let groupID = completed ? nil : processGroupID
+        lock.unlock()
+        if let groupID, groupExists(groupID) { Darwin.kill(-groupID, SIGKILL) }
+    }
+
     func waitUntilFinished(deadline: Date) {
         lock.lock()
         let alreadyFinished = completed
@@ -268,9 +296,11 @@ private final class AgentProcessBox: @unchecked Sendable {
 
     private func terminateProcess(_ process: Process) {
         lock.lock()
+        let alreadyCompleted = completed
         let groupID = processGroupID
         lock.unlock()
-        if let groupID {
+        if alreadyCompleted { return }
+        if let groupID, groupExists(groupID) {
             Darwin.kill(-groupID, SIGTERM)
             // Cancellation/timeout is an immediate stop boundary. Escalate while
             // the owned Process object still identifies the group leader; do not
@@ -284,22 +314,30 @@ private final class AgentProcessBox: @unchecked Sendable {
 }
 
 private final class AgentDataBox: @unchecked Sendable {
-    private(set) var data = Data()
-    private(set) var truncated = false
+    private let lock = NSLock()
+    private var storage = Data()
+    private var didTruncate = false
+
+    var data: Data { lock.lock(); defer { lock.unlock() }; return storage }
+    var truncated: Bool { lock.lock(); defer { lock.unlock() }; return didTruncate }
 
     func read(_ handle: FileHandle, cap: Int, onChunk: (@Sendable (Data) -> Void)?) {
         while true {
             let chunk = handle.readData(ofLength: 64 * 1024)
             if chunk.isEmpty { break }
-            if data.count < cap {
-                let remaining = cap - data.count
-                let accepted = Data(chunk.prefix(remaining))
-                data.append(accepted)
-                onChunk?(accepted)
-                if chunk.count > remaining { truncated = true }
+            lock.lock()
+            let accepted: Data
+            if storage.count < cap {
+                let remaining = cap - storage.count
+                accepted = Data(chunk.prefix(remaining))
+                storage.append(accepted)
+                if chunk.count > remaining { didTruncate = true }
             } else {
-                truncated = true
+                accepted = Data()
+                didTruncate = true
             }
+            lock.unlock()
+            if !accepted.isEmpty { onChunk?(accepted) }
         }
     }
 }

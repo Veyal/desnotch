@@ -27,6 +27,8 @@ extension SpeechRecorderError: LocalizedError {
 
 public protocol SpeechRecording: AnyObject {
     var isRecording: Bool { get }
+    /// Invoked on the main queue when capture stops itself (e.g. duration cap).
+    var onAutoStop: (() -> Void)? { get set }
     func start() async throws
     func stop() async throws -> URL
     func cancel()
@@ -51,6 +53,7 @@ public final class SpeechRecorder: SpeechRecording {
     public static let maxDuration: TimeInterval = 5 * 60
 
     public var isRecording: Bool { withStateLock { recording } }
+    public var onAutoStop: (() -> Void)?
     private let engine: AVAudioEngine
     private let permission: MicrophonePermissionProviding
     private let fileManager: FileManager
@@ -62,6 +65,7 @@ public final class SpeechRecorder: SpeechRecording {
     private var stopWorkItem: DispatchWorkItem?
     private var terminalError: SpeechRecorderError?
     private var finishedURL: URL?
+    private var writtenBytes = 0
 
     public init(engine: AVAudioEngine = AVAudioEngine(),
                 permission: MicrophonePermissionProviding = SystemMicrophonePermission(),
@@ -84,26 +88,31 @@ public final class SpeechRecorder: SpeechRecording {
             startedAt = Date()
             terminalError = nil
             finishedURL = nil
+            writtenBytes = 0
             recording = true
         }
+        // The tap runs on the realtime render thread: no file stats or long
+        // critical sections here. Bytes are tracked arithmetically; the exact
+        // size limit is still enforced against the real file in `stop()`.
+        let bytesPerFrame = max(1, Int(format.streamDescription.pointee.mBytesPerFrame))
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self else { return }
+            guard self.withStateLock({ self.recording }) else { return }
             do {
-                let wrote = try self.withStateLock {
-                    guard self.recording else { return false }
-                    try file.write(from: buffer)
-                    return true
-                }
-                guard wrote else { return }
-                let size = (try? self.fileManager.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-                if size >= Self.maxBytes {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.finishCapture(reason: .fileTooLarge)
-                    }
-                }
+                try file.write(from: buffer)
             } catch {
                 DispatchQueue.main.async { [weak self] in
                     self?.finishCapture(reason: .captureFailed)
+                }
+                return
+            }
+            let total = self.withStateLock { () -> Int in
+                self.writtenBytes += Int(buffer.frameLength) * bytesPerFrame
+                return self.writtenBytes
+            }
+            if total >= Self.maxBytes {
+                DispatchQueue.main.async { [weak self] in
+                    self?.finishCapture(reason: .fileTooLarge)
                 }
             }
         }
@@ -146,10 +155,13 @@ public final class SpeechRecorder: SpeechRecording {
     public func cancel() { finishCapture(reason: nil); cleanupFile() }
 
     private func finishCapture(reason: SpeechRecorderError?) {
+        // Hitting the duration cap is a normal end of capture, not an error: the
+        // captured audio stays usable and the owner is asked to stop/transcribe.
+        let autoStopped = reason == .durationLimitReached
         let shouldFinish = withStateLock {
             guard recording else { return false }
             recording = false
-            terminalError = reason
+            terminalError = autoStopped ? nil : reason
             finishedURL = outputURL
             audioFile = nil
             return true
@@ -159,6 +171,9 @@ public final class SpeechRecorder: SpeechRecording {
         stopWorkItem = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        if autoStopped {
+            DispatchQueue.main.async { [weak self] in self?.onAutoStop?() }
+        }
     }
     private func cleanupFile() {
         let url = withStateLock {

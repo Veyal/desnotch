@@ -565,7 +565,7 @@ public struct NotchPillView: View {
             label = privacyRedacted(transcript, fallback: "Transcript hidden")
             color = .green
         case .error(_, let message):
-            label = message
+            label = privacyRedacted(message, fallback: "Voice action failed")
             color = .red
         }
         return HStack(alignment: .top, spacing: 6) {

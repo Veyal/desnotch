@@ -45,6 +45,7 @@ public final class DictationController: ObservableObject {
     private let transcriberProvider: @MainActor () -> SpeechTranscribing
     private let paster: AccessibilityPasting
     private var task: Task<Void, Never>?
+    private var generation = 0
 
     public init(
         recorder: SpeechRecording,
@@ -54,6 +55,7 @@ public final class DictationController: ObservableObject {
         self.recorder = recorder
         self.transcriberProvider = { transcriber }
         self.paster = paster
+        wireAutoStop()
     }
 
     public init(
@@ -64,6 +66,15 @@ public final class DictationController: ObservableObject {
         self.recorder = recorder
         self.transcriberProvider = transcriberProvider
         self.paster = paster
+        wireAutoStop()
+    }
+
+    /// The recorder stops itself at the duration cap; transcribe what was captured
+    /// instead of leaving the UI stuck in `.recording` and losing the audio.
+    private func wireAutoStop() {
+        recorder.onAutoStop = { [weak self] in
+            Task { @MainActor [weak self] in self?.stop() }
+        }
     }
 
     public var mode: DictationMode? {
@@ -87,26 +98,31 @@ public final class DictationController: ObservableObject {
 
     public func start(mode: DictationMode) {
         guard task == nil, !recorder.isRecording else { return }
+        generation += 1
+        let gen = generation
         state = .requestingPermission(mode)
         task = Task { [weak self] in
             guard let self else { return }
             do {
                 try await recorder.start()
                 try Task.checkCancellation()
+                guard generation == gen else { return }
                 state = .recording(mode)
                 task = nil
             } catch is CancellationError {
+                guard generation == gen else { return }
                 recorder.cancel()
                 state = .idle
                 task = nil
             } catch {
-                fail(error, mode: mode)
+                fail(error, mode: mode, generation: gen)
             }
         }
     }
 
     public func stop() {
         guard case .recording(let mode) = state else { return }
+        let gen = generation
         state = .uploading(mode)
         task = Task { [weak self] in
             guard let self else { return }
@@ -116,6 +132,7 @@ public final class DictationController: ObservableObject {
                 let text = try await transcriberProvider().transcribe(fileURL: url)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 try Task.checkCancellation()
+                guard generation == gen else { return }
                 guard !text.isEmpty else { throw DictationError.emptyTranscript }
                 guard text.utf8.count <= SpeechTranscriptionClient.maxTranscriptBytes else {
                     throw DictationError.transcriptTooLong
@@ -130,15 +147,17 @@ public final class DictationController: ObservableObject {
                 state = .success(mode, Self.displayed(text))
                 task = nil
             } catch is CancellationError {
+                guard generation == gen else { return }
                 state = .idle
                 task = nil
             } catch {
-                fail(error, mode: mode)
+                fail(error, mode: mode, generation: gen)
             }
         }
     }
 
     public func cancel() {
+        generation += 1
         task?.cancel()
         task = nil
         recorder.cancel()
@@ -155,7 +174,8 @@ public final class DictationController: ObservableObject {
     public func requestAccessibilityPermission() -> Bool { paster.requestTrust() }
     public var hasAccessibilityPermission: Bool { paster.isTrusted }
 
-    private func fail(_ error: Error, mode: DictationMode?) {
+    private func fail(_ error: Error, mode: DictationMode?, generation gen: Int) {
+        guard generation == gen else { return }
         task = nil
         recorder.cancel()
         let message = (error as? LocalizedError)?.errorDescription ?? "The voice action failed."

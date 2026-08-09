@@ -46,9 +46,9 @@ public struct AgentCommandPolicy {
         return valid ? .readOnly : .confirmationRequired(reason: "The command arguments are not on the automatic read-only allowlist.")
     }
 
-    /// Compatibility overload for callers that do not yet provide execution cwd.
-    /// Production execution must use the cwd-taking overload.
-    public func decision(for proposal: AgentCommandProposal) -> AgentCommandPolicyDecision {
+    /// Test-only convenience: validates paths against the app process cwd, which is
+    /// meaningless in a bundled .app. Production execution must pass the real cwd.
+    func decision(for proposal: AgentCommandProposal) -> AgentCommandPolicyDecision {
         decision(for: proposal, cwd: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
     }
 
@@ -92,8 +92,14 @@ public struct AgentCommandPolicy {
             } else {
                 // Refs are permitted for show/log; path operands are only
                 // permitted after `--`, where Git unambiguously treats them as
-                // paths and we can enforce the canonical cwd boundary.
-                if !afterSeparator && (subcommand == "show" || subcommand == "log") { continue }
+                // paths and we can enforce the canonical cwd boundary. A `:` in a
+                // ref (`HEAD:path`) makes Git read a blob relative to the repo
+                // toplevel, and absolute/parent forms escape the cwd, so those
+                // shapes fail closed.
+                if !afterSeparator && (subcommand == "show" || subcommand == "log") {
+                    guard !arg.contains(":"), !arg.contains(".."), !arg.hasPrefix("/") else { return false }
+                    continue
+                }
                 guard isSafePath(arg, cwd: cwd) else { return false }
             }
         }

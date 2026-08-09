@@ -21,8 +21,10 @@ public enum SpeechTranscriptionError: Error, Equatable {
     case missingAPIKey
     case fileTooLarge
     case invalidBaseURL
+    case invalidModel
     case responseTooLarge
     case transcriptTooLong
+    case redirectRefused
 }
 
 extension SpeechTranscriptionError: LocalizedError {
@@ -34,6 +36,8 @@ extension SpeechTranscriptionError: LocalizedError {
         case .missingAPIKey: return "Add a transcription API key in Settings."
         case .fileTooLarge: return "The recording is larger than 20 MiB."
         case .invalidBaseURL: return "The transcription provider URL is not allowed."
+        case .invalidModel: return "The transcription model name is not allowed."
+        case .redirectRefused: return "The transcription provider attempted a redirect, which is not allowed."
         case .responseTooLarge: return "The transcription response is too large."
         case .transcriptTooLong: return "The transcription is too long."
         }
@@ -90,6 +94,9 @@ public final class SpeechTranscriptionClient {
     }
 
     public static func multipartBody(fileURL: URL, model: String, boundary: String) throws -> Data {
+        guard model.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n\"")) == nil else {
+            throw SpeechTranscriptionError.invalidModel
+        }
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         if let size = attributes[.size] as? NSNumber, size.intValue > maxAudioBytes {
             throw SpeechTranscriptionError.fileTooLarge
@@ -167,6 +174,20 @@ private final class BoundedSpeechRequest: NSObject, URLSessionDataDelegate, @unc
         }, onCancel: { [weak self] in
             self?.cancel()
         })
+    }
+
+    // Never follow redirects: the Authorization header carries the API key, and a
+    // redirect would forward it to a host the base-URL validation never approved.
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+        task.cancel()
+        finish(.failure(SpeechTranscriptionError.redirectRefused))
     }
 
     func urlSession(
