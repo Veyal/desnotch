@@ -297,6 +297,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             agentVoiceItem.target = self
             menu.addItem(agentVoiceItem)
 
+            // The panel is non-activating, so keep the microphone grant path
+            // beside the voice actions for keyboard/VoiceOver users too. This
+            // also provides a recovery path when the system consent sheet is
+            // queued behind another privacy prompt.
+            let microphoneSettingsItem = NSMenuItem(
+                title: "Microphone Settings…",
+                action: #selector(openMicrophoneSettings(_:)),
+                keyEquivalent: ""
+            )
+            microphoneSettingsItem.target = self
+            menu.addItem(microphoneSettingsItem)
+
             addVoiceAndAgentStatus(to: menu, privacy: privacy)
             menu.addItem(NSMenuItem.separator())
 
@@ -422,6 +434,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleTalkToAgent(_ sender: NSMenuItem) {
         MainActor.assumeIsolated { quickActionsController?.toggleTalkToAgent() }
+    }
+
+    @objc func openMicrophoneSettings(_ sender: NSMenuItem) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @objc func confirmAgentCommand(_ sender: NSMenuItem) {
