@@ -298,6 +298,19 @@ confirmation/cancel are mirrored in `AppDelegate.rebuildMenu`, since the panel i
 
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal
 `.app` bundle + ad-hoc codesign). No Xcode project - SPM executable target only.
+
+`SpeechRecorder` derives the capture format from `AVAudioInputNode.outputFormat(forBus: 0)` and
+installs the tap with a nil format so AVAudioEngine keeps the input node's native stream format.
+The node's input bus can report zero channels even when a real USB microphone is available, so do
+not use that bus as the availability check. Conversely, with no input device macOS can expose the
+output device's nonzero format on the input node; reject zero-channel/zero-rate formats before
+installing a tap or AVAudioEngine raises an Objective-C exception. Create/recreate the engine only
+after microphone access is granted: an engine initialized before the first TCC grant can retain a
+stale format.
+`SystemMicrophonePermission` short-circuits already-authorized/denied states before requesting, and
+polls TCC for up to 60 seconds after showing a consent sheet (the completion callback can be queued
+behind another privacy prompt) so an authorized packaged build cannot remain stuck in the
+permission-requesting UI state.
 `scripts/permission-status.sh` executes the packaged binary with `DESNOTCH_PERMISSION_PROBE=1`
 to report that bundle identity's Accessibility/Microphone/Calendar state without prompting or
 starting the app; use `REQUIRE_GRANTED=1` only after the owner has granted all three.

@@ -41,8 +41,38 @@ public protocol MicrophonePermissionProviding {
 public struct SystemMicrophonePermission: MicrophonePermissionProviding {
     public init() {}
     public func requestPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
-            AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .denied, .restricted:
+            return false
+        case .notDetermined:
+            // The completion handler can be delayed indefinitely while the
+            // system consent sheet is queued behind another privacy prompt.
+            // Request access to show the sheet, then observe TCC directly so a
+            // successful click cannot leave DictationController stranded in
+            // `.requestingPermission`.
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            for _ in 0..<600 { // bounded at 60 seconds if the sheet is ignored
+                do {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                } catch {
+                    return false
+                }
+                switch AVCaptureDevice.authorizationStatus(for: .audio) {
+                case .authorized:
+                    return true
+                case .denied, .restricted:
+                    return false
+                case .notDetermined:
+                    continue
+                @unknown default:
+                    return false
+                }
+            }
+            return false
+        @unknown default:
+            return false
         }
     }
 }
@@ -54,7 +84,10 @@ public final class SpeechRecorder: SpeechRecording {
 
     public var isRecording: Bool { withStateLock { recording } }
     public var onAutoStop: (() -> Void)?
-    private let engine: AVAudioEngine
+    /// Created only after microphone access is granted. An engine initialized
+    /// before the first TCC grant can retain a stale zero/bogus input format,
+    /// and installing a tap with that format raises an Objective-C exception.
+    private var engine: AVAudioEngine?
     private let permission: MicrophonePermissionProviding
     private let fileManager: FileManager
     private let stateLock = NSCondition()
@@ -68,7 +101,7 @@ public final class SpeechRecorder: SpeechRecording {
     private var finishedURL: URL?
     private var writtenBytes = 0
 
-    public init(engine: AVAudioEngine = AVAudioEngine(),
+    public init(engine: AVAudioEngine? = nil,
                 permission: MicrophonePermissionProviding = SystemMicrophonePermission(),
                 fileManager: FileManager = .default) {
         self.engine = engine; self.permission = permission; self.fileManager = fileManager
@@ -78,11 +111,31 @@ public final class SpeechRecorder: SpeechRecording {
         guard !isRecording else { throw SpeechRecorderError.alreadyRecording }
         guard await permission.requestPermission() else { throw SpeechRecorderError.microphoneDenied }
         guard !isRecording else { throw SpeechRecorderError.alreadyRecording }
+        let engine = engine ?? AVAudioEngine()
+        self.engine = engine
         let input = engine.inputNode
-        let format = input.inputFormat(forBus: 0)
-        guard format.channelCount > 0 else { throw SpeechRecorderError.noInput }
+        // AVAudioInputNode receives audio from hardware on its output bus. Its
+        // input bus legitimately reports zero channels on real devices, which
+        // made every live recording fail with `.noInput`.
+        let format = input.outputFormat(forBus: 0)
+        // When the default input device is disconnected, AVAudioEngine exposes
+        // the output device's format here (for example 2ch/44.1 kHz) even
+        // though the input node has no renderable stream. Do not install a tap
+        // in that state: AVAudioNode raises an Objective-C exception instead
+        // of returning a Swift error.
+        guard format.channelCount > 0, format.sampleRate > 0 else {
+            self.engine = nil
+            throw SpeechRecorderError.noInput
+        }
         let url = fileManager.temporaryDirectory.appendingPathComponent("desnotch-dictation-\(UUID().uuidString).wav")
-        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forWriting: url, settings: format.settings)
+        } catch {
+            try? fileManager.removeItem(at: url)
+            self.engine = nil
+            throw SpeechRecorderError.captureFailed
+        }
         withStateLock {
             outputURL = url
             audioFile = file
@@ -96,9 +149,10 @@ public final class SpeechRecorder: SpeechRecording {
         // The tap runs on the realtime render thread: no file stats or long
         // critical sections here. Bytes are tracked arithmetically; the exact
         // size limit is still enforced against the real file in `stop()`.
-        let bytesPerFrame = max(1, Int(format.streamDescription.pointee.mBytesPerFrame))
-        let channelMultiplier = format.isInterleaved ? 1 : max(1, Int(format.channelCount))
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+        // Passing nil lets AVAudioEngine retain the input node's native format.
+        // Supplying a stale/non-matching format can raise an Objective-C
+        // exception when an input device changes between permission and start.
+        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
             guard let self else { return }
             guard self.beginWrite() else { return }
             defer { self.endWrite() }
@@ -111,6 +165,8 @@ public final class SpeechRecorder: SpeechRecording {
                 return
             }
             let total = self.withStateLock { () -> Int in
+                let bytesPerFrame = max(1, Int(buffer.format.streamDescription.pointee.mBytesPerFrame))
+                let channelMultiplier = buffer.format.isInterleaved ? 1 : max(1, Int(buffer.format.channelCount))
                 self.writtenBytes += Int(buffer.frameLength) * bytesPerFrame * channelMultiplier
                 return self.writtenBytes
             }
@@ -124,7 +180,17 @@ public final class SpeechRecorder: SpeechRecording {
             withStateLock { recording = false }
             input.removeTap(onBus: 0)
             cleanupFile()
-            throw error
+            // On macOS a missing/disconnected input often leaves the input
+            // node reporting the output device's format until start(). The
+            // failure then arrives as a low-level AVFAudio `canPerformIO`
+            // error; surface the actionable recorder error instead of a
+            // generic voice failure. Other start failures remain capture
+            // failures, but never leave a half-started engine behind.
+            let inputFormat = input.inputFormat(forBus: 0)
+            if inputFormat.channelCount == 0 || inputFormat.sampleRate == 0 {
+                throw SpeechRecorderError.noInput
+            }
+            throw SpeechRecorderError.captureFailed
         }
         let work = DispatchWorkItem { [weak self] in
             self?.finishCapture(reason: .durationLimitReached)
@@ -174,9 +240,10 @@ public final class SpeechRecorder: SpeechRecording {
         guard shouldFinish else { return }
         stopWorkItem?.cancel()
         stopWorkItem = nil
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
         waitForWritesToFinish()
+        engine = nil
         if shouldNotifyOwner {
             DispatchQueue.main.async { [weak self] in self?.onAutoStop?() }
         }
@@ -193,6 +260,7 @@ public final class SpeechRecorder: SpeechRecording {
             return url
         }
         if let url { try? fileManager.removeItem(at: url) }
+        engine = nil
         stopWorkItem?.cancel()
         stopWorkItem = nil
     }

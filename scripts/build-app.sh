@@ -37,7 +37,7 @@ fi
 
 build_host() {
   echo "==> swift build -c release" >&2
-  swift build -c release >&2
+  swift build -c release >&2 || return
   echo ".build/release/$APP_NAME"
 }
 
@@ -48,7 +48,7 @@ build_universal() {
     triple="$arch-apple-macosx13.0"
     scratch=".build-release-$arch"
     echo "==> swift build -c release --triple $triple" >&2
-    swift build -c release --triple "$triple" --scratch-path "$scratch" >&2
+    swift build -c release --triple "$triple" --scratch-path "$scratch" >&2 || return
     binary="$(find "$scratch" -type f -path '*/release/'"$APP_NAME" -perm -111 -print -quit)"
     [[ -n "$binary" ]] || { echo "error: $arch release binary not found" >&2; exit 1; }
     binaries+=("$binary")

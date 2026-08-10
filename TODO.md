@@ -9,7 +9,7 @@ remaining work that is not already implemented in the current source tree.
   `macos-14`. Local XCTest execution is unavailable with the installed Command Line Tools.
 - [x] Run the packaged app with Accessibility, Microphone, and Calendar granted; verify clean
   startup, status-menu parity, owned display-awake start/stop, menu Quit, and adapter cleanup.
-- [ ] Verify now-playing menu transport and volume scroll with an active real media session.
+- [x] Verify now-playing menu transport and volume scroll with an active real media session.
 
 ## P1 — hardware and distribution
 
@@ -63,4 +63,6 @@ remaining work that is not already implemented in the current source tree.
 - [x] Run `swift build`, `swift test` in CI, packaged-app static/runtime smoke tests, and the
   non-prompting permission-status probe.
 - [ ] Run the permission-granted interactive Dictate/Talk, paste, confirmation, menu-parity, and
-  denial/retry flows in a real desktop session.
+  denial/retry flows in a real desktop session. The installed app now exposes both voice actions,
+  waits for microphone consent without stranding the menu, and reports a clean no-input error;
+  live capture/transcription still needs the USB input device to be reconnected.
