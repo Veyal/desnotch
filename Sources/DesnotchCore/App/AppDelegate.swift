@@ -32,12 +32,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
         let smokeTestMode = ProcessInfo.processInfo.environment["DESNOTCH_SMOKE_TEST"] == "1"
         // Single-instance guard: if another desnotch is already running, bow out.
-        if !smokeTestMode {
-            let running = NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleIdentifier)
-            if running.contains(where: { $0 != NSRunningApplication.current }) {
-                NSApp.terminate(nil)
-                return
-            }
+        // This applies in smoke-test mode too, so the smoke script can never race a
+        // live install's adapter stream, status item, or SIGTERM assertions.
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleIdentifier)
+        if running.contains(where: { $0 != NSRunningApplication.current }) {
+            NSApp.terminate(nil)
+            return
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)

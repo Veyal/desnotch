@@ -128,6 +128,10 @@ public final class AgentProcessRunner: @unchecked Sendable {
                     }
 
                     process.waitUntilExit()
+                    // Cancel the deadline before the bounded drain below: a command
+                    // that finished just before the deadline must not be reported
+                    // as a timeout while its output is still being collected.
+                    timeoutSource.cancel()
                     // A quickly-exiting child can leave a descendant holding the
                     // pipe write ends; bound the drain instead of blocking until
                     // the full timeout on output that already arrived.
@@ -135,7 +139,6 @@ public final class AgentProcessRunner: @unchecked Sendable {
                         processBox.killOwnedGroup()
                         _ = readers.wait(timeout: .now() + 3)
                     }
-                    timeoutSource.cancel()
                     let reason = processBox.finish()
                     switch reason {
                     case .cancelled:
@@ -240,16 +243,12 @@ private final class AgentProcessBox: @unchecked Sendable {
         if completed { let reason = stopReason; lock.unlock(); return reason }
         completed = true
         let reason = stopReason
-        let groupID = processGroupID
         process = nil
         lock.unlock()
-        // `waitUntilExit` only waits for the direct child. A command may have
-        // spawned descendants which close the inherited pipes and outlive it;
-        // clean the still-owned process group before declaring the run drained.
-        if let groupID, groupExists(groupID) {
-            Darwin.kill(-groupID, SIGTERM)
-            Darwin.kill(-groupID, SIGKILL)
-        }
+        // The leader has already been reaped by `waitUntilExit` here, so its
+        // numeric pgid may have been recycled; signaling it now could hit an
+        // unrelated process. Group-wide kills happen only pre-reap
+        // (`terminateProcess`) or from the bounded pipe drain (`killOwnedGroup`).
         finished.signal()
         return reason
     }
@@ -294,8 +293,9 @@ private final class AgentProcessBox: @unchecked Sendable {
     }
 
     private func groupExists(_ groupID: pid_t) -> Bool {
-        if Darwin.kill(-groupID, 0) == 0 { return true }
-        return errno == EPERM
+        // EPERM means the group exists but is not ours to signal - a recycled
+        // pgid owned by someone else, never desnotch's own child group.
+        Darwin.kill(-groupID, 0) == 0
     }
 
     private func terminateProcess(_ process: Process) {

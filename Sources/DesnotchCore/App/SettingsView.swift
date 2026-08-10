@@ -18,6 +18,10 @@ struct SettingsView: View {
     @State private var apiKeyDraft = ""
     @State private var apiKeyStatus = "No API key stored"
     @State private var pasteAccessibilityTrusted = false
+    /// Drafts decouple typing from `SettingsStore`'s empty→default substitution,
+    /// which would otherwise repopulate the field mid-edit after select-all-delete.
+    @State private var providerBaseURLDraft = ""
+    @State private var transcriptionModelDraft = ""
 
     /// Fixed pane width, shared with the window sizing so both stay in step.
     static let contentWidth: CGFloat = 300
@@ -153,17 +157,25 @@ struct SettingsView: View {
 
             Text("Voice actions")
                 .font(.headline)
-            TextField("Provider base URL", text: $settings.transcriptionBaseURL)
+            TextField("Provider base URL", text: $providerBaseURLDraft)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Transcription provider base URL")
-            if QuickActionsController.validProviderURL(settings.transcriptionBaseURL) == nil {
+                .onChange(of: providerBaseURLDraft) { value in
+                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { settings.transcriptionBaseURL = trimmed }
+                }
+            if QuickActionsController.validProviderURL(providerBaseURLDraft) == nil {
                 Label("Use HTTPS, or HTTP only for localhost", systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 10))
                     .foregroundStyle(.yellow)
             }
-            TextField("Transcription model", text: $settings.transcriptionModel)
+            TextField("Transcription model", text: $transcriptionModelDraft)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Transcription model")
+                .onChange(of: transcriptionModelDraft) { value in
+                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { settings.transcriptionModel = trimmed }
+                }
             Text("Default: \(SpeechTranscriptionClient.defaultModel). Audio is uploaded only after you stop recording.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -274,7 +286,11 @@ struct SettingsView: View {
         // Extra breathing room so the last control never sits flush against the
         // window edge when scrolled to the bottom.
         .padding(.bottom, 8)
-        .onAppear { refreshCredentialAndPermissionState() }
+        .onAppear {
+            refreshCredentialAndPermissionState()
+            providerBaseURLDraft = settings.transcriptionBaseURL
+            transcriptionModelDraft = settings.transcriptionModel
+        }
     }
 
     /// Permission status + grant/retry flow for the notification mirror. Three states:

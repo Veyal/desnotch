@@ -109,9 +109,12 @@ public final class DictationController: ObservableObject {
                 guard generation == gen else { return }
                 state = .recording(mode)
                 task = nil
+                // Capture can fail terminally before this hop lands, while state
+                // was still .requestingPermission and the auto-stop no-oped.
+                if !recorder.isRecording { stop() }
             } catch is CancellationError {
-                guard generation == gen else { return }
                 recorder.cancel()
+                guard generation == gen else { return }
                 state = .idle
                 task = nil
             } catch {
@@ -175,9 +178,9 @@ public final class DictationController: ObservableObject {
     public var hasAccessibilityPermission: Bool { paster.isTrusted }
 
     private func fail(_ error: Error, mode: DictationMode?, generation gen: Int) {
+        recorder.cancel()
         guard generation == gen else { return }
         task = nil
-        recorder.cancel()
         let message = (error as? LocalizedError)?.errorDescription ?? "The voice action failed."
         state = .error(mode, message)
     }

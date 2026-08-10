@@ -15,6 +15,11 @@ REQUIRE_GRANTED="${REQUIRE_GRANTED:-0}"
   exit 1
 }
 
+# Caveat: the probe runs as a child of this shell, so TCC may attribute the
+# Accessibility check to the responsible process (Terminal, the CI runner)
+# rather than com.desnotch.app. "trusted" here can therefore be a false
+# positive for the .app when launched normally (e.g. via `open`/Finder);
+# verify the launched app itself before relying on REQUIRE_GRANTED=1.
 snapshot="$(DESNOTCH_PERMISSION_PROBE=1 "$EXECUTABLE")"
 accessibility="$(plutil -extract accessibility raw -o - - <<<"$snapshot")"
 microphone="$(plutil -extract microphone raw -o - - <<<"$snapshot")"

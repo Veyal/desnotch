@@ -149,7 +149,14 @@ public final class SettingsStore: ObservableObject {
     }
     /// Built from NSHomeDirectory on a fresh install; never a machine-specific literal.
     @Published public var agentWorkingDirectory: String {
-        didSet { set("agentWorkingDirectory", String(agentWorkingDirectory.prefix(1_024))) }
+        didSet {
+            let bounded = String(agentWorkingDirectory.prefix(1_024))
+            if bounded != agentWorkingDirectory {
+                agentWorkingDirectory = bounded
+                return
+            }
+            set("agentWorkingDirectory", bounded)
+        }
     }
     @Published public var agentAutoRunReadOnly: Bool {
         didSet { set("agentAutoRunReadOnly", agentAutoRunReadOnly) }

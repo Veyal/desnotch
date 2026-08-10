@@ -342,7 +342,9 @@ public final class AgentCommandController: ObservableObject {
     /// the pager at an arbitrary program, turning an approved read-only git
     /// invocation into code execution; force those off for every git run.
     nonisolated static func hardenedArguments(executable: URL, arguments: [String]) -> [String] {
-        guard executable.lastPathComponent == "git" else { return arguments }
+        // Case-insensitive match: on case-insensitive APFS a proposal of "GIT"
+        // resolves to /usr/bin/git and must receive the same hardening.
+        guard executable.lastPathComponent.lowercased() == "git" else { return arguments }
         var hardened = arguments
         if let subcommandIndex = hardened.firstIndex(where: { !$0.hasPrefix("-") }),
            ["diff", "log", "show"].contains(hardened[subcommandIndex].lowercased()) {
@@ -353,7 +355,10 @@ public final class AgentCommandController: ObservableObject {
             "-c", "diff.external=",
             "-c", "core.hooksPath=/dev/null",
             "-c", "core.pager=cat",
-            "--no-pager"
+            "--no-pager",
+            // Pathspec magic (":(top)…", ":/…") resolves relative to the repo
+            // toplevel and would escape the policy's cwd containment check.
+            "--literal-pathspecs"
         ] + hardened
     }
 
