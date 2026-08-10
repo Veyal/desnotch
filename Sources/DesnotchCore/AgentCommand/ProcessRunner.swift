@@ -139,6 +139,12 @@ public final class AgentProcessRunner: @unchecked Sendable {
                         processBox.killOwnedGroup()
                         _ = readers.wait(timeout: .now() + 3)
                     }
+                    // Descendants that redirected their output away from the pipes
+                    // let the drain finish without them; stop the still-owned group
+                    // here too so a fast-exiting leader cannot leak them. The
+                    // group's pgid cannot be recycled while any member survives,
+                    // and killOwnedGroup only signals a group we can still address.
+                    processBox.killOwnedGroup()
                     let reason = processBox.finish()
                     switch reason {
                     case .cancelled:
@@ -248,7 +254,7 @@ private final class AgentProcessBox: @unchecked Sendable {
         // The leader has already been reaped by `waitUntilExit` here, so its
         // numeric pgid may have been recycled; signaling it now could hit an
         // unrelated process. Group-wide kills happen only pre-reap
-        // (`terminateProcess`) or from the bounded pipe drain (`killOwnedGroup`).
+        // (`terminateProcess`) or via the guarded `killOwnedGroup` path.
         finished.signal()
         return reason
     }
