@@ -27,6 +27,9 @@ public final class NowPlayingController: ObservableObject {
     private var pausedExpiryTimer: Timer?
     private var lastToggleAt: Date?
     private var cachedPlayingInfo: NowPlayingInfo?
+    /// Invalidates an in-flight `get` when a newer transport action or stream update
+    /// arrives, so a slower old reconciliation can never overwrite fresher state.
+    private var reconciliationGeneration: UInt = 0
     private let bridge = MediaRemoteBridge.shared
 
     /// Whether there's anything to show at all - drives the collapsed indicator's
@@ -47,15 +50,28 @@ public final class NowPlayingController: ObservableObject {
         return cachedPlayingInfo
     }
 
+    /// Short foreground clips temporarily replace the system now-playing session, so
+    /// preserve the underlying music cache across those updates. Any authoritative
+    /// empty, paused, or stopped long-form update invalidates it; otherwise an old song
+    /// can be resurrected by an unrelated short clip hours after playback ended.
+    nonisolated static func nextPlayingCache(
+        for newInfo: NowPlayingInfo?,
+        current: NowPlayingInfo?
+    ) -> NowPlayingInfo? {
+        guard let newInfo else { return nil }
+        if newInfo.isShortForegroundItem { return current }
+        return newInfo.isPlaying ? newInfo : nil
+    }
+
     private func applyRemote(_ newInfo: NowPlayingInfo?) {
-        if let newInfo, newInfo.isPlaying, !newInfo.isShortForegroundItem {
-            cachedPlayingInfo = newInfo
-        }
+        cachedPlayingInfo = Self.nextPlayingCache(for: newInfo, current: cachedPlayingInfo)
         info = Self.fallback(for: newInfo, cachedPlayingInfo: cachedPlayingInfo)
 
         // A real update has arrived, so a pending optimistic toggle is confirmed; no
         // need for the reconciliation fallback.
         reconcileTimer?.invalidate()
+        reconcileTimer = nil
+        reconciliationGeneration &+= 1
         updatePausedExpiry()
         // Expansion is driven by the view (needs-attention || hover), so nothing to push here.
     }
@@ -106,6 +122,7 @@ public final class NowPlayingController: ObservableObject {
         optimistic.elapsed = optimistic.position(at: now)
         optimistic.isPlaying.toggle()
         optimistic.elapsedAt = now
+        cachedPlayingInfo = Self.nextPlayingCache(for: optimistic, current: cachedPlayingInfo)
         info = optimistic
         updatePausedExpiry()
         bridge.send(.togglePlayPause)
@@ -131,6 +148,7 @@ public final class NowPlayingController: ObservableObject {
         let clamped = optimistic.duration.map { min(max(0, seconds), $0) } ?? max(0, seconds)
         optimistic.elapsed = clamped
         optimistic.elapsedAt = Date()
+        cachedPlayingInfo = Self.nextPlayingCache(for: optimistic, current: cachedPlayingInfo)
         info = optimistic
         updatePausedExpiry()
         bridge.seek(to: clamped)
@@ -143,23 +161,28 @@ public final class NowPlayingController: ObservableObject {
     /// update - without it the optimistic UI could stay wrong indefinitely.
     private func scheduleReconciliation() {
         reconcileTimer?.invalidate()
+        reconciliationGeneration &+= 1
+        let generation = reconciliationGeneration
         let timer = Timer(timeInterval: reconciliationDelay, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { [weak self] in self?.reconcileWithGet() }
+            MainActor.assumeIsolated { [weak self] in
+                self?.reconcileWithGet(generation: generation)
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         reconcileTimer = timer
     }
 
-    private func reconcileWithGet() {
-        bridge.getOnce { [weak self] result in
+    private func reconcileWithGet(generation: UInt) {
+        bridge.getOnce { [weak self] getResult in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard let result else { return }
-                if result.hasContent {
-                    self.info = result
-                    self.updatePausedExpiry()
-                } else if !self.hasActiveMedia {
-                    self.info = nil
+                guard let self, self.reconciliationGeneration == generation else { return }
+                switch getResult {
+                case .success(let result):
+                    self.applyRemote(result)
+                case .failure:
+                    // Preserve the optimistic state when reconciliation itself failed;
+                    // only a successful empty payload is authoritative enough to clear.
+                    break
                 }
             }
         }

@@ -29,6 +29,14 @@ import os
 public final class MediaRemoteBridge {
     public static let shared = MediaRemoteBridge()
 
+    /// Distinguishes an authoritative "nothing is playing" response from a failed
+    /// reconciliation. Collapsing both to `nil` leaves optimistic transport state
+    /// stuck forever when `get` succeeds with an empty payload.
+    public enum GetResult: Equatable, @unchecked Sendable {
+        case success(NowPlayingInfo?)
+        case failure
+    }
+
     public enum Command: Int {
         case play = 0
         case pause = 1
@@ -53,6 +61,9 @@ public final class MediaRemoteBridge {
     private var stdoutBuffer = Data()
     private var isStopping = false
     private var restartAttempt = 0
+    /// One-shot reconciliation is bounded and independently owned so a wedged `get`
+    /// can neither block the stream's serial state queue nor survive app shutdown.
+    private let getRunner = SubprocessRunner(outputByteCap: 32 * 1024 * 1024)
 
     private init() {
         let located = Self.locateAdapter()
@@ -180,34 +191,40 @@ public final class MediaRemoteBridge {
 
     // MARK: - One-shot get (reconciliation fallback)
 
-    /// Runs the adapter `get` once and returns the parsed now-playing info on the main
+    /// Runs the adapter `get` once and returns an authoritative result on the main
     /// queue. Used by `NowPlayingController` to reconcile after a transport command when
-    /// the change-driven stream hasn't confirmed the new state.
-    public func getOnce(completion: @escaping @Sendable (NowPlayingInfo?) -> Void) {
+    /// the change-driven stream hasn't confirmed the new state. This path deliberately
+    /// does not run on `queue`: a failed private-framework call must not freeze stream
+    /// delivery or the synchronous shutdown path.
+    public func getOnce(completion: @escaping @Sendable (GetResult) -> Void) {
         guard let scriptURL, let frameworkPath else {
-            DispatchQueue.main.async { completion(nil) }
+            DispatchQueue.main.async { completion(.failure) }
             return
         }
-        queue.async { [logger] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-            process.arguments = [scriptURL.path, frameworkPath, "get"]
-            let stdout = Pipe()
-            process.standardOutput = stdout
-            process.standardError = FileHandle.nullDevice
+        let runner = getRunner
+        Task.detached(priority: .userInitiated) { [logger] in
+            let resolved: GetResult
             do {
-                try process.run()
+                let result = try await runner.run(
+                    executable: URL(fileURLWithPath: "/usr/bin/perl"),
+                    arguments: [scriptURL.path, frameworkPath, "get"],
+                    cwd: scriptURL.deletingLastPathComponent(),
+                    timeout: 5
+                )
+                if result.truncated {
+                    logger.error("Adapter get output exceeded the reconciliation limit.")
+                    resolved = .failure
+                } else {
+                    resolved = Self.getResult(
+                        from: Data(result.stdout.utf8),
+                        terminationStatus: result.exitCode
+                    )
+                }
             } catch {
-                logger.error("Adapter get failed to launch: \(error.localizedDescription, privacy: .public).")
-                DispatchQueue.main.async { completion(nil) }
-                return
+                logger.error("Adapter get failed: \(error.localizedDescription, privacy: .public).")
+                resolved = .failure
             }
-            let data = stdout.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            let info = Self.payload(from: data).map { payload in
-                payload.isEmpty ? nil : NowPlayingInfo(adapterPayload: payload)
-            } ?? nil
-            DispatchQueue.main.async { completion(info) }
+            DispatchQueue.main.async { completion(resolved) }
         }
     }
 
@@ -259,6 +276,7 @@ public final class MediaRemoteBridge {
             proc?.terminate()
             streamProcess = nil
         }
+        getRunner.shutdown(timeout: 1)
     }
 
     // MARK: - Parsing
@@ -271,5 +289,23 @@ public final class MediaRemoteBridge {
             let payload = json["payload"] as? [String: Any]
         else { return nil }
         return payload
+    }
+
+    /// Pure reconciliation decoder, kept separate so empty-success and failure
+    /// semantics stay regression-testable without launching the private adapter.
+    /// `stream` emits an envelope with `payload`; `get` emits the payload dictionary
+    /// directly (verified against the vendored adapter), so accept both shapes.
+    public static func getResult(from data: Data, terminationStatus: Int32 = 0) -> GetResult {
+        guard terminationStatus == 0,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return .failure }
+        let payload: [String: Any]
+        if object.keys.contains("payload") {
+            guard let nested = object["payload"] as? [String: Any] else { return .failure }
+            payload = nested
+        } else {
+            payload = object
+        }
+        return .success(payload.isEmpty ? nil : NowPlayingInfo(adapterPayload: payload))
     }
 }

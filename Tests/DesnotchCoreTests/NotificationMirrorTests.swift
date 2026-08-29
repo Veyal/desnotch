@@ -181,6 +181,17 @@ final class NotificationMirrorSettingsTests: XCTestCase {
         XCTAssertTrue(store.mutedNotificationApps.isEmpty)
     }
 
+    func testControllerMutesTheAppNamedByTheRenderedAction() {
+        let store = freshStore("desnotch.tests.mirror-bound-action")
+        let controller = NotificationMirrorController(
+            presentation: NotchPillPresentation(), settings: store
+        )
+
+        controller.muteApp("Slack")
+
+        XCTAssertEqual(store.mutedNotificationApps, ["slack"])
+    }
+
     func testControllerPermissionStateTransitions() {
         let store = freshStore("desnotch.tests.mirror-state")
         let controller = NotificationMirrorController(

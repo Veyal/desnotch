@@ -55,11 +55,11 @@ optimistic local flip rather than waiting for the round-trip; `applyRemote()` re
 real state arrives (a no-op if it already matches the guess). Don't try to "fix" the latency by
 adding polling or shortening the adapter path - the subprocess spawn was never the slow part.
 
-## Pill visibility: always-visible notch, expands on hover only
+## Pill visibility: always-visible notch, hover-controlled in auto mode
 
 The notch is ALWAYS rendered (even with nothing active it hosts the calendar glance + file
-tray; on real hardware the empty state is invisible black-on-black). Hover expands it;
-exit collapses after a `hoverExitDelay` grace. **Hover has exactly one authority**:
+tray; on real hardware the empty state is invisible black-on-black). In hover-auto mode,
+hover expands it and exit collapses after a `hoverExitDelay` grace. **Hover has exactly one authority**:
 `NotchWindowController.updateInteractivity()`'s cursor-in-pill-rect test, fed by
 global+local mouse monitors (`.mouseMoved` + `.leftMouseDragged` - the latter so file
 drags reach the tray's drop target). SwiftUI `.onHover` was removed deliberately: its
@@ -69,11 +69,16 @@ after 1s while still hovering" bug). Don't reintroduce it. The same test drives
 expanded pill stacks every section at once - no priority switch. An agent needing
 attention changes the wing icon (lightning, yellow) but does NOT force the pill open.
 
-The expanded pill has a **fixed width** (`NotchPillView.expandedBaseWidth`, 300pt; on a notch
-screen at least cutout + 2 wings). This is deliberate: the rows contain greedy `Spacer`s, so
+The expanded pill has a **fixed width** (`SettingsStore.expandedWidth`, 300pt by default; on a
+notch screen at least cutout + 2 wings). This is deliberate: the rows contain greedy `Spacer`s, so
 without a fixed width the pill fills whatever the panel proposes and the measured size feeds
 back into the panel's grow-only sizing. Keep the fixed width (and the per-text `maxWidth` caps)
-when adding content - don't let the expanded pill become content-width-driven again.
+when adding content - don't let the expanded pill become content-width-driven again. Natural
+size is reported through the single `PillContentSizePreferenceKey`; don't split width/height into
+separate callbacks, which doubles panel resize and interactivity work during animations. Root
+animation triggers are grouped into `PillPrimaryAnimationState`/`PillSecondaryAnimationState` so
+simultaneous changes resolve predictably; add new triggers to those tokens instead of stacking more
+root `.animation` modifiers.
 
 ## Notch geometry: never draw behind the cutout
 
@@ -146,20 +151,32 @@ existing `Task.detached` pattern.
   first scan after launch). Uses `UNUserNotificationCenter` only in a packaged `.app` -
   a bare `swift run` binary has no bundle identity and would crash, so it falls back to
   `NSSound`. Toggleable from the status menu (`notifyAgentNeedsYou` default, on by default).
-- **Calendar glance** (`CalendarController`, EventKit): next non-all-day event within 12h as
+- **Calendar glance** (`CalendarController`, EventKit): next non-all-day event within 24h as
   an expanded row; it keeps the pill alive on its own only when imminent (<30 min or
   ongoing). Usage-description keys live in `scripts/build-app.sh`'s Info.plist. If access is
-  denied or can't be prompted (headless/SSH bare binary), the row just never appears.
+  denied or can't be prompted (headless/SSH bare binary), the row just never appears. A Join
+  action is exposed only for recognized HTTP(S) conferencing hosts found in the event URL,
+  bounded location, or bounded notes. Location/notes are never rendered or persisted, and the
+  same Join action must remain mirrored in the status menu.
 - **Stuck-process detector** (`ProcessMonitorController`): samples `ps -axo pid,pcpu,comm`
   every 30s; a process sustaining ≥90% CPU for ≥10 min is flagged (pill section + one
   notification per streak). The sustained window is the point - don't "simplify" it to a
   single high-CPU sample, that just flags every compile.
+- **Utility actions**: Privacy mode is the pill's only always-present action. Keep the
+  low-frequency display-awake control in the status menu; `DisplayAwakeController` owns its
+  `/usr/bin/caffeinate -d -w <desnotch-pid>` subprocess, which is session-scoped and must stop on
+  toggle-off/app exit. Never discover or terminate caffeinate processes launched outside desnotch.
 
 - **File tray** (`TrayController`): drop files onto the notch shape (SwiftUI `.onDrop` of
   `.fileURL`); stores path references only (UserDefaults-persisted, dead paths pruned on
   load, 8 max). Rows: click opens, drag out re-exports via `NSItemProvider`, ✕ removes.
   Drag delivery depends on the `.leftMouseDragged` monitors making the panel interactive
   mid-drag (Dropover-style; verify on hardware if drops ever stop landing).
+- **Clipboard pocket** (`ClipboardController`, OFF by default): stores up to eight bounded
+  plain-text copies in memory only and clears on disable/exit. It polls `NSPasteboard.changeCount`
+  before reading, skips concealed/transient/password-manager marker types, and never persists or
+  logs content. Keep clipboard previews behind `privacyRedacted`; copy/remove/clear must remain
+  mirrored in the status menu.
 - **Now-playing timeline**: `NowPlayingInfo.duration/elapsed/elapsedAt` (adapter `duration`/
   `elapsedTime`/`timestamp`; excluded from `==` on purpose - they change every delivery).
   Position is extrapolated client-side (`position(at:)`) and ticked by a 1s `TimelineView`
@@ -173,7 +190,11 @@ existing `Task.detached` pattern.
   `pausedRetention` (15 min) after its adapter timestamp, via a timer in
   `NowPlayingController.updatePausedExpiry` (the change-driven stream sends nothing
   further for a paused item, so a timer is the only staleness signal). Every path that
-  sets `info` must call `updatePausedExpiry()`.
+  sets `info` must call `updatePausedExpiry()`. Preserve the playing-item fallback cache
+  only across a short foreground interruption; authoritative nil/paused long-form updates
+  clear it. Reconciliation `get` calls distinguish successful-empty from failure, stay
+  timeout-bounded off the stream queue, and carry a generation so an older result cannot
+  overwrite a newer stream update or transport action.
 
 - **Notification mirror** (`Sources/DesnotchCore/NotificationMirror/`, v0.4.x, OFF by
   default): mirrors other apps' notification banners via an `AXObserver` on the
@@ -232,23 +253,26 @@ needs-you wing icon bounces on count change (macOS 14+ symbolEffect); `BatteryCo
 with no bundle version; `isVersion(_:newerThan:)` is tested); `MediaUseMonitor` (5s poll
 of CoreAudio/CMIO "running somewhere" - no capture permission needed - orange mic/green
 camera dots overlaid top-trailing on the shape); privacy mode (`privacyModeEnabled`,
-default OFF, quick toggle in the status menu) blanks agent task titles and calendar
-titles; tray drag-out uses `NSItemProvider(contentsOf:)` (real Finder copies) and
+default OFF, quick toggle in the status menu) follows the centralized
+`NotchPillView.privacyRedacted` boundary above; tray drag-out uses
+`NSItemProvider(contentsOf:)` (real Finder copies) and
 QuickLook thumbnails cached in `TrayController.thumbnails`.
 
 Review-remediation notes (2026-07-31), keep these invariants: `updateForScreenChange`
 must ALWAYS call `applyPlacement` after the grow-only `resize` (the grow-only guard
 alone leaves the panel at stale coordinates after a resolution/display change). The
 status menu is rebuilt on every open (`AppDelegate.rebuildMenu`, via NSMenuDelegate) and
-is the ONLY keyboard/VoiceOver path to media transport, agent jump, and tray - the panel
-itself is non-activating and unreachable by assistive tech; keep new pill actions
+is the ONLY keyboard/VoiceOver path to media transport, agent jump, meeting join, clipboard, and
+tray - the panel itself is non-activating and unreachable by assistive tech; keep new pill actions
 mirrored there. Notification permission is requested at launch, not lazily (a lazy
 request dropped the triggering notification). Scanner title/cwd/Codex-header facts are
 cached in `AgentActivityScanner` (lock-guarded, nil results retried, cap-bounded) - keep
 new derived-from-file facts behind that cache. The agent publish signature includes an
 elapsed-minutes bucket so row times/ordering refresh ~1/min. Calendar queries run off
 the main actor (`queryNextEvent`) and permission is only requested once the feature is
-enabled. CI (.github/workflows/ci.yml, macos-14) is where tests actually run.
+enabled. Notification menu actions bind the app name they rendered through
+`representedObject`; never retarget an already-open action to a newer `latest` banner.
+CI (.github/workflows/ci.yml, macos-14) is where tests actually run.
 
 Pill behavior/sizing is user-configurable via `SettingsStore` (Settings window):
 `pillMode` (hover-auto vs always-expanded), `hoverCollapseDelay`, `minimizedWidth/Height`
@@ -262,6 +286,11 @@ bounds on read AND write - keep new knobs on that pattern. Tests:
 
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal
 `.app` bundle + ad-hoc codesign). No Xcode project - SPM executable target only.
+
+`scripts/permission-status.sh` executes the packaged binary with `DESNOTCH_PERMISSION_PROBE=1`
+to print Accessibility/Calendar state without prompting or starting the app. Its inline caveat
+about responsible-process attribution is authoritative; use `REQUIRE_GRANTED=1` only after
+verifying the normally launched app has both grants.
 
 ## Maintaining this file
 

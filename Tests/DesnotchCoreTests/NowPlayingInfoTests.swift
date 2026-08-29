@@ -133,6 +133,32 @@ final class StaleNowPlayingTests: XCTestCase {
             NowPlayingInfo.pausedRetention
         )
     }
+
+    func testFallbackCacheClearsWhenPlaybackEnds() {
+        let music = NowPlayingInfo(adapterPayload: [
+            "title": "Song", "playing": true, "duration": 180.0
+        ])
+        let pausedMusic = NowPlayingInfo(adapterPayload: [
+            "title": "Song", "playing": false, "duration": 180.0
+        ])
+
+        XCTAssertNil(NowPlayingController.nextPlayingCache(for: nil, current: music))
+        XCTAssertNil(NowPlayingController.nextPlayingCache(for: pausedMusic, current: music))
+    }
+
+    func testFallbackCacheSurvivesOnlyShortForegroundInterruption() {
+        let music = NowPlayingInfo(adapterPayload: [
+            "title": "Song", "playing": true, "duration": 180.0
+        ])
+        let voiceMessage = NowPlayingInfo(adapterPayload: [
+            "title": "Voice message", "playing": true, "duration": 12.0
+        ])
+
+        XCTAssertEqual(
+            NowPlayingController.nextPlayingCache(for: voiceMessage, current: music),
+            music
+        )
+    }
 }
 
 final class ArtworkCacheTests: XCTestCase {

@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- **Focused utility surface:** removed the experimental voice dictation and AI command controls,
+  including their microphone, provider-key, and Codex transport settings. Privacy Mode is now the
+  pill's single utility action; the occasional Keep Display Awake control remains in the status
+  menu and still owns only its own session-scoped `caffeinate` process.
+- **Private clipboard pocket:** optional and off by default; keeps up to eight bounded plain-text
+  copies in memory only, ignores password-manager/transient pasteboard markers, deduplicates, and
+  clears on disable or quit. Copy/remove/clear actions are available in the pill and status menu,
+  with Privacy Mode redaction.
+- **One-click meeting join:** recognized HTTP(S) conferencing links from calendar event URL,
+  location, or notes are available from both the calendar row and status menu. Notes and locations
+  are inspected transiently and never rendered or persisted.
+- **Smoother pill layout:** natural size now travels through one combined SwiftUI preference,
+  avoiding duplicate panel-resize/interactivity work during every animated layout pass. Competing
+  root animation modifiers are consolidated into primary/secondary state transactions,
+  and calendar time formatting no longer constructs a formatter per render.
+- **Now-playing and notification reliability:** reconciliation distinguishes adapter failure from
+  a valid empty result, generation-checks one-shot results so stale work cannot overwrite newer
+  stream state, and notification menu actions stay bound to the banner they rendered.
+- **Distribution readiness:** refreshed production app icon, host/static and runtime bundle smoke
+  checks, optional validated universal arm64+x86_64 builds, configurable bundle identity, and
+  opt-in Developer ID/hardened-runtime/notarization support. The non-prompting packaged-app probe
+  reports Accessibility and Calendar authorization state. External signing and physical-notch/
+  Intel runtime checks remain gated on the corresponding credentials and hardware.
+- **Privacy fixes:** agent task titles, media metadata, calendar titles, and tray filenames no
+  longer leak through VoiceOver labels or tooltips while Privacy mode is enabled.
+
 ## v0.8.1 — 2026-08-01
 
 - ✓ **Fix: Settings window couldn't reach its lower half.** The window was sized to the

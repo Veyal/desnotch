@@ -4,20 +4,24 @@ import Foundation
 import os
 
 /// Publishes the next upcoming (non-all-day) calendar event within the lookahead window
-/// for the pill's calendar glance row. Access is requested once at init; if the user
-/// denies it (or the process can't prompt), `nextEvent` simply stays nil and the row
-/// never appears. Refreshes on a timer plus `EKEventStoreChanged`.
+/// for the pill's calendar glance row. Access is requested once when the feature is enabled;
+/// denial (or an inability to prompt) is surfaced as a hint row. Refreshes on a timer plus
+/// `EKEventStoreChanged` after access is granted.
 @MainActor
 public final class CalendarController: ObservableObject {
     public struct NextEvent: Equatable {
         public let title: String
         public let start: Date
         public let end: Date
+        /// A recognized web-conferencing URL, if the event contains one. The URL is
+        /// used only as an open target and is never rendered or persisted.
+        public let joinURL: URL?
 
-        public init(title: String, start: Date, end: Date) {
+        public init(title: String, start: Date, end: Date, joinURL: URL? = nil) {
             self.title = title
             self.start = start
             self.end = end
+            self.joinURL = joinURL
         }
     }
 
@@ -42,18 +46,18 @@ public final class CalendarController: ObservableObject {
     private var hasAccess = false
     private var accessRequested = false
 
-    public init() {
+    public init(permissionRequestsEnabled: Bool = true) {
         // Only prompt for calendar permission when the feature is actually enabled -
         // a permission dialog for a toggled-off feature is first-run noise. If the user
         // enables it later, the settings observer requests access at that moment.
-        if SettingsStore.shared.calendarEnabled {
+        if permissionRequestsEnabled && SettingsStore.shared.calendarEnabled {
             requestAccess()
         }
         settingsObserver = SettingsStore.shared.$calendarEnabled
             .removeDuplicates()
             .sink { [weak self] enabled in
                 guard let self else { return }
-                if enabled {
+                if enabled && permissionRequestsEnabled {
                     self.requestAccess()
                     self.refresh()
                 } else if self.nextEvent != nil {
@@ -144,7 +148,50 @@ public final class CalendarController: ObservableObject {
             .filter { !$0.isAllDay }
             .sorted { $0.startDate < $1.startDate }
             .first { $0.endDate > now }
-            .map { NextEvent(title: $0.title ?? "Event", start: $0.startDate, end: $0.endDate) }
+            .map {
+                NextEvent(
+                    title: $0.title ?? "Event",
+                    start: $0.startDate,
+                    end: $0.endDate,
+                    joinURL: meetingURL(explicit: $0.url, location: $0.location, notes: $0.notes)
+                )
+            }
+    }
+
+    /// Finds a known web-conferencing link without exposing arbitrary URLs as a
+    /// misleading "Join" action. Notes/location are bounded before link detection and
+    /// discarded immediately; only the selected URL reaches `NextEvent`.
+    nonisolated static func meetingURL(
+        explicit: URL?,
+        location: String?,
+        notes: String?
+    ) -> URL? {
+        var candidates: [URL] = []
+        if let explicit { candidates.append(explicit) }
+
+        for text in [location, notes].compactMap({ $0 }).map({ String($0.prefix(4_096)) }) {
+            guard let detector = try? NSDataDetector(
+                types: NSTextCheckingResult.CheckingType.link.rawValue
+            ) else { continue }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            candidates.append(contentsOf: detector.matches(in: text, range: range).compactMap(\.url))
+        }
+
+        return candidates.first(where: isRecognizedMeetingURL)
+    }
+
+    nonisolated private static func isRecognizedMeetingURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let host = url.host?.lowercased()
+        else { return false }
+
+        let providers = [
+            "zoom.us", "teams.microsoft.com", "teams.live.com", "meet.google.com",
+            "webex.com", "chime.aws", "whereby.com", "around.co", "bluejeans.com",
+            "meet.jit.si", "gotomeeting.com", "goto.com", "facetime.apple.com"
+        ]
+        return providers.contains { host == $0 || host.hasSuffix(".\($0)") }
     }
 
     deinit {

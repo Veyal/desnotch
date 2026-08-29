@@ -16,3 +16,11 @@ jobs:
         run: swift build -v
       - name: Test
         run: swift test
+      - name: Package (host architecture, ad-hoc)
+        run: scripts/build-app.sh
+      - name: Packaged bundle smoke checks
+        run: scripts/smoke-test.sh dist/desnotch.app
+      - name: Packaged permission-status probe
+        run: scripts/permission-status.sh dist/desnotch.app
+      - name: Packaged runtime startup and cleanup
+        run: scripts/runtime-smoke-test.sh dist/desnotch.app

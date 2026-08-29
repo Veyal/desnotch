@@ -13,6 +13,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentActivityController: AgentActivityController?
     private var calendarController: CalendarController?
     private var processMonitorController: ProcessMonitorController?
+    private var displayAwakeController: DisplayAwakeController?
+    private var clipboardController: ClipboardController?
     private var trayController: TrayController?
     private var batteryController: BatteryController?
     private var mediaUseMonitor: MediaUseMonitor?
@@ -29,7 +31,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        let smokeTestMode = ProcessInfo.processInfo.environment["DESNOTCH_SMOKE_TEST"] == "1"
         // Single-instance guard: if another desnotch is already running, bow out.
+        // This applies in smoke-test mode too, so the smoke script can never race a
+        // live install's adapter stream, status item, or SIGTERM assertions.
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleIdentifier)
         if running.contains(where: { $0 != NSRunningApplication.current }) {
             NSApp.terminate(nil)
@@ -41,14 +46,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Ask for notification permission now, not at the first needs-you event - a
         // lazy request drops the very notification that triggered it.
-        AgentAttentionNotifier.shared.requestAuthorizationAtLaunch()
+        if !smokeTestMode {
+            AgentAttentionNotifier.shared.requestAuthorizationAtLaunch()
+        }
 
         let presentation = NotchPillPresentation()
         self.presentation = presentation
         let nowPlayingController = NowPlayingController(presentation: presentation)
         let agentActivityController = AgentActivityController(presentation: presentation)
-        let calendarController = MainActor.assumeIsolated { CalendarController() }
+        let calendarController = MainActor.assumeIsolated {
+            CalendarController(permissionRequestsEnabled: !smokeTestMode)
+        }
         let processMonitorController = MainActor.assumeIsolated { ProcessMonitorController() }
+        let displayAwakeController = MainActor.assumeIsolated { DisplayAwakeController() }
+        let clipboardController = MainActor.assumeIsolated { ClipboardController() }
         let trayController = MainActor.assumeIsolated { TrayController() }
         let batteryController = MainActor.assumeIsolated { BatteryController(presentation: presentation) }
         let mediaUseMonitor = MainActor.assumeIsolated { MediaUseMonitor() }
@@ -59,24 +70,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.agentActivityController = agentActivityController
         self.calendarController = calendarController
         self.processMonitorController = processMonitorController
+        self.displayAwakeController = displayAwakeController
+        self.clipboardController = clipboardController
         self.trayController = trayController
         self.batteryController = batteryController
         self.mediaUseMonitor = mediaUseMonitor
         self.notificationMirror = notificationMirror
 
-        MainActor.assumeIsolated {
+        if !smokeTestMode { MainActor.assumeIsolated {
             let checker = UpdateChecker()
             checker.onUpdateAvailable = { [weak self] version in
                 self?.showUpdateMenuItem(version: version)
             }
             self.updateChecker = checker
-        }
+        } }
 
         if let windowController = NotchWindowController(
             controller: nowPlayingController,
             agentActivity: agentActivityController,
             calendar: calendarController,
             processMonitor: processMonitorController,
+            clipboard: clipboardController,
             tray: trayController,
             battery: batteryController,
             mediaUse: mediaUseMonitor,
@@ -98,6 +112,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let aac = self.agentActivityController,
                       let cal = self.calendarController,
                       let pmc = self.processMonitorController,
+                      let clipboard = self.clipboardController,
                       let trayC = self.trayController,
                       let bat = self.batteryController,
                       let muse = self.mediaUseMonitor,
@@ -107,6 +122,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                           agentActivity: aac,
                           calendar: cal,
                           processMonitor: pmc,
+                          clipboard: clipboard,
                           tray: trayC,
                           battery: bat,
                           mediaUse: muse,
@@ -128,6 +144,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
+        stopOwnedProcesses()
+    }
+
+    /// Shared by normal AppKit termination and the signal sources in `main.swift`.
+    public func stopOwnedProcesses() {
+        MainActor.assumeIsolated {
+            displayAwakeController?.stop()
+        }
         MediaRemoteBridge.shared.stopStreaming()
     }
 
@@ -145,10 +169,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The status menu is rebuilt on every open. It doubles as the keyboard/VoiceOver
-    /// mirror of the pill: media transport, jump-to-agent, and tray items are all
-    /// reachable here, because the pill's own panel is non-activating and hover-driven -
-    /// assistive tech cannot focus it. Rebuilding also keeps the checkbox states honest
-    /// when settings change through the Settings window.
+    /// mirror of the pill's actions, because the pill's own panel is non-activating and
+    /// hover-driven - assistive tech cannot focus it. Rebuilding also keeps the checkbox
+    /// states honest when settings change through the Settings window.
     private func rebuildMenu() {
         guard let menu = statusMenu else { return }
         menu.removeAllItems()
@@ -208,6 +231,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
             }
 
+            if SettingsStore.shared.calendarEnabled,
+               let event = calendarController?.nextEvent,
+               let joinURL = event.joinURL {
+                let name = privacy ? "Meeting" : String(event.title.prefix(40))
+                let item = NSMenuItem(
+                    title: "Join \(name)",
+                    action: #selector(menuJoinMeeting(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = joinURL
+                menu.addItem(item)
+                menu.addItem(NSMenuItem.separator())
+            }
+
             if let trayItems = trayController?.items, !trayItems.isEmpty {
                 let submenu = NSMenu()
                 for url in trayItems {
@@ -227,6 +265,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
             }
 
+            if SettingsStore.shared.clipboardHistoryEnabled,
+               let entries = clipboardController?.entries,
+               !entries.isEmpty {
+                let clipboardItem = NSMenuItem(title: "Clipboard", action: nil, keyEquivalent: "")
+                clipboardItem.submenu = makeClipboardSubmenu(entries: entries, privacy: privacy)
+                menu.addItem(clipboardItem)
+                menu.addItem(NSMenuItem.separator())
+            }
+
             // Accessibility mirror for the notification row (the panel is unreachable
             // by assistive tech): jump to the source app, or mute it. App name only -
             // banner content stays out of the menu (it outlives the 60s pill row).
@@ -238,6 +285,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     keyEquivalent: ""
                 )
                 openItem.target = self
+                openItem.representedObject = banner.appName
                 menu.addItem(openItem)
                 let muteItem = NSMenuItem(
                     title: "Mute notifications from \(banner.appName)",
@@ -245,6 +293,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     keyEquivalent: ""
                 )
                 muteItem.target = self
+                muteItem.representedObject = banner.appName
                 menu.addItem(muteItem)
                 menu.addItem(NSMenuItem.separator())
             }
@@ -257,6 +306,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             privacyItem.target = self
             privacyItem.state = privacy ? .on : .off
             menu.addItem(privacyItem)
+
+            let displayAwakeItem = NSMenuItem(
+                title: "Keep Display Awake",
+                action: #selector(toggleDisplayAwake(_:)),
+                keyEquivalent: ""
+            )
+            displayAwakeItem.target = self
+            displayAwakeItem.state = displayAwakeController?.isDisplayAwake == true ? .on : .off
+            menu.addItem(displayAwakeItem)
+            menu.addItem(NSMenuItem.separator())
         }
 
         let settingsItem = NSMenuItem(
@@ -288,12 +347,54 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quit)
     }
 
+    func makeClipboardSubmenu(entries: [ClipboardEntry], privacy: Bool) -> NSMenu {
+        let menu = NSMenu()
+        for (index, entry) in entries.enumerated() {
+            let entryItem = NSMenuItem(
+                title: privacy ? "Clipboard item \(index + 1)" : entry.preview,
+                action: nil,
+                keyEquivalent: ""
+            )
+            let actions = NSMenu()
+            let copy = NSMenuItem(
+                title: "Copy",
+                action: #selector(menuCopyClipboardEntry(_:)),
+                keyEquivalent: ""
+            )
+            copy.target = self
+            copy.representedObject = entry.id.uuidString
+            actions.addItem(copy)
+
+            let remove = NSMenuItem(
+                title: "Remove from Clipboard History",
+                action: #selector(menuRemoveClipboardEntry(_:)),
+                keyEquivalent: ""
+            )
+            remove.target = self
+            remove.representedObject = entry.id.uuidString
+            actions.addItem(remove)
+            entryItem.submenu = actions
+            menu.addItem(entryItem)
+        }
+        menu.addItem(NSMenuItem.separator())
+        let clear = NSMenuItem(
+            title: "Clear Clipboard History",
+            action: #selector(menuClearClipboardHistory(_:)),
+            keyEquivalent: ""
+        )
+        clear.target = self
+        menu.addItem(clear)
+        return menu
+    }
+
     @objc func menuOpenNotificationSource(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated { notificationMirror?.activateSource() }
+        guard let appName = sender.representedObject as? String else { return }
+        MainActor.assumeIsolated { notificationMirror?.activateSource(appName: appName) }
     }
 
     @objc func menuMuteNotificationApp(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated { notificationMirror?.muteLatestApp() }
+        guard let appName = sender.representedObject as? String else { return }
+        MainActor.assumeIsolated { notificationMirror?.muteApp(appName) }
     }
 
     private static func menuStateLabel(_ state: AgentActivityState) -> String {
@@ -345,6 +446,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    @objc func menuJoinMeeting(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func menuCopyClipboardEntry(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String, let id = UUID(uuidString: value) else { return }
+        MainActor.assumeIsolated { clipboardController?.copy(id) }
+    }
+
+    @objc func menuRemoveClipboardEntry(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String, let id = UUID(uuidString: value) else { return }
+        MainActor.assumeIsolated { clipboardController?.remove(id) }
+    }
+
+    @objc func menuClearClipboardHistory(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { clipboardController?.clear() }
+    }
+
     @objc func openReleasesPage(_ sender: NSMenuItem) {
         if let url = URL(string: "https://github.com/Veyal/desnotch/releases/latest") {
             NSWorkspace.shared.open(url)
@@ -355,6 +475,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             SettingsStore.shared.privacyModeEnabled.toggle()
             sender.state = SettingsStore.shared.privacyModeEnabled ? .on : .off
+        }
+    }
+
+    @objc func toggleDisplayAwake(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated {
+            displayAwakeController?.toggle()
+            sender.state = displayAwakeController?.isDisplayAwake == true ? .on : .off
         }
     }
 

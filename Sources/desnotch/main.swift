@@ -1,6 +1,25 @@
 import AppKit
 import DesnotchCore
 
+// Non-prompting diagnostics for packaged-app smoke tests. This exits before
+// NSApplication setup and the single-instance guard, so it can sample authorization
+// state without disturbing an installed desnotch process. Accessibility may be
+// attributed to the responsible parent process; permission-status.sh documents
+// that caveat.
+if ProcessInfo.processInfo.environment["DESNOTCH_PERMISSION_PROBE"] == "1" {
+    do {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(PermissionSnapshot.current())
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data([0x0A]))
+        exit(EXIT_SUCCESS)
+    } catch {
+        FileHandle.standardError.write(Data("permission probe failed\n".utf8))
+        exit(EXIT_FAILURE)
+    }
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
@@ -25,17 +44,16 @@ app.mainMenu = mainMenu
 // let a dispatch source observe it.
 signal(SIGTERM, SIG_IGN)
 signal(SIGINT, SIG_IGN)
+let delegate = AppDelegate()
+app.delegate = delegate
 let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 let shutdown = {
-    MediaRemoteBridge.shared.stopStreaming()
+    delegate.stopOwnedProcesses()
     exit(0)
 }
 termSource.setEventHandler(handler: shutdown)
 intSource.setEventHandler(handler: shutdown)
 termSource.resume()
 intSource.resume()
-
-let delegate = AppDelegate()
-app.delegate = delegate
 app.run()

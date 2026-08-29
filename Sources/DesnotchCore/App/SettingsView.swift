@@ -12,7 +12,6 @@ struct SettingsView: View {
     @ObservedObject var settings = SettingsStore.shared
     /// Present in the real app; nil keeps previews/tests independent of AX state.
     var notificationMirror: NotificationMirrorController?
-
     /// Fixed pane width, shared with the window sizing so both stay in step.
     static let contentWidth: CGFloat = 300
 
@@ -64,6 +63,12 @@ struct SettingsView: View {
             Toggle("Calendar glance", isOn: $settings.calendarEnabled)
             Toggle("Stuck-process detector", isOn: $settings.processMonitorEnabled)
             Toggle("File tray", isOn: $settings.trayEnabled)
+            Toggle("Clipboard pocket (memory only)", isOn: $settings.clipboardHistoryEnabled)
+            Text("Keeps up to 8 recent plain-text copies until desnotch quits. Password-manager and transient clipboard entries are skipped.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(settings.clipboardHistoryEnabled ? 1 : 0.6)
             Toggle("Battery glance (MacBooks)", isOn: $settings.batteryEnabled)
 
             Divider()
@@ -226,4 +231,5 @@ struct SettingsView: View {
         }
         .font(.system(size: 11))
     }
+
 }

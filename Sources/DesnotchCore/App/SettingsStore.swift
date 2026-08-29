@@ -21,9 +21,9 @@ public enum AnimationStyle: String, CaseIterable {
 
 /// Which indicator the minimized wing shows for now-playing media.
 public enum MusicIndicatorStyle: String, CaseIterable {
-    /// Animated equalizer bars while playing, static note while paused (default).
+    /// Animated equalizer bars while playing, static note while paused.
     case equalizer
-    /// Always the static music note.
+    /// Always the static music note (default).
     case note
     /// The current track's album artwork; falls back to equalizer/note behavior when
     /// a track has no artwork, and is suppressed entirely by privacy mode (artwork
@@ -70,12 +70,14 @@ public final class SettingsStore: ObservableObject {
     @Published public var calendarEnabled: Bool { didSet { set("calendarEnabled", calendarEnabled) } }
     @Published public var processMonitorEnabled: Bool { didSet { set("processMonitorEnabled", processMonitorEnabled) } }
     @Published public var trayEnabled: Bool { didSet { set("trayEnabled", trayEnabled) } }
+    /// Recent plain-text clipboard entries, held in memory only. Explicitly opt-in.
+    @Published public var clipboardHistoryEnabled: Bool { didSet { set("clipboardHistoryEnabled", clipboardHistoryEnabled) } }
     @Published public var volumeScrollEnabled: Bool { didSet { set("volumeScrollEnabled", volumeScrollEnabled) } }
     @Published public var timelineSeekEnabled: Bool { didSet { set("timelineSeekEnabled", timelineSeekEnabled) } }
     @Published public var batteryEnabled: Bool { didSet { set("batteryEnabled", batteryEnabled) } }
     @Published public var micCameraIndicatorEnabled: Bool { didSet { set("micCameraIndicatorEnabled", micCameraIndicatorEnabled) } }
-    /// Blanks sensitive text (agent task titles, calendar event titles) for screen
-    /// sharing/recording. Defaults OFF, unlike the feature toggles.
+    /// Blanks sensitive media, agent, calendar, clipboard, tray, and notification text
+    /// for screen sharing/recording. Defaults OFF, unlike the feature toggles.
     @Published public var privacyModeEnabled: Bool { didSet { set("privacyModeEnabled", privacyModeEnabled) } }
     @Published public var notifyAgentNeedsYou: Bool { didSet { set(AgentAttentionNotifier.defaultsKey, notifyAgentNeedsYou) } }
     /// Mirror notification banners into the pill. OFF by default (it additionally
@@ -138,6 +140,7 @@ public final class SettingsStore: ObservableObject {
         calendarEnabled = Self.bool(defaults, "calendarEnabled")
         processMonitorEnabled = Self.bool(defaults, "processMonitorEnabled")
         trayEnabled = Self.bool(defaults, "trayEnabled")
+        clipboardHistoryEnabled = defaults.object(forKey: "clipboardHistoryEnabled") as? Bool ?? false
         volumeScrollEnabled = Self.bool(defaults, "volumeScrollEnabled")
         timelineSeekEnabled = Self.bool(defaults, "timelineSeekEnabled")
         batteryEnabled = Self.bool(defaults, "batteryEnabled")
@@ -160,6 +163,7 @@ public final class SettingsStore: ObservableObject {
         minimizedWidth = Self.double(defaults, "minimizedWidth", Self.defaultMinimizedWidth, Self.minimizedWidthRange)
         minimizedHeight = Self.double(defaults, "minimizedHeight", Self.defaultMinimizedHeight, Self.minimizedHeightRange)
         expandedWidth = Self.double(defaults, "expandedWidth", Self.defaultExpandedWidth, Self.expandedWidthRange)
+
     }
 
     // MARK: - Plumbing
@@ -194,4 +198,5 @@ public final class SettingsStore: ObservableObject {
         }
         set(key, value)
     }
+
 }
