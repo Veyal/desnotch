@@ -269,27 +269,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             if SettingsStore.shared.clipboardHistoryEnabled,
                let entries = clipboardController?.entries,
                !entries.isEmpty {
-                let submenu = NSMenu()
-                for (index, entry) in entries.prefix(6).enumerated() {
-                    let item = NSMenuItem(
-                        title: privacy ? "Clipboard item \(index + 1)" : entry.preview,
-                        action: #selector(menuCopyClipboardEntry(_:)),
-                        keyEquivalent: ""
-                    )
-                    item.target = self
-                    item.representedObject = entry.id.uuidString
-                    submenu.addItem(item)
-                }
-                submenu.addItem(NSMenuItem.separator())
-                let clear = NSMenuItem(
-                    title: "Clear Clipboard History",
-                    action: #selector(menuClearClipboardHistory(_:)),
-                    keyEquivalent: ""
-                )
-                clear.target = self
-                submenu.addItem(clear)
                 let clipboardItem = NSMenuItem(title: "Clipboard", action: nil, keyEquivalent: "")
-                clipboardItem.submenu = submenu
+                clipboardItem.submenu = makeClipboardSubmenu(entries: entries, privacy: privacy)
                 menu.addItem(clipboardItem)
                 menu.addItem(NSMenuItem.separator())
             }
@@ -367,6 +348,46 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quit)
     }
 
+    func makeClipboardSubmenu(entries: [ClipboardEntry], privacy: Bool) -> NSMenu {
+        let menu = NSMenu()
+        for (index, entry) in entries.enumerated() {
+            let entryItem = NSMenuItem(
+                title: privacy ? "Clipboard item \(index + 1)" : entry.preview,
+                action: nil,
+                keyEquivalent: ""
+            )
+            let actions = NSMenu()
+            let copy = NSMenuItem(
+                title: "Copy",
+                action: #selector(menuCopyClipboardEntry(_:)),
+                keyEquivalent: ""
+            )
+            copy.target = self
+            copy.representedObject = entry.id.uuidString
+            actions.addItem(copy)
+
+            let remove = NSMenuItem(
+                title: "Remove from Clipboard History",
+                action: #selector(menuRemoveClipboardEntry(_:)),
+                keyEquivalent: ""
+            )
+            remove.target = self
+            remove.representedObject = entry.id.uuidString
+            actions.addItem(remove)
+            entryItem.submenu = actions
+            menu.addItem(entryItem)
+        }
+        menu.addItem(NSMenuItem.separator())
+        let clear = NSMenuItem(
+            title: "Clear Clipboard History",
+            action: #selector(menuClearClipboardHistory(_:)),
+            keyEquivalent: ""
+        )
+        clear.target = self
+        menu.addItem(clear)
+        return menu
+    }
+
     @objc func menuOpenNotificationSource(_ sender: NSMenuItem) {
         guard let appName = sender.representedObject as? String else { return }
         MainActor.assumeIsolated { notificationMirror?.activateSource(appName: appName) }
@@ -434,6 +455,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func menuCopyClipboardEntry(_ sender: NSMenuItem) {
         guard let value = sender.representedObject as? String, let id = UUID(uuidString: value) else { return }
         MainActor.assumeIsolated { clipboardController?.copy(id) }
+    }
+
+    @objc func menuRemoveClipboardEntry(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String, let id = UUID(uuidString: value) else { return }
+        MainActor.assumeIsolated { clipboardController?.remove(id) }
     }
 
     @objc func menuClearClipboardHistory(_ sender: NSMenuItem) {

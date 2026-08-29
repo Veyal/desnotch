@@ -100,4 +100,25 @@ final class ClipboardControllerTests: XCTestCase {
         let entry = ClipboardEntry(text: "safe\u{202E}txt\nnext")
         XCTAssertEqual(entry.preview, "safe txt next")
     }
+
+    @MainActor
+    func testStatusMenuExposesCopyAndRemoveForEveryEntry() {
+        let entries = (1...ClipboardController.maxEntries).map {
+            ClipboardEntry(text: "entry \($0)")
+        }
+        let delegate = AppDelegate()
+        let menu = delegate.makeClipboardSubmenu(entries: entries, privacy: false)
+
+        XCTAssertEqual(menu.items.count, ClipboardController.maxEntries + 2)
+        for (entry, item) in zip(entries, menu.items.prefix(ClipboardController.maxEntries)) {
+            XCTAssertEqual(item.title, entry.preview)
+            XCTAssertEqual(item.submenu?.items.map(\.title), ["Copy", "Remove from Clipboard History"])
+            XCTAssertEqual(item.submenu?.items.map { $0.representedObject as? String }, [
+                entry.id.uuidString,
+                entry.id.uuidString
+            ])
+        }
+        XCTAssertTrue(menu.items[ClipboardController.maxEntries].isSeparatorItem)
+        XCTAssertEqual(menu.items.last?.title, "Clear Clipboard History")
+    }
 }
