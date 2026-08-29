@@ -169,10 +169,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The status menu is rebuilt on every open. It doubles as the keyboard/VoiceOver
-    /// mirror of the pill: media transport, jump-to-agent, and tray items are all
-    /// reachable here, because the pill's own panel is non-activating and hover-driven -
-    /// assistive tech cannot focus it. Rebuilding also keeps the checkbox states honest
-    /// when settings change through the Settings window.
+    /// mirror of the pill's actions, because the pill's own panel is non-activating and
+    /// hover-driven - assistive tech cannot focus it. Rebuilding also keeps the checkbox
+    /// states honest when settings change through the Settings window.
     private func rebuildMenu() {
         guard let menu = statusMenu else { return }
         menu.removeAllItems()

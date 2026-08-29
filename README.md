@@ -78,15 +78,16 @@ run it anyway. Drag `dist/desnotch.app` to `/Applications`, or run it directly w
   database.
 - **Clipboard pocket**: optional and off by default. It polls only the pasteboard change counter,
   stores at most eight bounded plain-text items in memory, skips concealed/transient password-
-  manager copies, and clears immediately when disabled or when the app exits.
+  manager copies, clears immediately when disabled or when the app exits, and redacts previews
+  while Privacy Mode is enabled.
 - **Calendar join**: EventKit supplies the next event. Only recognized HTTP(S) conferencing hosts
   become a Join action; event notes and locations are inspected transiently and never displayed or
   persisted.
 - **Notch geometry**: on a MacBook with a physical notch, the pill is sized and positioned
   using `NSScreen.safeAreaInsets` / `auxiliaryTopLeftArea` / `auxiliaryTopRightArea` to hug
   the actual notch cutout. On a screen with no notch (this project was developed on a
-  Mac mini, which has none), it falls back to a fixed-width capsule floating top-center of
-  the screen, in the same location a notch would occupy.
+  Mac mini, which has none), it renders the same wings-around-cutout layout around a synthetic
+  MacBook-sized notch at the top center of the screen.
 
 See `AGENTS.md` for implementation details load-bearing for anyone continuing this project.
 
@@ -110,8 +111,9 @@ CI runs `scripts/smoke-test.sh` after packaging. Locally, use `scripts/smoke-tes
 plist keys, icon and adapter resources, executable architecture, strict nested signatures, and
 obvious orphaned adapter processes. `scripts/runtime-smoke-test.sh` launches the packaged binary
 in non-interactive smoke mode, verifies the adapter starts, sends SIGTERM, and proves both owned
-processes exit. `scripts/permission-status.sh` reports the packaged app's own Accessibility,
-and Calendar authorization state without prompting; after granting them, run
-`REQUIRE_GRANTED=1 scripts/permission-status.sh` to make missing grants fail the check.
+processes exit. `scripts/permission-status.sh` prints a non-prompting Accessibility and Calendar
+authorization snapshot. Because macOS may attribute a shell-launched Accessibility check to the
+responsible parent process, treat `trusted` as diagnostic and verify the normally launched app
+before relying on `REQUIRE_GRANTED=1`; the script documents this caveat beside the check.
 `MANUAL=1 scripts/smoke-test.sh` prints the interactive permission/media/menu/termination/notch/
 Intel checklist; those checks require a desktop session and appropriate hardware.

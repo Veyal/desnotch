@@ -4,9 +4,9 @@ import Foundation
 import os
 
 /// Publishes the next upcoming (non-all-day) calendar event within the lookahead window
-/// for the pill's calendar glance row. Access is requested once at init; if the user
-/// denies it (or the process can't prompt), `nextEvent` simply stays nil and the row
-/// never appears. Refreshes on a timer plus `EKEventStoreChanged`.
+/// for the pill's calendar glance row. Access is requested once when the feature is enabled;
+/// denial (or an inability to prompt) is surfaced as a hint row. Refreshes on a timer plus
+/// `EKEventStoreChanged` after access is granted.
 @MainActor
 public final class CalendarController: ObservableObject {
     public struct NextEvent: Equatable {

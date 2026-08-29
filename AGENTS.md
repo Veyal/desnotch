@@ -55,11 +55,11 @@ optimistic local flip rather than waiting for the round-trip; `applyRemote()` re
 real state arrives (a no-op if it already matches the guess). Don't try to "fix" the latency by
 adding polling or shortening the adapter path - the subprocess spawn was never the slow part.
 
-## Pill visibility: always-visible notch, expands on hover only
+## Pill visibility: always-visible notch, hover-controlled in auto mode
 
 The notch is ALWAYS rendered (even with nothing active it hosts the calendar glance + file
-tray; on real hardware the empty state is invisible black-on-black). Hover expands it;
-exit collapses after a `hoverExitDelay` grace. **Hover has exactly one authority**:
+tray; on real hardware the empty state is invisible black-on-black). In hover-auto mode,
+hover expands it and exit collapses after a `hoverExitDelay` grace. **Hover has exactly one authority**:
 `NotchWindowController.updateInteractivity()`'s cursor-in-pill-rect test, fed by
 global+local mouse monitors (`.mouseMoved` + `.leftMouseDragged` - the latter so file
 drags reach the tray's drop target). SwiftUI `.onHover` was removed deliberately: its
@@ -253,8 +253,9 @@ needs-you wing icon bounces on count change (macOS 14+ symbolEffect); `BatteryCo
 with no bundle version; `isVersion(_:newerThan:)` is tested); `MediaUseMonitor` (5s poll
 of CoreAudio/CMIO "running somewhere" - no capture permission needed - orange mic/green
 camera dots overlaid top-trailing on the shape); privacy mode (`privacyModeEnabled`,
-default OFF, quick toggle in the status menu) blanks agent task titles and calendar
-titles; tray drag-out uses `NSItemProvider(contentsOf:)` (real Finder copies) and
+default OFF, quick toggle in the status menu) follows the centralized
+`NotchPillView.privacyRedacted` boundary above; tray drag-out uses
+`NSItemProvider(contentsOf:)` (real Finder copies) and
 QuickLook thumbnails cached in `TrayController.thumbnails`.
 
 Review-remediation notes (2026-07-31), keep these invariants: `updateForScreenChange`
@@ -287,8 +288,9 @@ See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (releas
 `.app` bundle + ad-hoc codesign). No Xcode project - SPM executable target only.
 
 `scripts/permission-status.sh` executes the packaged binary with `DESNOTCH_PERMISSION_PROBE=1`
-to report that bundle identity's Accessibility/Calendar state without prompting or starting the
-app; use `REQUIRE_GRANTED=1` only after the owner has granted both.
+to print Accessibility/Calendar state without prompting or starting the app. Its inline caveat
+about responsible-process attribution is authoritative; use `REQUIRE_GRANTED=1` only after
+verifying the normally launched app has both grants.
 
 ## Maintaining this file
 

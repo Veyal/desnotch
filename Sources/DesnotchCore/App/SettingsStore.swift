@@ -21,9 +21,9 @@ public enum AnimationStyle: String, CaseIterable {
 
 /// Which indicator the minimized wing shows for now-playing media.
 public enum MusicIndicatorStyle: String, CaseIterable {
-    /// Animated equalizer bars while playing, static note while paused (default).
+    /// Animated equalizer bars while playing, static note while paused.
     case equalizer
-    /// Always the static music note.
+    /// Always the static music note (default).
     case note
     /// The current track's album artwork; falls back to equalizer/note behavior when
     /// a track has no artwork, and is suppressed entirely by privacy mode (artwork

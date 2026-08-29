@@ -33,7 +33,7 @@ private struct PillSecondaryAnimationState: Equatable {
 
 /// The single live-activity pill: always rendered as a (real or synthetic) notch shape,
 /// minimized to indicator wings by default, expanded on hover/drag/always-on mode to the
-/// stacked sections (now-playing, agents, processes, calendar, battery, privacy, tray).
+/// stacked enabled feature sections.
 ///
 /// On a screen with a physical notch the pill hugs the hardware: the minimized state is a
 /// solid-black extension of the notch with the indicators in small "wings" either side of

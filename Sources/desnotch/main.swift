@@ -2,8 +2,10 @@ import AppKit
 import DesnotchCore
 
 // Non-prompting diagnostics for packaged-app smoke tests. This exits before
-// NSApplication setup and the single-instance guard, so it can inspect this
-// bundle's own TCC identity without disturbing an installed desnotch process.
+// NSApplication setup and the single-instance guard, so it can sample authorization
+// state without disturbing an installed desnotch process. Accessibility may be
+// attributed to the responsible parent process; permission-status.sh documents
+// that caveat.
 if ProcessInfo.processInfo.environment["DESNOTCH_PERMISSION_PROBE"] == "1" {
     do {
         let encoder = JSONEncoder()
