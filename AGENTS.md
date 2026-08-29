@@ -69,11 +69,16 @@ after 1s while still hovering" bug). Don't reintroduce it. The same test drives
 expanded pill stacks every section at once - no priority switch. An agent needing
 attention changes the wing icon (lightning, yellow) but does NOT force the pill open.
 
-The expanded pill has a **fixed width** (`NotchPillView.expandedBaseWidth`, 300pt; on a notch
-screen at least cutout + 2 wings). This is deliberate: the rows contain greedy `Spacer`s, so
+The expanded pill has a **fixed width** (`SettingsStore.expandedWidth`, 300pt by default; on a
+notch screen at least cutout + 2 wings). This is deliberate: the rows contain greedy `Spacer`s, so
 without a fixed width the pill fills whatever the panel proposes and the measured size feeds
 back into the panel's grow-only sizing. Keep the fixed width (and the per-text `maxWidth` caps)
-when adding content - don't let the expanded pill become content-width-driven again.
+when adding content - don't let the expanded pill become content-width-driven again. Natural
+size is reported through the single `PillContentSizePreferenceKey`; don't split width/height into
+separate callbacks, which doubles panel resize and interactivity work during animations. Root
+animation triggers are grouped into `PillPrimaryAnimationState`/`PillSecondaryAnimationState` so
+simultaneous changes resolve predictably; add new triggers to those tokens instead of stacking more
+root `.animation` modifiers.
 
 ## Notch geometry: never draw behind the cutout
 
@@ -146,24 +151,32 @@ existing `Task.detached` pattern.
   first scan after launch). Uses `UNUserNotificationCenter` only in a packaged `.app` -
   a bare `swift run` binary has no bundle identity and would crash, so it falls back to
   `NSSound`. Toggleable from the status menu (`notifyAgentNeedsYou` default, on by default).
-- **Calendar glance** (`CalendarController`, EventKit): next non-all-day event within 12h as
+- **Calendar glance** (`CalendarController`, EventKit): next non-all-day event within 24h as
   an expanded row; it keeps the pill alive on its own only when imminent (<30 min or
   ongoing). Usage-description keys live in `scripts/build-app.sh`'s Info.plist. If access is
-  denied or can't be prompted (headless/SSH bare binary), the row just never appears.
+  denied or can't be prompted (headless/SSH bare binary), the row just never appears. A Join
+  action is exposed only for recognized HTTP(S) conferencing hosts found in the event URL,
+  bounded location, or bounded notes. Location/notes are never rendered or persisted, and the
+  same Join action must remain mirrored in the status menu.
 - **Stuck-process detector** (`ProcessMonitorController`): samples `ps -axo pid,pcpu,comm`
   every 30s; a process sustaining ≥90% CPU for ≥10 min is flagged (pill section + one
   notification per streak). The sustained window is the point - don't "simplify" it to a
   single high-CPU sample, that just flags every compile.
-- **Quick actions** (`QuickActionsController`): the first action toggles an owned
-  `/usr/bin/caffeinate -d -w <desnotch-pid>` subprocess to keep the display awake. It is
-  session-scoped, mirrored in the status menu, and must stop on toggle-off/app exit. Never
-  discover or terminate caffeinate processes the user launched outside desnotch.
+- **Utility actions**: Privacy mode is the pill's only always-present action. Keep the
+  low-frequency display-awake control in the status menu; `DisplayAwakeController` owns its
+  `/usr/bin/caffeinate -d -w <desnotch-pid>` subprocess, which is session-scoped and must stop on
+  toggle-off/app exit. Never discover or terminate caffeinate processes launched outside desnotch.
 
 - **File tray** (`TrayController`): drop files onto the notch shape (SwiftUI `.onDrop` of
   `.fileURL`); stores path references only (UserDefaults-persisted, dead paths pruned on
   load, 8 max). Rows: click opens, drag out re-exports via `NSItemProvider`, ✕ removes.
   Drag delivery depends on the `.leftMouseDragged` monitors making the panel interactive
   mid-drag (Dropover-style; verify on hardware if drops ever stop landing).
+- **Clipboard pocket** (`ClipboardController`, OFF by default): stores up to eight bounded
+  plain-text copies in memory only and clears on disable/exit. It polls `NSPasteboard.changeCount`
+  before reading, skips concealed/transient/password-manager marker types, and never persists or
+  logs content. Keep clipboard previews behind `privacyRedacted`; copy/remove/clear must remain
+  mirrored in the status menu.
 - **Now-playing timeline**: `NowPlayingInfo.duration/elapsed/elapsedAt` (adapter `duration`/
   `elapsedTime`/`timestamp`; excluded from `==` on purpose - they change every delivery).
   Position is extrapolated client-side (`position(at:)`) and ticked by a 1s `TimelineView`
@@ -177,7 +190,11 @@ existing `Task.detached` pattern.
   `pausedRetention` (15 min) after its adapter timestamp, via a timer in
   `NowPlayingController.updatePausedExpiry` (the change-driven stream sends nothing
   further for a paused item, so a timer is the only staleness signal). Every path that
-  sets `info` must call `updatePausedExpiry()`.
+  sets `info` must call `updatePausedExpiry()`. Preserve the playing-item fallback cache
+  only across a short foreground interruption; authoritative nil/paused long-form updates
+  clear it. Reconciliation `get` calls distinguish successful-empty from failure, stay
+  timeout-bounded off the stream queue, and carry a generation so an older result cannot
+  overwrite a newer stream update or transport action.
 
 - **Notification mirror** (`Sources/DesnotchCore/NotificationMirror/`, v0.4.x, OFF by
   default): mirrors other apps' notification banners via an `AXObserver` on the
@@ -244,15 +261,17 @@ Review-remediation notes (2026-07-31), keep these invariants: `updateForScreenCh
 must ALWAYS call `applyPlacement` after the grow-only `resize` (the grow-only guard
 alone leaves the panel at stale coordinates after a resolution/display change). The
 status menu is rebuilt on every open (`AppDelegate.rebuildMenu`, via NSMenuDelegate) and
-is the ONLY keyboard/VoiceOver path to media transport, agent jump, and tray - the panel
-itself is non-activating and unreachable by assistive tech; keep new pill actions
+is the ONLY keyboard/VoiceOver path to media transport, agent jump, meeting join, clipboard, and
+tray - the panel itself is non-activating and unreachable by assistive tech; keep new pill actions
 mirrored there. Notification permission is requested at launch, not lazily (a lazy
 request dropped the triggering notification). Scanner title/cwd/Codex-header facts are
 cached in `AgentActivityScanner` (lock-guarded, nil results retried, cap-bounded) - keep
 new derived-from-file facts behind that cache. The agent publish signature includes an
 elapsed-minutes bucket so row times/ordering refresh ~1/min. Calendar queries run off
 the main actor (`queryNextEvent`) and permission is only requested once the feature is
-enabled. CI (.github/workflows/ci.yml, macos-14) is where tests actually run.
+enabled. Notification menu actions bind the app name they rendered through
+`representedObject`; never retarget an already-open action to a newer `latest` banner.
+CI (.github/workflows/ci.yml, macos-14) is where tests actually run.
 
 Pill behavior/sizing is user-configurable via `SettingsStore` (Settings window):
 `pillMode` (hover-auto vs always-expanded), `hoverCollapseDelay`, `minimizedWidth/Height`
@@ -262,58 +281,14 @@ fixed-width rule intact). All numeric knobs are clamped to their `SettingsStore.
 bounds on read AND write - keep new knobs on that pattern. Tests:
 `SettingsStoreTests.swift` (isolated UserDefaults suite; runs under Xcode/CI only).
 
-## Voice actions and agent command safety
-
-`Sources/DesnotchCore/Voice/` owns push-to-talk recording (`AVAudioEngine`, temporary WAV,
-20 MiB/5 min caps), the OpenAI-compatible multipart transcription client, Keychain-only API
-key storage, and Accessibility-aware paste. `DictationController` is the single voice state
-machine for Dictate and Talk to Agent; cancellation must tear down recording/upload and temp
-files. The default model is `gpt-4o-mini-transcribe`, but provider root/model are settings.
-Provider URLs require HTTPS except for explicit loopback HTTP, and transcript/response sizes are
-hard-capped during download and before paste/agent submission; redirects are refused so an
-Authorization header never crosses the validated origin. Recorder terminal limits notify the
-controller through `SpeechRecording.onAutoStop` so the UI cannot remain stuck in recording.
-Never put the API key in UserDefaults, argv, logs, UI state, or error text.
-
-`Sources/DesnotchCore/AgentCommand/` deliberately chooses Codex CLI as a read-only planning
-transport. The spoken prompt goes over stdin (not process argv), Codex runs with
-`--sandbox read-only --ephemeral`, and only `DESNOTCH_COMMAND_JSON` inside an agent-message
-event can become a proposal; never treat Codex's own `command_execution` events as proposals.
-Proposed commands execute directly as executable + argv, never through an implicit shell.
-Only the policy's tiny argv allowlist may auto-run, and file operands must resolve through
-symlinks to remain inside the configured working directory. Writes/deletes/installs,
-network/remote access, sudo, credential paths, shells/interpreters, and unknown commands need
-a fresh, one-shot confirmation from the pill or status menu. Cancellation/timeout must stop
-the owned process group while both output pipes remain drained. The runner's explicit environment
-must keep loader/language/Git overrides out; automatic Git inspection also disables hooks,
-external diff/text conversion, fsmonitor, prompts, and pagers.
-
-Voice transcripts, command proposals, and output are transient, capped, and secret-redacted.
-The rotating audit JSONL stores metadata/byte counts only: never raw prompts, transcripts,
-commands, output, API keys, or absolute working directories. Privacy mode must redact these
-strings visually, in the status menu, and in accessibility labels. Both quick actions and
-confirmation/cancel are mirrored in `AppDelegate.rebuildMenu`, since the panel is non-activating.
-
 ## Build/run
 
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal
 `.app` bundle + ad-hoc codesign). No Xcode project - SPM executable target only.
 
-`SpeechRecorder` derives the capture format from `AVAudioInputNode.outputFormat(forBus: 0)` and
-installs the tap with a nil format so AVAudioEngine keeps the input node's native stream format.
-The node's input bus can report zero channels even when a real USB microphone is available, so do
-not use that bus as the availability check. Conversely, with no input device macOS can expose the
-output device's nonzero format on the input node; reject zero-channel/zero-rate formats before
-installing a tap or AVAudioEngine raises an Objective-C exception. Create/recreate the engine only
-after microphone access is granted: an engine initialized before the first TCC grant can retain a
-stale format.
-`SystemMicrophonePermission` short-circuits already-authorized/denied states before requesting, and
-polls TCC for up to 60 seconds after showing a consent sheet (the completion callback can be queued
-behind another privacy prompt) so an authorized packaged build cannot remain stuck in the
-permission-requesting UI state.
 `scripts/permission-status.sh` executes the packaged binary with `DESNOTCH_PERMISSION_PROBE=1`
-to report that bundle identity's Accessibility/Microphone/Calendar state without prompting or
-starting the app; use `REQUIRE_GRANTED=1` only after the owner has granted all three.
+to report that bundle identity's Accessibility/Calendar state without prompting or starting the
+app; use `REQUIRE_GRANTED=1` only after the owner has granted both.
 
 ## Maintaining this file
 

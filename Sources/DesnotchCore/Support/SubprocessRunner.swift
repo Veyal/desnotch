@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-public struct AgentProcessResult: Equatable {
+public struct SubprocessResult: Equatable {
     public let stdout: String
     public let stderr: String
     public let truncated: Bool
@@ -15,7 +15,7 @@ public struct AgentProcessResult: Equatable {
     }
 }
 
-public enum AgentProcessError: Error, Equatable {
+public enum SubprocessError: Error, Equatable {
     case timeout
     case cancelled
     case launchFailed
@@ -25,11 +25,12 @@ public enum AgentProcessError: Error, Equatable {
 
 /// Runs a process without a shell, drains both output pipes even after the UI byte
 /// cap is reached, streams chunks to the caller, and owns timeout/cancellation.
-public final class AgentProcessRunner: @unchecked Sendable {
+public final class SubprocessRunner: @unchecked Sendable {
     public static let inputByteCap = 64 * 1024
     public let outputByteCap: Int
     private let activeLock = NSLock()
-    private var active = [ObjectIdentifier: AgentProcessBox]()
+    private var active = [ObjectIdentifier: SubprocessBox]()
+    private var isShutdown = false
 
     public init(outputByteCap: Int = 256 * 1024) {
         self.outputByteCap = max(1, outputByteCap)
@@ -43,23 +44,23 @@ public final class AgentProcessRunner: @unchecked Sendable {
         standardInput: Data? = nil,
         onStdout: (@Sendable (Data) -> Void)? = nil,
         onStderr: (@Sendable (Data) -> Void)? = nil
-    ) async throws -> AgentProcessResult {
+    ) async throws -> SubprocessResult {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw AgentProcessError.invalidWorkingDirectory
+            throw SubprocessError.invalidWorkingDirectory
         }
         if let standardInput, standardInput.count > Self.inputByteCap {
-            throw AgentProcessError.inputTooLarge
+            throw SubprocessError.inputTooLarge
         }
 
-        let processBox = AgentProcessBox()
-        register(processBox)
+        let processBox = SubprocessBox()
+        guard register(processBox) else { throw SubprocessError.cancelled }
         defer { unregister(processBox) }
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 let process = Process()
                 // A fixed Perl launcher creates a new session/process group before
-                // `exec`-ing the requested executable. No proposal text is parsed as
+                // `exec`-ing the requested executable. No caller input is parsed as
                 // code; executable and argv remain separate arguments. This lets
                 // cancellation reliably terminate descendants as one owned group.
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
@@ -88,10 +89,10 @@ public final class AgentProcessRunner: @unchecked Sendable {
                 }
 
                 processBox.set(process)
-                let workQueue = DispatchQueue(label: "desnotch.agent-process", qos: .userInitiated)
+                let workQueue = DispatchQueue(label: "desnotch.subprocess", qos: .userInitiated)
                 // This timer has its own queue and is armed before any stdin write. A
                 // child which never reads stdin therefore cannot defeat the deadline.
-                let timeoutSource = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "desnotch.agent-timeout"))
+                let timeoutSource = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "desnotch.subprocess-timeout"))
                 timeoutSource.schedule(deadline: .now() + max(0.1, timeout))
                 timeoutSource.setEventHandler { processBox.terminate(reason: .timeout) }
                 timeoutSource.resume()
@@ -101,7 +102,7 @@ public final class AgentProcessRunner: @unchecked Sendable {
                     } catch {
                         timeoutSource.cancel()
                         _ = processBox.finish()
-                        continuation.resume(throwing: AgentProcessError.launchFailed)
+                        continuation.resume(throwing: SubprocessError.launchFailed)
                         return
                     }
 
@@ -110,8 +111,8 @@ public final class AgentProcessRunner: @unchecked Sendable {
                     processBox.establishProcessGroup()
 
                     let readers = DispatchGroup()
-                    let stdoutBox = AgentDataBox()
-                    let stderrBox = AgentDataBox()
+                    let stdoutBox = SubprocessDataBox()
+                    let stderrBox = SubprocessDataBox()
                     readers.enter()
                     DispatchQueue.global(qos: .utility).async {
                         stdoutBox.read(stdoutPipe.fileHandleForReading, cap: self.outputByteCap, onChunk: onStdout)
@@ -148,11 +149,11 @@ public final class AgentProcessRunner: @unchecked Sendable {
                     let reason = processBox.finish()
                     switch reason {
                     case .cancelled:
-                        continuation.resume(throwing: AgentProcessError.cancelled)
+                        continuation.resume(throwing: SubprocessError.cancelled)
                     case .timeout:
-                        continuation.resume(throwing: AgentProcessError.timeout)
+                        continuation.resume(throwing: SubprocessError.timeout)
                     case nil:
-                        continuation.resume(returning: AgentProcessResult(
+                        continuation.resume(returning: SubprocessResult(
                             stdout: String(decoding: stdoutBox.data, as: UTF8.self),
                             stderr: String(decoding: stderrBox.data, as: UTF8.self),
                             truncated: stdoutBox.truncated || stderrBox.truncated,
@@ -169,8 +170,9 @@ public final class AgentProcessRunner: @unchecked Sendable {
     /// Stops all owned processes and waits briefly for their worker paths to drain.
     /// This is intended for synchronous application shutdown/signal cleanup.
     public func shutdown(timeout: TimeInterval = 2) {
-        let boxes: [AgentProcessBox]
+        let boxes: [SubprocessBox]
         activeLock.lock()
+        isShutdown = true
         boxes = Array(active.values)
         activeLock.unlock()
         boxes.forEach { $0.terminate(reason: .cancelled) }
@@ -178,11 +180,15 @@ public final class AgentProcessRunner: @unchecked Sendable {
         boxes.forEach { $0.waitUntilFinished(deadline: deadline) }
     }
 
-    private func register(_ box: AgentProcessBox) {
-        activeLock.lock(); active[ObjectIdentifier(box)] = box; activeLock.unlock()
+    private func register(_ box: SubprocessBox) -> Bool {
+        activeLock.lock()
+        defer { activeLock.unlock() }
+        guard !isShutdown else { return false }
+        active[ObjectIdentifier(box)] = box
+        return true
     }
 
-    private func unregister(_ box: AgentProcessBox) {
+    private func unregister(_ box: SubprocessBox) {
         activeLock.lock(); active.removeValue(forKey: ObjectIdentifier(box)); activeLock.unlock()
     }
 
@@ -194,6 +200,7 @@ public final class AgentProcessRunner: @unchecked Sendable {
             "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
             "GIT_PAGER": "cat",
             "GIT_TERMINAL_PROMPT": "0",
             "PAGER": "cat"
@@ -205,7 +212,7 @@ public final class AgentProcessRunner: @unchecked Sendable {
     }
 }
 
-private final class AgentProcessBox: @unchecked Sendable {
+private final class SubprocessBox: @unchecked Sendable {
     enum StopReason { case timeout, cancelled }
 
     private let lock = NSLock()
@@ -323,7 +330,7 @@ private final class AgentProcessBox: @unchecked Sendable {
     }
 }
 
-private final class AgentDataBox: @unchecked Sendable {
+private final class SubprocessDataBox: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = Data()
     private var didTruncate = false

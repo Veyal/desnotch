@@ -13,7 +13,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentActivityController: AgentActivityController?
     private var calendarController: CalendarController?
     private var processMonitorController: ProcessMonitorController?
-    private var quickActionsController: QuickActionsController?
+    private var displayAwakeController: DisplayAwakeController?
+    private var clipboardController: ClipboardController?
     private var trayController: TrayController?
     private var batteryController: BatteryController?
     private var mediaUseMonitor: MediaUseMonitor?
@@ -57,7 +58,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             CalendarController(permissionRequestsEnabled: !smokeTestMode)
         }
         let processMonitorController = MainActor.assumeIsolated { ProcessMonitorController() }
-        let quickActionsController = MainActor.assumeIsolated { QuickActionsController() }
+        let displayAwakeController = MainActor.assumeIsolated { DisplayAwakeController() }
+        let clipboardController = MainActor.assumeIsolated { ClipboardController() }
         let trayController = MainActor.assumeIsolated { TrayController() }
         let batteryController = MainActor.assumeIsolated { BatteryController(presentation: presentation) }
         let mediaUseMonitor = MainActor.assumeIsolated { MediaUseMonitor() }
@@ -68,7 +70,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.agentActivityController = agentActivityController
         self.calendarController = calendarController
         self.processMonitorController = processMonitorController
-        self.quickActionsController = quickActionsController
+        self.displayAwakeController = displayAwakeController
+        self.clipboardController = clipboardController
         self.trayController = trayController
         self.batteryController = batteryController
         self.mediaUseMonitor = mediaUseMonitor
@@ -87,7 +90,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             agentActivity: agentActivityController,
             calendar: calendarController,
             processMonitor: processMonitorController,
-            quickActions: quickActionsController,
+            clipboard: clipboardController,
             tray: trayController,
             battery: batteryController,
             mediaUse: mediaUseMonitor,
@@ -109,7 +112,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let aac = self.agentActivityController,
                       let cal = self.calendarController,
                       let pmc = self.processMonitorController,
-                      let quick = self.quickActionsController,
+                      let clipboard = self.clipboardController,
                       let trayC = self.trayController,
                       let bat = self.batteryController,
                       let muse = self.mediaUseMonitor,
@@ -119,7 +122,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                           agentActivity: aac,
                           calendar: cal,
                           processMonitor: pmc,
-                          quickActions: quick,
+                          clipboard: clipboard,
                           tray: trayC,
                           battery: bat,
                           mediaUse: muse,
@@ -147,8 +150,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shared by normal AppKit termination and the signal sources in `main.swift`.
     public func stopOwnedProcesses() {
         MainActor.assumeIsolated {
-            quickActionsController?.shutdownVoiceActions()
-            quickActionsController?.stopDisplayAwake()
+            displayAwakeController?.stop()
         }
         MediaRemoteBridge.shared.stopStreaming()
     }
@@ -230,6 +232,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
             }
 
+            if SettingsStore.shared.calendarEnabled,
+               let event = calendarController?.nextEvent,
+               let joinURL = event.joinURL {
+                let name = privacy ? "Meeting" : String(event.title.prefix(40))
+                let item = NSMenuItem(
+                    title: "Join \(name)",
+                    action: #selector(menuJoinMeeting(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = joinURL
+                menu.addItem(item)
+                menu.addItem(NSMenuItem.separator())
+            }
+
             if let trayItems = trayController?.items, !trayItems.isEmpty {
                 let submenu = NSMenu()
                 for url in trayItems {
@@ -249,6 +266,34 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
             }
 
+            if SettingsStore.shared.clipboardHistoryEnabled,
+               let entries = clipboardController?.entries,
+               !entries.isEmpty {
+                let submenu = NSMenu()
+                for (index, entry) in entries.prefix(6).enumerated() {
+                    let item = NSMenuItem(
+                        title: privacy ? "Clipboard item \(index + 1)" : entry.preview,
+                        action: #selector(menuCopyClipboardEntry(_:)),
+                        keyEquivalent: ""
+                    )
+                    item.target = self
+                    item.representedObject = entry.id.uuidString
+                    submenu.addItem(item)
+                }
+                submenu.addItem(NSMenuItem.separator())
+                let clear = NSMenuItem(
+                    title: "Clear Clipboard History",
+                    action: #selector(menuClearClipboardHistory(_:)),
+                    keyEquivalent: ""
+                )
+                clear.target = self
+                submenu.addItem(clear)
+                let clipboardItem = NSMenuItem(title: "Clipboard", action: nil, keyEquivalent: "")
+                clipboardItem.submenu = submenu
+                menu.addItem(clipboardItem)
+                menu.addItem(NSMenuItem.separator())
+            }
+
             // Accessibility mirror for the notification row (the panel is unreachable
             // by assistive tech): jump to the source app, or mute it. App name only -
             // banner content stays out of the menu (it outlives the 60s pill row).
@@ -260,6 +305,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     keyEquivalent: ""
                 )
                 openItem.target = self
+                openItem.representedObject = banner.appName
                 menu.addItem(openItem)
                 let muteItem = NSMenuItem(
                     title: "Mute notifications from \(banner.appName)",
@@ -267,50 +313,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     keyEquivalent: ""
                 )
                 muteItem.target = self
+                muteItem.representedObject = banner.appName
                 menu.addItem(muteItem)
                 menu.addItem(NSMenuItem.separator())
             }
-
-            menu.addItem(NSMenuItem(title: "Quick Actions", action: nil, keyEquivalent: ""))
-            let displayAwakeItem = NSMenuItem(
-                title: "Keep Display Awake",
-                action: #selector(toggleDisplayAwake(_:)),
-                keyEquivalent: ""
-            )
-            displayAwakeItem.target = self
-            displayAwakeItem.state = quickActionsController?.isDisplayAwake == true ? .on : .off
-            menu.addItem(displayAwakeItem)
-
-            let dictateItem = NSMenuItem(
-                title: Self.voiceMenuTitle(mode: .dictate, state: quickActionsController?.dictation.state),
-                action: #selector(toggleDictation(_:)),
-                keyEquivalent: ""
-            )
-            dictateItem.target = self
-            menu.addItem(dictateItem)
-
-            let agentVoiceItem = NSMenuItem(
-                title: Self.voiceMenuTitle(mode: .talkToAgent, state: quickActionsController?.dictation.state),
-                action: #selector(toggleTalkToAgent(_:)),
-                keyEquivalent: ""
-            )
-            agentVoiceItem.target = self
-            menu.addItem(agentVoiceItem)
-
-            // The panel is non-activating, so keep the microphone grant path
-            // beside the voice actions for keyboard/VoiceOver users too. This
-            // also provides a recovery path when the system consent sheet is
-            // queued behind another privacy prompt.
-            let microphoneSettingsItem = NSMenuItem(
-                title: "Microphone Settings…",
-                action: #selector(openMicrophoneSettings(_:)),
-                keyEquivalent: ""
-            )
-            microphoneSettingsItem.target = self
-            menu.addItem(microphoneSettingsItem)
-
-            addVoiceAndAgentStatus(to: menu, privacy: privacy)
-            menu.addItem(NSMenuItem.separator())
 
             let privacyItem = NSMenuItem(
                 title: "Privacy Mode",
@@ -320,6 +326,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             privacyItem.target = self
             privacyItem.state = privacy ? .on : .off
             menu.addItem(privacyItem)
+
+            let displayAwakeItem = NSMenuItem(
+                title: "Keep Display Awake",
+                action: #selector(toggleDisplayAwake(_:)),
+                keyEquivalent: ""
+            )
+            displayAwakeItem.target = self
+            displayAwakeItem.state = displayAwakeController?.isDisplayAwake == true ? .on : .off
+            menu.addItem(displayAwakeItem)
+            menu.addItem(NSMenuItem.separator())
         }
 
         let settingsItem = NSMenuItem(
@@ -352,11 +368,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func menuOpenNotificationSource(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated { notificationMirror?.activateSource() }
+        guard let appName = sender.representedObject as? String else { return }
+        MainActor.assumeIsolated { notificationMirror?.activateSource(appName: appName) }
     }
 
     @objc func menuMuteNotificationApp(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated { notificationMirror?.muteLatestApp() }
+        guard let appName = sender.representedObject as? String else { return }
+        MainActor.assumeIsolated { notificationMirror?.muteApp(appName) }
     }
 
     private static func menuStateLabel(_ state: AgentActivityState) -> String {
@@ -408,6 +426,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    @objc func menuJoinMeeting(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func menuCopyClipboardEntry(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String, let id = UUID(uuidString: value) else { return }
+        MainActor.assumeIsolated { clipboardController?.copy(id) }
+    }
+
+    @objc func menuClearClipboardHistory(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { clipboardController?.clear() }
+    }
+
     @objc func openReleasesPage(_ sender: NSMenuItem) {
         if let url = URL(string: "https://github.com/Veyal/desnotch/releases/latest") {
             NSWorkspace.shared.open(url)
@@ -423,135 +455,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleDisplayAwake(_ sender: NSMenuItem) {
         MainActor.assumeIsolated {
-            quickActionsController?.toggleDisplayAwake()
-            sender.state = quickActionsController?.isDisplayAwake == true ? .on : .off
+            displayAwakeController?.toggle()
+            sender.state = displayAwakeController?.isDisplayAwake == true ? .on : .off
         }
-    }
-
-    @objc func toggleDictation(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated { quickActionsController?.toggleDictation() }
-    }
-
-    @objc func toggleTalkToAgent(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated { quickActionsController?.toggleTalkToAgent() }
-    }
-
-    @objc func openMicrophoneSettings(_ sender: NSMenuItem) {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") else { return }
-        NSWorkspace.shared.open(url)
-    }
-
-    @objc func confirmAgentCommand(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated { quickActionsController?.confirmAgentCommand() }
-    }
-
-    @objc func cancelVoiceAction(_ sender: NSMenuItem) {
-        MainActor.assumeIsolated { quickActionsController?.cancelVoiceActions() }
-    }
-
-    @MainActor
-    private func addVoiceAndAgentStatus(to menu: NSMenu, privacy: Bool) {
-        guard let quickActionsController else { return }
-        let dictation = quickActionsController.dictation.state
-        let agent = quickActionsController.agentCommand
-        guard dictation != .idle || agent.state != .idle else { return }
-
-        let submenu = NSMenu()
-        submenu.addItem(NSMenuItem(
-            title: "Voice: \(Self.dictationMenuStatus(dictation, privacy: privacy))",
-            action: nil,
-            keyEquivalent: ""
-        ))
-        if case .success(_, let text) = dictation {
-            submenu.addItem(NSMenuItem(
-                title: privacy ? "Transcript hidden" : Self.oneLine(text, max: 80),
-                action: nil,
-                keyEquivalent: ""
-            ))
-        }
-
-        if agent.state != .idle {
-            submenu.addItem(NSMenuItem(title: "Agent: \(agent.state.label)", action: nil, keyEquivalent: ""))
-            if let latest = agent.transcript.last {
-                submenu.addItem(NSMenuItem(
-                    title: privacy ? "Agent transcript hidden" : Self.oneLine(latest, max: 80),
-                    action: nil,
-                    keyEquivalent: ""
-                ))
-            }
-            if let proposal = agent.proposedCommand {
-                submenu.addItem(NSMenuItem(
-                    title: privacy ? "Command proposal hidden" : Self.oneLine(proposal.displayString, max: 80),
-                    action: nil,
-                    keyEquivalent: ""
-                ))
-            }
-            let commandOutput = agent.output.stdout.isEmpty ? agent.output.stderr : agent.output.stdout
-            if !commandOutput.isEmpty {
-                submenu.addItem(NSMenuItem(
-                    title: privacy ? "Command output hidden" : Self.oneLine(commandOutput, max: 80),
-                    action: nil,
-                    keyEquivalent: ""
-                ))
-            }
-            if agent.state == .awaitingConfirmation {
-                let confirm = NSMenuItem(
-                    title: "Confirm Proposed Command",
-                    action: #selector(confirmAgentCommand(_:)),
-                    keyEquivalent: ""
-                )
-                confirm.target = self
-                submenu.addItem(confirm)
-            }
-        }
-
-        if Self.voiceActionCanCancel(dictation) || [.proposing, .awaitingConfirmation, .executing].contains(agent.state) {
-            let cancel = NSMenuItem(
-                title: "Cancel Voice / Agent Action",
-                action: #selector(cancelVoiceAction(_:)),
-                keyEquivalent: ""
-            )
-            cancel.target = self
-            submenu.addItem(cancel)
-        }
-        let item = NSMenuItem(title: "Voice & Agent Status", action: nil, keyEquivalent: "")
-        item.submenu = submenu
-        menu.addItem(item)
-    }
-
-    private static func voiceMenuTitle(mode: DictationMode, state: DictationState?) -> String {
-        guard let state else { return mode == .dictate ? "Dictate" : "Talk to Agent" }
-        switch state {
-        case .recording(let active) where active == mode:
-            return mode == .dictate ? "Stop Dictation" : "Send to Agent"
-        case .requestingPermission(let active) where active == mode,
-             .uploading(let active) where active == mode:
-            return "Cancel Voice Action"
-        default:
-            return mode == .dictate ? "Dictate" : "Talk to Agent"
-        }
-    }
-
-    private static func dictationMenuStatus(_ state: DictationState, privacy: Bool) -> String {
-        switch state {
-        case .idle: return "Idle"
-        case .requestingPermission: return "Waiting for microphone permission"
-        case .recording: return "Recording"
-        case .uploading: return "Uploading for transcription"
-        case .success: return "Transcription complete"
-        case .error(_, let message): return privacy ? "Voice action failed" : oneLine(message, max: 80)
-        }
-    }
-
-    private static func voiceActionCanCancel(_ state: DictationState) -> Bool {
-        switch state {
-        case .requestingPermission, .recording, .uploading: return true
-        default: return false
-        }
-    }
-
-    private static func oneLine(_ value: String, max: Int) -> String {
-        String(value.replacingOccurrences(of: "\n", with: " ").prefix(max))
     }
 
     private var launchAtLoginEnabled: Bool {

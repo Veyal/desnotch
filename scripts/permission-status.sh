@@ -22,7 +22,6 @@ REQUIRE_GRANTED="${REQUIRE_GRANTED:-0}"
 # verify the launched app itself before relying on REQUIRE_GRANTED=1.
 snapshot="$(DESNOTCH_PERMISSION_PROBE=1 "$EXECUTABLE")"
 accessibility="$(plutil -extract accessibility raw -o - - <<<"$snapshot")"
-microphone="$(plutil -extract microphone raw -o - - <<<"$snapshot")"
 calendar="$(plutil -extract calendar raw -o - - <<<"$snapshot")"
 
 echo "$snapshot"
@@ -30,10 +29,6 @@ echo "$snapshot"
 if [[ "$REQUIRE_GRANTED" == 1 ]]; then
   [[ "$accessibility" == trusted ]] || {
     echo "error: Accessibility is $accessibility" >&2
-    exit 2
-  }
-  [[ "$microphone" == authorized ]] || {
-    echo "error: Microphone is $microphone" >&2
     exit 2
   }
   [[ "$calendar" == fullAccess ]] || {

@@ -17,7 +17,6 @@ ADAPTER="$APP_BUNDLE/Contents/Resources/MediaRemoteAdapter"
 /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$PLIST" >/dev/null
-/usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Print :NSCalendarsUsageDescription" "$PLIST" >/dev/null
 plutil -lint "$PLIST"
 
@@ -46,10 +45,8 @@ if [[ "${MANUAL:-0}" == 1 ]]; then
 Manual checklist (requires a packaged app and a real desktop session):
   [ ] Launch and confirm the status-menu Quit path terminates desnotch and its adapter.
   [ ] Run REQUIRE_GRANTED=1 scripts/permission-status.sh and confirm all required grants.
-  [ ] Grant Calendar, Microphone, and Accessibility when prompted; verify denied/retry guidance.
+  [ ] Grant Calendar and Accessibility when prompted; verify denied/retry guidance.
   [ ] Play/pause media and verify the pill updates; test volume scroll and menu transport.
-  [ ] Start/stop Dictate from both pill and status menu; verify transcription pastes into the previously focused text field and cancellation leaves no temp audio file.
-  [ ] Start/stop Talk to Agent; verify streamed status, policy classification, explicit confirmation for a write/network proposal, cancellation, timeout, redaction, and bounded output.
   [ ] Exercise notification mirroring only after enabling it and granting Accessibility.
   [ ] On a real notched MacBook, verify the pill never draws behind the cutout.
   [ ] On Intel hardware, verify launch, media adapter operation, and clean termination.

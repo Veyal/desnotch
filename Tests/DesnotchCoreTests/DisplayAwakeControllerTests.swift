@@ -1,36 +1,36 @@
 import XCTest
 @testable import DesnotchCore
 
-final class QuickActionsControllerTests: XCTestCase {
+final class DisplayAwakeControllerTests: XCTestCase {
     func testCaffeinateArgumentsPreventDisplaySleepAndFollowAppLifetime() {
         XCTAssertEqual(
-            QuickActionsController.caffeinateArguments(parentPID: 42),
+            DisplayAwakeController.caffeinateArguments(parentPID: 42),
             ["-d", "-w", "42"]
         )
     }
 
     @MainActor
     func testToggleStartsAndStopsOwnedProcess() {
-        let controller = QuickActionsController(
+        let controller = DisplayAwakeController(
             executableURL: URL(fileURLWithPath: "/bin/sleep"),
             arguments: ["30"]
         )
 
         XCTAssertFalse(controller.isDisplayAwake)
-        controller.toggleDisplayAwake()
+        controller.toggle()
         XCTAssertTrue(controller.isDisplayAwake)
-        controller.toggleDisplayAwake()
+        controller.toggle()
         XCTAssertFalse(controller.isDisplayAwake)
     }
 
     @MainActor
     func testLaunchFailureLeavesActionOff() {
-        let controller = QuickActionsController(
+        let controller = DisplayAwakeController(
             executableURL: URL(fileURLWithPath: "/definitely/missing/caffeinate"),
             arguments: []
         )
 
-        controller.toggleDisplayAwake()
+        controller.toggle()
 
         XCTAssertFalse(controller.isDisplayAwake)
     }

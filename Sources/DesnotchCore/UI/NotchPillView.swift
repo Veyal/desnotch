@@ -1,9 +1,39 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Collapses the pill's many structural animation triggers into one Equatable value.
+/// A single transaction is cheaper and, when several states change together, avoids
+/// whichever chained `.animation` modifier happened to be outermost winning by accident.
+private struct PillPrimaryAnimationState: Equatable {
+    let hasMedia: Bool
+    let hasAgents: Bool
+    let hasHotProcesses: Bool
+    let calendarImminent: Bool
+    let isHovering: Bool
+    let pillMode: String
+    let minimizedWidth: Double
+    let minimizedHeight: Double
+    let expandedWidth: Double
+    let isDropTargeted: Bool
+    let openFlash: Bool
+    let trayItems: [URL]
+    let animationStyle: String
+    let batteryState: BatteryController.BatteryState?
+    let hasNotification: Bool
+    let notificationArrivalCount: Int
+}
+
+private struct PillSecondaryAnimationState: Equatable {
+    let volumeReadoutVisible: Bool
+    let micInUse: Bool
+    let cameraInUse: Bool
+    let privacyModeEnabled: Bool
+    let clipboardEntryIDs: [UUID]
+}
+
 /// The single live-activity pill: always rendered as a (real or synthetic) notch shape,
 /// minimized to indicator wings by default, expanded on hover/drag/always-on mode to the
-/// stacked sections (now-playing, agents, processes, calendar, battery, quick actions, tray).
+/// stacked sections (now-playing, agents, processes, calendar, battery, privacy, tray).
 ///
 /// On a screen with a physical notch the pill hugs the hardware: the minimized state is a
 /// solid-black extension of the notch with the indicators in small "wings" either side of
@@ -13,15 +43,15 @@ import UniformTypeIdentifiers
 /// Privacy: rows render basenames, 48-char task-title hints, counts, and states - never
 /// full prompts or absolute paths (`AgentSession.projectPath` is a click target only).
 /// Privacy mode (`SettingsStore.privacyModeEnabled`) additionally blanks now-playing
-/// title/artist, agent task titles, calendar event titles, tray filenames, and mirrored
-/// notification content via `privacyRedacted` - route any new user-content string
+/// title/artist, agent task titles, calendar event titles, clipboard previews, tray filenames,
+/// and mirrored notification content via `privacyRedacted` - route any new user-content string
 /// through it.
 public struct NotchPillView: View {
     @ObservedObject public var controller: NowPlayingController
     @ObservedObject public var agentActivity: AgentActivityController
     @ObservedObject public var calendar: CalendarController
     @ObservedObject public var processMonitor: ProcessMonitorController
-    @ObservedObject public var quickActions: QuickActionsController
+    @ObservedObject public var clipboard: ClipboardController
     @ObservedObject public var tray: TrayController
     @ObservedObject public var battery: BatteryController
     @ObservedObject public var mediaUse: MediaUseMonitor
@@ -36,9 +66,6 @@ public struct NotchPillView: View {
     /// the owning `NSPanel` can resize to fit content + shadow/overshoot room.
     public var onSizeChange: ((CGSize) -> Void)?
 
-    @State private var measuredWidth: CGFloat = 0
-    @State private var measuredHeight: CGFloat = 0
-
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -46,7 +73,7 @@ public struct NotchPillView: View {
         agentActivity: AgentActivityController,
         calendar: CalendarController,
         processMonitor: ProcessMonitorController,
-        quickActions: QuickActionsController,
+        clipboard: ClipboardController,
         tray: TrayController,
         battery: BatteryController,
         mediaUse: MediaUseMonitor,
@@ -60,7 +87,7 @@ public struct NotchPillView: View {
         self.agentActivity = agentActivity
         self.calendar = calendar
         self.processMonitor = processMonitor
-        self.quickActions = quickActions
+        self.clipboard = clipboard
         self.tray = tray
         self.battery = battery
         self.mediaUse = mediaUse
@@ -105,6 +132,7 @@ public struct NotchPillView: View {
     private var hasNotification: Bool { settings.notificationMirrorEnabled && notificationMirror.latest != nil }
     private var hasAgents: Bool { settings.agentActivityEnabled && agentActivity.summary.hasActivity }
     private var hasHotProcesses: Bool { settings.processMonitorEnabled && !processMonitor.hotProcesses.isEmpty }
+    private var hasClipboard: Bool { settings.clipboardHistoryEnabled && !clipboard.entries.isEmpty }
     /// Drives the compact calendar indicator; the expanded glance row shows for anything
     /// within the lookahead window.
     private var calendarImminent: Bool { settings.calendarEnabled && calendar.isImminent }
@@ -152,6 +180,37 @@ public struct NotchPillView: View {
             || presentation.isHovering || isDropTargeted || presentation.openFlash
     }
 
+    private var primaryAnimationState: PillPrimaryAnimationState {
+        PillPrimaryAnimationState(
+            hasMedia: hasMedia,
+            hasAgents: hasAgents,
+            hasHotProcesses: hasHotProcesses,
+            calendarImminent: calendarImminent,
+            isHovering: presentation.isHovering,
+            pillMode: settings.pillMode.rawValue,
+            minimizedWidth: settings.minimizedWidth,
+            minimizedHeight: settings.minimizedHeight,
+            expandedWidth: settings.expandedWidth,
+            isDropTargeted: isDropTargeted,
+            openFlash: presentation.openFlash,
+            trayItems: tray.items,
+            animationStyle: settings.animationStyle.rawValue,
+            batteryState: battery.state,
+            hasNotification: hasNotification,
+            notificationArrivalCount: notificationMirror.arrivalCount
+        )
+    }
+
+    private var secondaryAnimationState: PillSecondaryAnimationState {
+        PillSecondaryAnimationState(
+            volumeReadoutVisible: presentation.volumeFlash != nil,
+            micInUse: mediaUse.micInUse,
+            cameraInUse: mediaUse.cameraInUse,
+            privacyModeEnabled: settings.privacyModeEnabled,
+            clipboardEntryIDs: clipboard.entries.map(\.id)
+        )
+    }
+
     /// Needs-you first (action required), then stalled, then working - most recent first.
     private var orderedAgents: [AgentSession] {
         let rank: [AgentActivityState: Int] = [.needsYourTurn: 0, .stalled: 1, .working: 2]
@@ -168,34 +227,11 @@ public struct NotchPillView: View {
         // visible anyway.
         notchBody
             .background(sizeReader)
-        .onPreferenceChange(PillContentWidthPreferenceKey.self) { w in
-            measuredWidth = w
-            onSizeChange?(CGSize(width: w, height: measuredHeight))
+        .onPreferenceChange(PillContentSizePreferenceKey.self) { size in
+            onSizeChange?(size)
         }
-        .onPreferenceChange(PillContentHeightPreferenceKey.self) { h in
-            measuredHeight = h
-            onSizeChange?(CGSize(width: measuredWidth, height: h))
-        }
-        .animation(spring, value: hasMedia)
-        .animation(spring, value: hasAgents)
-        .animation(spring, value: hasHotProcesses)
-        .animation(spring, value: calendarImminent)
-        .animation(spring, value: presentation.isHovering)
-        .animation(spring, value: settings.pillMode)
-        .animation(spring, value: settings.minimizedWidth)
-        .animation(spring, value: settings.minimizedHeight)
-        .animation(spring, value: settings.expandedWidth)
-        .animation(spring, value: isDropTargeted)
-        .animation(spring, value: presentation.openFlash)
-        .animation(spring, value: tray.items)
-        .animation(motion.secondary, value: presentation.volumeFlash == nil)
-        .animation(motion.secondary, value: mediaUse.micInUse)
-        .animation(motion.secondary, value: mediaUse.cameraInUse)
-        .animation(spring, value: settings.animationStyle)
-        .animation(spring, value: battery.state)
-        .animation(motion.secondary, value: quickActions.isDisplayAwake)
-        .animation(spring, value: hasNotification)
-        .animation(spring, value: notificationMirror.arrivalCount)
+        .animation(motion.secondary, value: secondaryAnimationState)
+        .animation(spring, value: primaryAnimationState)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // The pill renders on an always-dark surface; force a dark color scheme so
         // `.secondary` text stays legible in Light Mode too.
@@ -205,8 +241,7 @@ public struct NotchPillView: View {
     private var sizeReader: some View {
         GeometryReader { proxy in
             Color.clear
-                .preference(key: PillContentWidthPreferenceKey.self, value: proxy.size.width)
-                .preference(key: PillContentHeightPreferenceKey.self, value: proxy.size.height)
+                .preference(key: PillContentSizePreferenceKey.self, value: proxy.size)
         }
     }
 
@@ -325,14 +360,14 @@ public struct NotchPillView: View {
 
     private var showBatteryRow: Bool { settings.batteryEnabled }
 
-    private var hasContentBeforeQuickActions: Bool {
-        hasNotification || hasMedia || hasAgents || hasHotProcesses || showCalendarRow
+    private var hasContentBeforePrivacyAction: Bool {
+        hasNotification || hasMedia || hasAgents || hasHotProcesses || hasClipboard || showCalendarRow
             || (showBatteryRow && battery.state != nil)
     }
 
     /// Blank sensitive strings while privacy mode is on (screen sharing/recording).
-    /// Scope: now-playing title/artist, agent task titles, calendar event titles, and
-    /// tray filenames - keep any new user-content string behind this too.
+    /// Scope: now-playing title/artist, agent task titles, calendar event titles,
+    /// clipboard previews, and tray filenames - keep any new user-content string behind this too.
     private func privacyRedacted(_ text: String, fallback: String) -> String {
         settings.privacyModeEnabled ? fallback : text
     }
@@ -379,7 +414,7 @@ public struct NotchPillView: View {
             if hasNotification, let banner = notificationMirror.latest {
                 notificationRow(banner)
                 if hasMedia || hasAgents || hasHotProcesses || showCalendarRow
-                    || (showBatteryRow && battery.state != nil) || trayEnabled {
+                    || (showBatteryRow && battery.state != nil) || hasClipboard || trayEnabled {
                     sectionDivider
                 }
             }
@@ -414,10 +449,17 @@ public struct NotchPillView: View {
                 }
                 batteryRow(state)
             }
-            if hasContentBeforeQuickActions {
+            if hasClipboard {
+                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow
+                    || (showBatteryRow && battery.state != nil) {
+                    sectionDivider
+                }
+                clipboardSection
+            }
+            if hasContentBeforePrivacyAction {
                 sectionDivider
             }
-            quickActionsSection
+            privacyAction
             if trayEnabled {
                 sectionDivider
                 traySection
@@ -425,269 +467,116 @@ public struct NotchPillView: View {
         }
     }
 
-    // MARK: - Quick actions
+    // MARK: - Privacy action
 
-    private var quickActionsSection: some View {
+    private var clipboardSection: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 5) {
-                Image(systemName: "bolt.fill")
+                Image(systemName: "doc.on.clipboard")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
-                Text("quick actions")
+                Text("clipboard")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-            }
-
-            Button {
-                quickActions.toggleDisplayAwake()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "cup.and.saucer.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(quickActions.isDisplayAwake ? Color.yellow : Color.white)
-                        .frame(width: 14)
-                    Text("Keep display awake")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Spacer(minLength: 4)
-                    Text(quickActions.isDisplayAwake ? "On" : "Off")
+                Button {
+                    clipboard.clear()
+                } label: {
+                    Image(systemName: "trash")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(quickActions.isDisplayAwake ? Color.yellow : Color.secondary)
-                    Image(systemName: quickActions.isDisplayAwake ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(quickActions.isDisplayAwake ? Color.yellow : Color.secondary)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(quickActions.isDisplayAwake ? Color.yellow.opacity(0.14) : Color.white.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(
-                            quickActions.isDisplayAwake ? Color.yellow.opacity(0.35) : Color.white.opacity(0.1),
-                            lineWidth: 1
-                        )
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(PillButtonStyle())
-            .help(quickActions.isDisplayAwake ? "Allow display sleep" : "Keep display awake")
-            .accessibilityLabel(Text("Keep display awake"))
-            .accessibilityValue(Text(quickActions.isDisplayAwake ? "On" : "Off"))
-
-            voiceActionButton(
-                mode: .dictate,
-                title: voiceButtonTitle(for: .dictate),
-                systemName: voiceButtonIcon(for: .dictate),
-                tint: voiceButtonTint(for: .dictate)
-            ) {
-                quickActions.toggleDictation()
+                .buttonStyle(PillButtonStyle())
+                .help("Clear clipboard history")
+                .accessibilityLabel(Text("Clear clipboard history"))
             }
 
-            voiceActionButton(
-                mode: .talkToAgent,
-                title: voiceButtonTitle(for: .talkToAgent),
-                systemName: voiceButtonIcon(for: .talkToAgent),
-                tint: voiceButtonTint(for: .talkToAgent)
-            ) {
-                quickActions.toggleTalkToAgent()
+            ForEach(Array(clipboard.entries.prefix(3))) { entry in
+                HStack(spacing: 6) {
+                    Button {
+                        clipboard.copy(entry.id)
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: clipboard.copiedEntryID == entry.id ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(clipboard.copiedEntryID == entry.id ? Color.green : Color.secondary)
+                                .frame(width: 12)
+                            Text(privacyRedacted(entry.preview, fallback: "Clipboard text hidden"))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .frame(maxWidth: 220, alignment: .leading)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PillButtonStyle())
+                    .help("Copy this item")
+                    .accessibilityLabel(Text("Copy \(privacyRedacted(entry.preview, fallback: "clipboard item"))"))
+
+                    Button {
+                        clipboard.remove(entry.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(PillButtonStyle())
+                    .help("Remove from clipboard history")
+                    .accessibilityLabel(Text("Remove clipboard item"))
+                }
+                .padding(.vertical, 1)
+                .id(entry.id)
+                .transition(arrivalTransition)
             }
 
-            if quickActions.dictation.state != .idle {
-                voiceStatusRow
-            }
-            if quickActions.agentCommand.state != .idle {
-                agentCommandStatus
+            if clipboard.entries.count > 3 {
+                Text("\(clipboard.entries.count - 3) more in the status menu")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    private func voiceActionButton(
-        mode: DictationMode,
-        title: String,
-        systemName: String,
-        tint: Color,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
+    private var privacyAction: some View {
+        Button {
+            settings.privacyModeEnabled.toggle()
+        } label: {
             HStack(spacing: 8) {
-                Image(systemName: systemName)
+                Image(systemName: settings.privacyModeEnabled ? "eye.slash.fill" : "eye.fill")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(settings.privacyModeEnabled ? Color.cyan : Color.white)
                     .frame(width: 14)
-                Text(title)
+                Text("Privacy mode")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
                 Spacer(minLength: 4)
-                if quickActions.dictation.mode == mode {
-                    Text(voiceStateShortLabel)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(tint)
-                }
+                Text(settings.privacyModeEnabled ? "On" : "Off")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(settings.privacyModeEnabled ? Color.cyan : Color.secondary)
+                Image(systemName: settings.privacyModeEnabled ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(settings.privacyModeEnabled ? Color.cyan : Color.secondary)
             }
             .padding(.horizontal, 8)
             .frame(height: 28)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(quickActions.dictation.mode == mode ? tint.opacity(0.14) : Color.white.opacity(0.06))
+                    .fill(settings.privacyModeEnabled ? Color.cyan.opacity(0.14) : Color.white.opacity(0.06))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(quickActions.dictation.mode == mode ? tint.opacity(0.35) : Color.white.opacity(0.1), lineWidth: 1)
+                    .stroke(
+                        settings.privacyModeEnabled ? Color.cyan.opacity(0.35) : Color.white.opacity(0.1),
+                        lineWidth: 1
+                    )
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(PillButtonStyle())
-        .accessibilityLabel(Text(title))
-        .accessibilityHint(Text(mode == .dictate ? "Records, transcribes, and pastes into the focused app" : "Records, transcribes, and sends the prompt to Codex CLI"))
-    }
-
-    private var voiceStatusRow: some View {
-        let label: String
-        let color: Color
-        switch quickActions.dictation.state {
-        case .idle:
-            label = ""
-            color = .secondary
-        case .requestingPermission:
-            label = "Waiting for microphone permission…"
-            color = .yellow
-        case .recording:
-            label = "Recording — press again to stop"
-            color = .red
-        case .uploading:
-            label = "Uploading for transcription…"
-            color = .cyan
-        case .success(_, let transcript):
-            label = privacyRedacted(transcript, fallback: "Transcript hidden")
-            color = .green
-        case .error(_, let message):
-            label = privacyRedacted(message, fallback: "Voice action failed")
-            color = .red
-        }
-        return HStack(alignment: .top, spacing: 6) {
-            Image(systemName: color == .red ? "exclamationmark.circle.fill" : "waveform")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: 12)
-            Text(label)
-                .font(.system(size: 9))
-                .foregroundStyle(color)
-                .lineLimit(2)
-                .frame(maxWidth: 230, alignment: .leading)
-            Spacer(minLength: 0)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text(label))
-    }
-
-    private var agentCommandStatus: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "terminal.fill")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(quickActions.agentCommand.state == .awaitingConfirmation ? .yellow : .cyan)
-                Text(quickActions.agentCommand.state.label)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-            }
-
-            if let latest = quickActions.agentCommand.transcript.last {
-                Text(privacyRedacted(latest, fallback: "Agent transcript hidden"))
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: 230, alignment: .leading)
-            }
-
-            if let proposal = quickActions.agentCommand.proposedCommand {
-                Text(privacyRedacted(proposal.displayString, fallback: "Command proposal hidden"))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .frame(maxWidth: 230, alignment: .leading)
-            }
-
-            if let reason = quickActions.agentCommand.confirmationReason {
-                Text(reason)
-                    .font(.system(size: 8))
-                    .foregroundStyle(.yellow)
-                    .lineLimit(2)
-                    .frame(maxWidth: 230, alignment: .leading)
-            }
-
-            if quickActions.agentCommand.state == .awaitingConfirmation {
-                HStack(spacing: 6) {
-                    Button("Confirm command") { quickActions.confirmAgentCommand() }
-                        .buttonStyle(PillButtonStyle())
-                    Button("Cancel") { quickActions.cancelVoiceActions() }
-                        .buttonStyle(PillButtonStyle())
-                }
-                .font(.system(size: 9, weight: .semibold))
-            } else if [.proposing, .executing].contains(quickActions.agentCommand.state) {
-                Button("Cancel") { quickActions.cancelVoiceActions() }
-                    .buttonStyle(PillButtonStyle())
-                    .font(.system(size: 9, weight: .semibold))
-            }
-
-            let commandOutput = quickActions.agentCommand.output.stdout.isEmpty
-                ? quickActions.agentCommand.output.stderr
-                : quickActions.agentCommand.output.stdout
-            if !commandOutput.isEmpty {
-                Text(privacyRedacted(commandOutput, fallback: "Command output hidden"))
-                    .font(.system(size: 8, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .frame(maxWidth: 230, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.04)))
-        .accessibilityElement(children: .combine)
-    }
-
-    private func voiceButtonTitle(for mode: DictationMode) -> String {
-        guard quickActions.dictation.mode == mode else {
-            return mode == .dictate ? "Dictate" : "Talk to Agent"
-        }
-        switch quickActions.dictation.state {
-        case .recording: return mode == .dictate ? "Stop Dictation" : "Send to Agent"
-        case .requestingPermission, .uploading: return "Cancel Voice Action"
-        default: return mode == .dictate ? "Dictate" : "Talk to Agent"
-        }
-    }
-
-    private func voiceButtonIcon(for mode: DictationMode) -> String {
-        guard quickActions.dictation.mode == mode else {
-            return mode == .dictate ? "mic.fill" : "bubble.left.and.waveform.fill"
-        }
-        switch quickActions.dictation.state {
-        case .recording: return "stop.circle.fill"
-        case .uploading: return "arrow.up.circle.fill"
-        default: return mode == .dictate ? "mic.fill" : "bubble.left.and.waveform.fill"
-        }
-    }
-
-    private func voiceButtonTint(for mode: DictationMode) -> Color {
-        guard quickActions.dictation.mode == mode else { return .white }
-        if case .recording = quickActions.dictation.state { return .red }
-        return mode == .dictate ? .cyan : .purple
-    }
-
-    private var voiceStateShortLabel: String {
-        switch quickActions.dictation.state {
-        case .requestingPermission: return "Permission"
-        case .recording: return "Listening"
-        case .uploading: return "Uploading"
-        case .success: return "Done"
-        case .error: return "Error"
-        case .idle: return ""
-        }
+        .help(settings.privacyModeEnabled ? "Show private details" : "Hide private details while sharing your screen")
+        .accessibilityLabel(Text("Privacy mode"))
+        .accessibilityValue(Text(settings.privacyModeEnabled ? "On" : "Off"))
     }
 
     /// The mirrored banner row - always the top section (it's the newest event).
@@ -738,7 +627,7 @@ public struct NotchPillView: View {
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .onTapGesture { notificationMirror.activateSource() }
+        .onTapGesture { notificationMirror.activateSource(appName: banner.appName) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("Notification from \(banner.appName)\(settings.privacyModeEnabled ? "" : (banner.content.map { ": \($0)" } ?? ""))"))
         .accessibilityHint(Text("Opens \(banner.appName)"))
@@ -1224,9 +1113,6 @@ public struct NotchPillView: View {
                 }
             }
         }
-        // Unlike the agent list (whose 5s re-scan must not re-animate), tray changes are
-        // direct user actions - let items visibly slide in/out.
-        .animation(spring, value: tray.items)
     }
 
     private func trayRow(_ url: URL) -> some View {
@@ -1265,6 +1151,28 @@ public struct NotchPillView: View {
     // MARK: - Calendar glance
 
     private func calendarRow(_ event: CalendarController.NextEvent) -> some View {
+        Group {
+            if let joinURL = event.joinURL {
+                Button {
+                    NSWorkspace.shared.open(joinURL)
+                } label: {
+                    calendarRowContents(event, canJoin: true)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PillButtonStyle())
+                .help("Join meeting")
+                .accessibilityLabel(Text("Join next event: \(privacyRedacted(event.title, fallback: "Busy")), \(timeUntil(event))"))
+                .accessibilityHint(Text("Opens the meeting link"))
+            } else {
+                calendarRowContents(event, canJoin: false)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(Text("Next event: \(privacyRedacted(event.title, fallback: "Busy")), \(timeUntil(event))"))
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func calendarRowContents(_ event: CalendarController.NextEvent, canJoin: Bool) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "calendar")
                 .font(.system(size: 10, weight: .semibold))
@@ -1274,15 +1182,17 @@ public struct NotchPillView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
-                .frame(maxWidth: 170, alignment: .leading)
+                .frame(maxWidth: canJoin ? 145 : 170, alignment: .leading)
             Spacer(minLength: 4)
             Text(timeUntil(event))
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(calendarImminent ? .yellow : .secondary)
+            if canJoin {
+                Image(systemName: "video.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.cyan)
+            }
         }
-        .padding(.vertical, 1)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("Next event: \(privacyRedacted(event.title, fallback: "Busy")), \(timeUntil(event))"))
     }
 
     private func timeUntil(_ event: CalendarController.NextEvent) -> String {
@@ -1291,10 +1201,7 @@ public struct NotchPillView: View {
         if s < 3600 { return "in \(max(1, s / 60))m" }
         if s < 6 * 3600 { return "in \(s / 3600)h \((s % 3600) / 60)m" }
         // Further out (24h lookahead): an absolute time reads better than "in 19h 40m".
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        formatter.dateStyle = .none
-        let time = formatter.string(from: event.start)
+        let time = event.start.formatted(date: .omitted, time: .shortened)
         return Foundation.Calendar.current.isDateInTomorrow(event.start) ? "tmrw \(time)" : time
     }
 

@@ -12,7 +12,7 @@ public final class NotchWindowController {
     private let agentActivity: AgentActivityController
     private let calendar: CalendarController
     private let processMonitor: ProcessMonitorController
-    private let quickActions: QuickActionsController
+    private let clipboard: ClipboardController
     private let tray: TrayController
     private let battery: BatteryController
     private let mediaUse: MediaUseMonitor
@@ -34,7 +34,7 @@ public final class NotchWindowController {
         agentActivity: AgentActivityController,
         calendar: CalendarController,
         processMonitor: ProcessMonitorController,
-        quickActions: QuickActionsController,
+        clipboard: ClipboardController,
         tray: TrayController,
         battery: BatteryController,
         mediaUse: MediaUseMonitor,
@@ -46,7 +46,7 @@ public final class NotchWindowController {
         self.agentActivity = agentActivity
         self.calendar = calendar
         self.processMonitor = processMonitor
-        self.quickActions = quickActions
+        self.clipboard = clipboard
         self.tray = tray
         self.battery = battery
         self.mediaUse = mediaUse
@@ -135,7 +135,7 @@ public final class NotchWindowController {
             agentActivity: agentActivity,
             calendar: calendar,
             processMonitor: processMonitor,
-            quickActions: quickActions,
+            clipboard: clipboard,
             tray: tray,
             battery: battery,
             mediaUse: mediaUse,

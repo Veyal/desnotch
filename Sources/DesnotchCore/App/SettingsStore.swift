@@ -59,13 +59,6 @@ public final class SettingsStore: ObservableObject {
     public static let expandedWidthRange: ClosedRange<Double> = 260...480
     public static let defaultExpandedWidth = 300.0
 
-    public static let defaultTranscriptionBaseURL = "https://api.openai.com"
-    public static let defaultTranscriptionModel = SpeechTranscriptionClient.defaultModel
-    public static let agentCommandTimeoutRange: ClosedRange<Double> = 10...300
-    public static let defaultAgentCommandTimeout = 120.0
-    public static let agentOutputLimitKBRange: ClosedRange<Double> = 16...1024
-    public static let defaultAgentOutputLimitKB = 256.0
-
     nonisolated public static func clamp(_ value: Double, to range: ClosedRange<Double>) -> Double {
         min(max(value, range.lowerBound), range.upperBound)
     }
@@ -77,12 +70,14 @@ public final class SettingsStore: ObservableObject {
     @Published public var calendarEnabled: Bool { didSet { set("calendarEnabled", calendarEnabled) } }
     @Published public var processMonitorEnabled: Bool { didSet { set("processMonitorEnabled", processMonitorEnabled) } }
     @Published public var trayEnabled: Bool { didSet { set("trayEnabled", trayEnabled) } }
+    /// Recent plain-text clipboard entries, held in memory only. Explicitly opt-in.
+    @Published public var clipboardHistoryEnabled: Bool { didSet { set("clipboardHistoryEnabled", clipboardHistoryEnabled) } }
     @Published public var volumeScrollEnabled: Bool { didSet { set("volumeScrollEnabled", volumeScrollEnabled) } }
     @Published public var timelineSeekEnabled: Bool { didSet { set("timelineSeekEnabled", timelineSeekEnabled) } }
     @Published public var batteryEnabled: Bool { didSet { set("batteryEnabled", batteryEnabled) } }
     @Published public var micCameraIndicatorEnabled: Bool { didSet { set("micCameraIndicatorEnabled", micCameraIndicatorEnabled) } }
-    /// Blanks sensitive text (agent task titles, calendar event titles) for screen
-    /// sharing/recording. Defaults OFF, unlike the feature toggles.
+    /// Blanks sensitive media, agent, calendar, clipboard, tray, and notification text
+    /// for screen sharing/recording. Defaults OFF, unlike the feature toggles.
     @Published public var privacyModeEnabled: Bool { didSet { set("privacyModeEnabled", privacyModeEnabled) } }
     @Published public var notifyAgentNeedsYou: Bool { didSet { set(AgentAttentionNotifier.defaultsKey, notifyAgentNeedsYou) } }
     /// Mirror notification banners into the pill. OFF by default (it additionally
@@ -135,39 +130,6 @@ public final class SettingsStore: ObservableObject {
         didSet { clampAndSet(\.expandedWidth, "expandedWidth", Self.expandedWidthRange) }
     }
 
-    // MARK: Voice actions & agent control
-
-    /// Provider credentials are deliberately absent: the API key lives only in Keychain.
-    @Published public var transcriptionBaseURL: String {
-        didSet { boundAndSet(\.transcriptionBaseURL, "transcriptionBaseURL", fallback: Self.defaultTranscriptionBaseURL, max: 512) }
-    }
-    @Published public var transcriptionModel: String {
-        didSet { boundAndSet(\.transcriptionModel, "transcriptionModel", fallback: Self.defaultTranscriptionModel, max: 128) }
-    }
-    @Published public var agentBackend: AgentBackend {
-        didSet { set("agentBackend", agentBackend.rawValue) }
-    }
-    /// Built from NSHomeDirectory on a fresh install; never a machine-specific literal.
-    @Published public var agentWorkingDirectory: String {
-        didSet {
-            let bounded = String(agentWorkingDirectory.prefix(1_024))
-            if bounded != agentWorkingDirectory {
-                agentWorkingDirectory = bounded
-                return
-            }
-            set("agentWorkingDirectory", bounded)
-        }
-    }
-    @Published public var agentAutoRunReadOnly: Bool {
-        didSet { set("agentAutoRunReadOnly", agentAutoRunReadOnly) }
-    }
-    @Published public var agentCommandTimeout: Double {
-        didSet { clampAndSet(\.agentCommandTimeout, "agentCommandTimeout", Self.agentCommandTimeoutRange) }
-    }
-    @Published public var agentOutputLimitKB: Double {
-        didSet { clampAndSet(\.agentOutputLimitKB, "agentOutputLimitKB", Self.agentOutputLimitKBRange) }
-    }
-
     private let defaults: UserDefaults
 
     /// Internal (not private) so tests can build a store against an isolated suite.
@@ -178,6 +140,7 @@ public final class SettingsStore: ObservableObject {
         calendarEnabled = Self.bool(defaults, "calendarEnabled")
         processMonitorEnabled = Self.bool(defaults, "processMonitorEnabled")
         trayEnabled = Self.bool(defaults, "trayEnabled")
+        clipboardHistoryEnabled = defaults.object(forKey: "clipboardHistoryEnabled") as? Bool ?? false
         volumeScrollEnabled = Self.bool(defaults, "volumeScrollEnabled")
         timelineSeekEnabled = Self.bool(defaults, "timelineSeekEnabled")
         batteryEnabled = Self.bool(defaults, "batteryEnabled")
@@ -201,28 +164,6 @@ public final class SettingsStore: ObservableObject {
         minimizedHeight = Self.double(defaults, "minimizedHeight", Self.defaultMinimizedHeight, Self.minimizedHeightRange)
         expandedWidth = Self.double(defaults, "expandedWidth", Self.defaultExpandedWidth, Self.expandedWidthRange)
 
-        transcriptionBaseURL = Self.bounded(
-            defaults.string(forKey: "transcriptionBaseURL") ?? Self.defaultTranscriptionBaseURL,
-            fallback: Self.defaultTranscriptionBaseURL,
-            max: 512
-        )
-        transcriptionModel = Self.bounded(
-            defaults.string(forKey: "transcriptionModel") ?? Self.defaultTranscriptionModel,
-            fallback: Self.defaultTranscriptionModel,
-            max: 128
-        )
-        agentBackend = defaults.string(forKey: "agentBackend")
-            .flatMap(AgentBackend.init(rawValue:)) ?? .default
-        agentWorkingDirectory = String(
-            (defaults.string(forKey: "agentWorkingDirectory") ?? NSHomeDirectory()).prefix(1_024)
-        )
-        agentAutoRunReadOnly = defaults.object(forKey: "agentAutoRunReadOnly") as? Bool ?? false
-        agentCommandTimeout = Self.double(
-            defaults, "agentCommandTimeout", Self.defaultAgentCommandTimeout, Self.agentCommandTimeoutRange
-        )
-        agentOutputLimitKB = Self.double(
-            defaults, "agentOutputLimitKB", Self.defaultAgentOutputLimitKB, Self.agentOutputLimitKBRange
-        )
     }
 
     // MARK: - Plumbing
@@ -236,11 +177,6 @@ public final class SettingsStore: ObservableObject {
     ) -> Double {
         guard let stored = defaults.object(forKey: key) as? Double else { return fallback }
         return clamp(stored, to: range)
-    }
-
-    private static func bounded(_ value: String, fallback: String, max: Int) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? fallback : String(trimmed.prefix(max))
     }
 
     private func set(_ key: String, _ value: Any) {
@@ -263,18 +199,4 @@ public final class SettingsStore: ObservableObject {
         set(key, value)
     }
 
-    private func boundAndSet(
-        _ keyPath: ReferenceWritableKeyPath<SettingsStore, String>,
-        _ key: String,
-        fallback: String,
-        max: Int
-    ) {
-        let value = self[keyPath: keyPath]
-        let bounded = Self.bounded(value, fallback: fallback, max: max)
-        if bounded != value {
-            self[keyPath: keyPath] = bounded
-            return
-        }
-        set(key, value)
-    }
 }

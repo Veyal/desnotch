@@ -178,8 +178,17 @@ public final class NotificationMirrorController: ObservableObject {
     /// Mutes the latest banner's app and clears the row (menu action).
     public func muteLatestApp() {
         guard let latest else { return }
-        settings.setNotificationApp(latest.appName, muted: true)
-        self.latest = nil
+        muteApp(latest.appName)
+    }
+
+    /// Mutes the app represented by the action the user actually clicked. A newer
+    /// banner may replace `latest` while a status menu is open; binding the app name
+    /// prevents a stale "Mute Slack" row from unexpectedly muting Mail instead.
+    public func muteApp(_ appName: String) {
+        settings.setNotificationApp(appName, muted: true)
+        if latest?.appName.caseInsensitiveCompare(appName) == .orderedSame {
+            latest = nil
+        }
     }
 
     // MARK: - Source app
@@ -189,8 +198,14 @@ public final class NotificationMirrorController: ObservableObject {
     /// match - benign for a convenience jump.
     public func activateSource() {
         guard let latest else { return }
+        activateSource(appName: latest.appName)
+    }
+
+    /// Activates the source represented by a specific row/menu action, not whatever
+    /// notification happened to become latest after that action was rendered.
+    public func activateSource(appName: String) {
         let running = NSWorkspace.shared.runningApplications.first {
-            $0.localizedName?.caseInsensitiveCompare(latest.appName) == .orderedSame
+            $0.localizedName?.caseInsensitiveCompare(appName) == .orderedSame
         }
         guard let running else { return }
         if #available(macOS 14.0, *) {

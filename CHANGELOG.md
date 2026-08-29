@@ -2,23 +2,28 @@
 
 ## Unreleased
 
-- **Push-to-talk voice actions:** Dictate records a bounded temporary WAV, sends an
-  OpenAI-compatible multipart transcription request (default
-  `gpt-4o-mini-transcribe`), and pastes into the focused app through an explicit
-  Accessibility grant. Provider URL/model are configurable; the API key lives only
-  in macOS Keychain. Recording, upload, success, error, and cancellation states are
-  visible in both the pill and status menu.
-- **Talk to Agent:** spoken prompts can be sent to an ephemeral, read-only Codex CLI
-  planner. JSONL status is streamed into the UI; a strict policy auto-runs only a
-  tiny opt-in read-only allowlist, while writes, deletes, installs, network/remote,
-  sudo, credential, shell, and unknown commands require a fresh UI confirmation.
-  Command timeout/cancellation owns the full process group, output is capped and
-  secret-redacted, and the rotating audit log stores metadata only.
-- **Distribution readiness:** production icon and microphone metadata, host/static
-  and runtime bundle smoke checks, optional validated universal arm64+x86_64 builds,
-  configurable bundle identity, and opt-in Developer ID/hardened-runtime/notarization
-  support. A non-prompting packaged-app probe reports its own Accessibility,
-  Microphone, and Calendar authorization state. External signing and physical-notch/
+- **Focused utility surface:** removed the experimental voice dictation and AI command controls,
+  including their microphone, provider-key, and Codex transport settings. Privacy Mode is now the
+  pill's single utility action; the occasional Keep Display Awake control remains in the status
+  menu and still owns only its own session-scoped `caffeinate` process.
+- **Private clipboard pocket:** optional and off by default; keeps up to eight bounded plain-text
+  copies in memory only, ignores password-manager/transient pasteboard markers, deduplicates, and
+  clears on disable or quit. Copy/remove/clear actions are available in the pill and status menu,
+  with Privacy Mode redaction.
+- **One-click meeting join:** recognized HTTP(S) conferencing links from calendar event URL,
+  location, or notes are available from both the calendar row and status menu. Notes and locations
+  are inspected transiently and never rendered or persisted.
+- **Smoother pill layout:** natural size now travels through one combined SwiftUI preference,
+  avoiding duplicate panel-resize/interactivity work during every animated layout pass. Competing
+  root animation modifiers are consolidated into primary/secondary state transactions,
+  and calendar time formatting no longer constructs a formatter per render.
+- **Now-playing and notification reliability:** reconciliation distinguishes adapter failure from
+  a valid empty result, generation-checks one-shot results so stale work cannot overwrite newer
+  stream state, and notification menu actions stay bound to the banner they rendered.
+- **Distribution readiness:** refreshed production app icon, host/static and runtime bundle smoke
+  checks, optional validated universal arm64+x86_64 builds, configurable bundle identity, and
+  opt-in Developer ID/hardened-runtime/notarization support. The non-prompting packaged-app probe
+  reports Accessibility and Calendar authorization state. External signing and physical-notch/
   Intel runtime checks remain gated on the corresponding credentials and hardware.
 - **Privacy fixes:** agent task titles, media metadata, calendar titles, and tray filenames no
   longer leak through VoiceOver labels or tooltips while Privacy mode is enabled.

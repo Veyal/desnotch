@@ -96,7 +96,6 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <key>LSUIElement</key><true/>
     <key>NSCalendarsUsageDescription</key><string>desnotch shows your next meeting in the notch pill.</string>
     <key>NSCalendarsFullAccessUsageDescription</key><string>desnotch shows your next meeting in the notch pill.</string>
-    <key>NSMicrophoneUsageDescription</key><string>desnotch records push-to-talk audio only when you choose Dictate or Talk to Agent.</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST

@@ -1,5 +1,4 @@
 import ApplicationServices
-import AVFoundation
 import EventKit
 import Foundation
 
@@ -22,25 +21,13 @@ public struct PermissionSnapshot: Codable, Equatable, Sendable {
     }
 
     public let accessibility: AccessibilityState
-    public let microphone: AuthorizationState
     public let calendar: AuthorizationState
 
     public static func current() -> PermissionSnapshot {
         PermissionSnapshot(
             accessibility: AXIsProcessTrusted() ? .trusted : .untrusted,
-            microphone: microphoneState(for: AVCaptureDevice.authorizationStatus(for: .audio)),
             calendar: calendarState(for: EKEventStore.authorizationStatus(for: .event))
         )
-    }
-
-    static func microphoneState(for status: AVAuthorizationStatus) -> AuthorizationState {
-        switch status {
-        case .notDetermined: return .notDetermined
-        case .restricted: return .restricted
-        case .denied: return .denied
-        case .authorized: return .authorized
-        @unknown default: return .unknown
-        }
     }
 
     static func calendarState(for status: EKAuthorizationStatus) -> AuthorizationState {
