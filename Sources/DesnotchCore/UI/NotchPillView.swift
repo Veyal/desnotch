@@ -9,6 +9,9 @@ private struct PillPrimaryAnimationState: Equatable {
     let hasAgents: Bool
     let hasHotProcesses: Bool
     let calendarImminent: Bool
+    let reminderUrgent: Bool
+    let reminderID: String?
+    let remindersEnabled: Bool
     let isHovering: Bool
     let pillMode: String
     let minimizedWidth: Double
@@ -43,13 +46,14 @@ private struct PillSecondaryAnimationState: Equatable {
 /// Privacy: rows render basenames, 48-char task-title hints, counts, and states - never
 /// full prompts or absolute paths (`AgentSession.projectPath` is a click target only).
 /// Privacy mode (`SettingsStore.privacyModeEnabled`) additionally blanks now-playing
-/// title/artist, agent task titles, calendar event titles, clipboard previews, tray filenames,
+/// title/artist, agent task titles, calendar event titles, reminder titles, clipboard previews, tray filenames,
 /// and mirrored notification content via `privacyRedacted` - route any new user-content string
 /// through it.
 public struct NotchPillView: View {
     @ObservedObject public var controller: NowPlayingController
     @ObservedObject public var agentActivity: AgentActivityController
     @ObservedObject public var calendar: CalendarController
+    @ObservedObject public var reminders: RemindersController
     @ObservedObject public var processMonitor: ProcessMonitorController
     @ObservedObject public var clipboard: ClipboardController
     @ObservedObject public var tray: TrayController
@@ -57,6 +61,7 @@ public struct NotchPillView: View {
     @ObservedObject public var mediaUse: MediaUseMonitor
     @ObservedObject public var notificationMirror: NotificationMirrorController
     @ObservedObject public var presentation: NotchPillPresentation
+    public let onAddReminder: () -> Void
     @ObservedObject private var settings = SettingsStore.shared
     public let hasPhysicalNotch: Bool
     /// Physical notch cutout size (`NotchGeometry.notchSize(for:)`); nil on notch-less screens.
@@ -72,6 +77,8 @@ public struct NotchPillView: View {
         controller: NowPlayingController,
         agentActivity: AgentActivityController,
         calendar: CalendarController,
+        reminders: RemindersController,
+        onAddReminder: @escaping () -> Void,
         processMonitor: ProcessMonitorController,
         clipboard: ClipboardController,
         tray: TrayController,
@@ -86,6 +93,8 @@ public struct NotchPillView: View {
         self.controller = controller
         self.agentActivity = agentActivity
         self.calendar = calendar
+        self.reminders = reminders
+        self.onAddReminder = onAddReminder
         self.processMonitor = processMonitor
         self.clipboard = clipboard
         self.tray = tray
@@ -136,6 +145,9 @@ public struct NotchPillView: View {
     /// Drives the compact calendar indicator; the expanded glance row shows for anything
     /// within the lookahead window.
     private var calendarImminent: Bool { settings.calendarEnabled && calendar.isImminent }
+    /// Reminders only claim compact space when action is timely: overdue, due today,
+    /// or due within 30 minutes. The full section remains one hover away when enabled.
+    private var reminderUrgent: Bool { settings.remindersEnabled && reminders.isUrgent }
     private var trayEnabled: Bool { settings.trayEnabled }
     /// Width of the black "wing" either side of the physical notch that hosts a minimized
     /// indicator. Sized for the widest content (agent icon + 2-digit count).
@@ -186,6 +198,9 @@ public struct NotchPillView: View {
             hasAgents: hasAgents,
             hasHotProcesses: hasHotProcesses,
             calendarImminent: calendarImminent,
+            reminderUrgent: reminderUrgent,
+            reminderID: reminders.nextReminder?.id,
+            remindersEnabled: settings.remindersEnabled,
             isHovering: presentation.isHovering,
             pillMode: settings.pillMode.rawValue,
             minimizedWidth: settings.minimizedWidth,
@@ -358,15 +373,18 @@ public struct NotchPillView: View {
         settings.calendarEnabled && (calendar.nextEvent != nil || calendar.accessState == .denied)
     }
 
+    private var showReminderSection: Bool { settings.remindersEnabled }
+
     private var showBatteryRow: Bool { settings.batteryEnabled }
 
     private var hasContentBeforePrivacyAction: Bool {
         hasNotification || hasMedia || hasAgents || hasHotProcesses || hasClipboard || showCalendarRow
+            || showReminderSection
             || (showBatteryRow && battery.state != nil)
     }
 
     /// Blank sensitive strings while privacy mode is on (screen sharing/recording).
-    /// Scope: now-playing title/artist, agent task titles, calendar event titles,
+    /// Scope: now-playing title/artist, agent task titles, calendar event titles, reminder titles,
     /// clipboard previews, and tray filenames - keep any new user-content string behind this too.
     private func privacyRedacted(_ text: String, fallback: String) -> String {
         settings.privacyModeEnabled ? fallback : text
@@ -414,7 +432,8 @@ public struct NotchPillView: View {
             if hasNotification, let banner = notificationMirror.latest {
                 notificationRow(banner)
                 if hasMedia || hasAgents || hasHotProcesses || showCalendarRow
-                    || (showBatteryRow && battery.state != nil) || hasClipboard || trayEnabled {
+                    || showReminderSection || (showBatteryRow && battery.state != nil)
+                    || hasClipboard || trayEnabled {
                     sectionDivider
                 }
             }
@@ -443,14 +462,20 @@ public struct NotchPillView: View {
                     calendarAccessHint
                 }
             }
-            if showBatteryRow, let state = battery.state {
+            if showReminderSection {
                 if hasMedia || hasAgents || hasHotProcesses || showCalendarRow {
+                    sectionDivider
+                }
+                reminderSection
+            }
+            if showBatteryRow, let state = battery.state {
+                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow || showReminderSection {
                     sectionDivider
                 }
                 batteryRow(state)
             }
             if hasClipboard {
-                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow
+                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow || showReminderSection
                     || (showBatteryRow && battery.state != nil) {
                     sectionDivider
                 }
@@ -464,6 +489,103 @@ public struct NotchPillView: View {
                 sectionDivider
                 traySection
             }
+        }
+    }
+
+    // MARK: - Reminders
+
+    private var reminderSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                Image(systemName: "checklist")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(reminderUrgent ? .yellow : .secondary)
+                Text("reminders")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button(action: onAddReminder) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(reminders.accessState == .granted ? Color.white.opacity(0.65) : Color.gray)
+                }
+                .buttonStyle(PillButtonStyle())
+                .disabled(reminders.accessState != .granted)
+                .help("Add reminder")
+                .accessibilityLabel(Text("Add reminder"))
+            }
+
+            if let reminder = reminders.nextReminder {
+                reminderRow(reminder)
+                    .id(reminder.id)
+                    .transition(arrivalTransition)
+            } else {
+                reminderEmptyState
+            }
+        }
+    }
+
+    private func reminderRow(_ reminder: RemindersController.NextReminder) -> some View {
+        HStack(spacing: 8) {
+            Text(privacyRedacted(reminder.title, fallback: "Reminder"))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .frame(maxWidth: 170, alignment: .leading)
+            Spacer(minLength: 4)
+            Text(RemindersController.dueLabel(reminder))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(reminderUrgent ? .yellow : .secondary)
+            Button {
+                if reminders.complete(reminder.id) {
+                    presentation.flashOpen()
+                } else {
+                    NSSound.beep()
+                }
+            } label: {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.green)
+            }
+            .buttonStyle(PillButtonStyle())
+            .help("Mark reminder complete")
+            .accessibilityLabel(Text("Complete \(privacyRedacted(reminder.title, fallback: "reminder"))"))
+        }
+        .padding(.vertical, 1)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var reminderEmptyState: some View {
+        switch reminders.accessState {
+        case .denied:
+            Button {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.yellow)
+                    Text("Reminders access needed — click to allow")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PillButtonStyle())
+            .accessibilityLabel(Text("Reminders access needed"))
+            .accessibilityHint(Text("Opens Reminders privacy settings"))
+        case .granted:
+            Text("No due reminders")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        case .undetermined:
+            Text("Checking Reminders…")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -663,8 +785,9 @@ public struct NotchPillView: View {
     /// anything is active (symmetry); an inactive side is just black. The black shape
     /// itself is owned by `notchBody`.
     /// One indicator per wing. Left: media wins (it has controls), then a stuck-process
-    /// warning, then an imminent meeting. Right: agents, then stuck-process if the left
-    /// wing is occupied by media. Anything squeezed out is one hover away.
+    /// warning, then an imminent meeting, then an urgent reminder. Right: agents,
+    /// notifications, then whichever urgent item the left wing displaced. Anything
+    /// squeezed out is one hover away.
     private var compactContent: some View {
         HStack(spacing: 0) {
             wing {
@@ -674,6 +797,8 @@ public struct NotchPillView: View {
                     hotProcessIndicator
                 } else if calendarImminent {
                     calendarIndicator
+                } else if reminderUrgent {
+                    reminderIndicator
                 }
             }
             Color.clear
@@ -687,6 +812,8 @@ public struct NotchPillView: View {
                     hotProcessIndicator
                 } else if !hasMedia && hasHotProcesses && calendarImminent {
                     calendarIndicator
+                } else if reminderUrgent && (hasMedia || hasHotProcesses || calendarImminent) {
+                    reminderIndicator
                 }
             }
         }
@@ -782,6 +909,12 @@ public struct NotchPillView: View {
             .foregroundStyle(.white)
     }
 
+    private var reminderIndicator: some View {
+        Image(systemName: "checkmark.circle.fill")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.yellow)
+    }
+
     /// A recent banner is waiting behind a hover; the bell pulses once per arrival.
     private var notificationIndicator: some View {
         Image(systemName: "bell.fill")
@@ -800,6 +933,9 @@ public struct NotchPillView: View {
         }
         if hasHotProcesses { parts.append("process may be stuck") }
         if calendarImminent { parts.append("meeting soon") }
+        if reminderUrgent, let reminder = reminders.nextReminder {
+            parts.append("reminder \(RemindersController.dueLabel(reminder))")
+        }
         if hasNotification, let banner = notificationMirror.latest {
             parts.append("notification from \(banner.appName)")
         }

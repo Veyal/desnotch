@@ -22,11 +22,13 @@ public struct PermissionSnapshot: Codable, Equatable, Sendable {
 
     public let accessibility: AccessibilityState
     public let calendar: AuthorizationState
+    public let reminders: AuthorizationState
 
     public static func current() -> PermissionSnapshot {
         PermissionSnapshot(
             accessibility: AXIsProcessTrusted() ? .trusted : .untrusted,
-            calendar: calendarState(for: EKEventStore.authorizationStatus(for: .event))
+            calendar: calendarState(for: EKEventStore.authorizationStatus(for: .event)),
+            reminders: calendarState(for: EKEventStore.authorizationStatus(for: .reminder))
         )
     }
 

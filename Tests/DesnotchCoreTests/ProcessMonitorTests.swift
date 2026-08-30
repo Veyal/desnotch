@@ -51,4 +51,39 @@ final class ProcessMonitorTests: XCTestCase {
         XCTAssertTrue(recovered.shown.isEmpty)
         XCTAssertTrue(recovered.newlyFlagged.isEmpty)
     }
+
+    func testThresholdAndDurationBoundariesAreInclusive() {
+        var state = ProcessHotState(cpuThreshold: 90, sustainedFor: 600, maxShown: 3)
+        let started = Date(timeIntervalSince1970: 5_000)
+        let exactThreshold = [(pid: Int32(7), cpu: 90.0, name: "worker")]
+
+        XCTAssertTrue(state.apply(sample: exactThreshold, now: started).shown.isEmpty)
+        let atBoundary = state.apply(
+            sample: exactThreshold,
+            now: started.addingTimeInterval(600)
+        )
+        XCTAssertEqual(atBoundary.shown.map(\.pid), [7])
+    }
+
+    func testPIDNameChangeStartsANewStreakAndMaxShownKeepsHottest() {
+        var state = ProcessHotState(cpuThreshold: 90, sustainedFor: 600, maxShown: 2)
+        let started = Date(timeIntervalSince1970: 9_000)
+        let initial = [
+            (pid: Int32(1), cpu: 91.0, name: "old"),
+            (pid: Int32(2), cpu: 140.0, name: "hotter"),
+            (pid: Int32(3), cpu: 110.0, name: "hot")
+        ]
+        _ = state.apply(sample: initial, now: started)
+
+        let boundary = started.addingTimeInterval(600)
+        let renamed = [
+            (pid: Int32(1), cpu: 150.0, name: "new"),
+            (pid: Int32(2), cpu: 140.0, name: "hotter"),
+            (pid: Int32(3), cpu: 110.0, name: "hot")
+        ]
+        let update = state.apply(sample: renamed, now: boundary)
+
+        XCTAssertEqual(update.shown.map(\.pid), [2, 3])
+        XCTAssertFalse(update.shown.contains(where: { $0.name == "new" }))
+    }
 }

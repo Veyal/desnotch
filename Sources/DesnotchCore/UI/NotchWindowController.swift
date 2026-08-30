@@ -11,6 +11,8 @@ public final class NotchWindowController {
     private let controller: NowPlayingController
     private let agentActivity: AgentActivityController
     private let calendar: CalendarController
+    private let reminders: RemindersController
+    private let onAddReminder: () -> Void
     private let processMonitor: ProcessMonitorController
     private let clipboard: ClipboardController
     private let tray: TrayController
@@ -33,6 +35,8 @@ public final class NotchWindowController {
         controller: NowPlayingController,
         agentActivity: AgentActivityController,
         calendar: CalendarController,
+        reminders: RemindersController,
+        onAddReminder: @escaping () -> Void,
         processMonitor: ProcessMonitorController,
         clipboard: ClipboardController,
         tray: TrayController,
@@ -45,6 +49,8 @@ public final class NotchWindowController {
         self.controller = controller
         self.agentActivity = agentActivity
         self.calendar = calendar
+        self.reminders = reminders
+        self.onAddReminder = onAddReminder
         self.processMonitor = processMonitor
         self.clipboard = clipboard
         self.tray = tray
@@ -134,6 +140,8 @@ public final class NotchWindowController {
             controller: controller,
             agentActivity: agentActivity,
             calendar: calendar,
+            reminders: reminders,
+            onAddReminder: onAddReminder,
             processMonitor: processMonitor,
             clipboard: clipboard,
             tray: tray,

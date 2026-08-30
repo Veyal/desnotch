@@ -31,6 +31,8 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.trayEnabled)
         XCTAssertTrue(store.nowPlayingEnabled)
         XCTAssertFalse(store.clipboardHistoryEnabled)
+        XCTAssertFalse(store.remindersEnabled)
+        XCTAssertFalse(store.hasSeenOnboarding)
     }
 
     // MARK: Persistence
@@ -45,6 +47,8 @@ final class SettingsStoreTests: XCTestCase {
         store.expandedWidth = 360
         store.trayEnabled = false
         store.clipboardHistoryEnabled = true
+        store.remindersEnabled = true
+        store.hasSeenOnboarding = true
 
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.pillMode, .alwaysOn)
@@ -54,6 +58,8 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.expandedWidth, 360)
         XCTAssertFalse(reloaded.trayEnabled)
         XCTAssertTrue(reloaded.clipboardHistoryEnabled)
+        XCTAssertTrue(reloaded.remindersEnabled)
+        XCTAssertTrue(reloaded.hasSeenOnboarding)
     }
 
     @MainActor

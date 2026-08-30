@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Actionable reminders:** optional and off by default; shows the next overdue/nearby due
+  reminder using public EventKit APIs, supports completion and privacy-safe quick capture from
+  both pill and status menu, and keeps no reminder database of its own.
+- **Getting Started guide:** a one-time, privacy-safe window teaches the otherwise hidden hover,
+  scroll-volume, file-drop, optional-feature, and Privacy Mode interactions. It stays reopenable
+  from Settings and the status menu.
+- **Recovered CPU warnings clear promptly:** process utilization now comes from interval CPU time
+  rather than `ps`'s decaying average, while preserving the 10-minute sustained threshold and
+  keeping fast sampling limited to the period when a warning is already visible.
 - **Focused utility surface:** removed the experimental voice dictation and AI command controls,
   including their microphone, provider-key, and Codex transport settings. Privacy Mode is now the
   pill's single utility action; the occasional Keep Display Awake control remains in the status
@@ -161,7 +170,7 @@ The pill becomes actionable:
 - ✓ **Battery glance** (MacBooks): percent + charging row; plugging/unplugging briefly
   auto-expands the pill. Hidden on desktops. Toggleable.
 - ✓ **Update check**: daily GitHub release poll; an "Update Available (x.y.z)…" item
-  appears in the status menu (update via `brew upgrade --cask desnotch`).
+  appears in the status menu and opens the latest GitHub release.
 - ✓ **Mic/camera in-use dots**: orange (mic) / green (camera) dots on the shape's
   top-right when any process uses them; no capture permission needed. Toggleable.
 - ✓ **Privacy mode** (Settings toggle + status-menu quick toggle, default off): blanks

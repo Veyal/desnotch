@@ -158,6 +158,12 @@ existing `Task.detached` pattern.
   action is exposed only for recognized HTTP(S) conferencing hosts found in the event URL,
   bounded location, or bounded notes. Location/notes are never rendered or persisted, and the
   same Join action must remain mirrored in the status menu.
+- **Actionable reminders** (`RemindersController`, EventKit, OFF by default): shows one incomplete
+  reminder (overdue first, otherwise nearest due within seven days), with complete and bounded
+  quick-capture actions mirrored in the status menu. Permission is requested only after enablement;
+  queries are generation-checked and stop when disabled. Titles are bounded before publication,
+  pass through `privacyRedacted`, and are never logged or persisted by desnotch. Quick capture writes
+  directly to the default Reminders list; do not add a parallel reminder store.
 - **Stuck-process detector** (`ProcessMonitorController`): derives interval CPU from accumulated
   `ps` CPU time every 30s (5s while a flag is visible); a process sustaining ≥90% CPU for ≥10
   min is flagged (pill section + one notification per streak). Do not use `ps %cpu` here - it is
@@ -226,7 +232,8 @@ existing `Task.detached` pattern.
   system banner); Notification Center history is never touched.
 
 Compact wing priority when several things are active: left = media > stuck-process >
-calendar; right = agents > notification > stuck-process. Everything else is one hover
+calendar > urgent reminder; right = agents > notification > displaced stuck-process/calendar/
+reminder. Everything else is one hover
 away.
 
 **Motion vocabulary (v0.8.0)**: every animation resolves through
@@ -263,8 +270,8 @@ Review-remediation notes (2026-07-31), keep these invariants: `updateForScreenCh
 must ALWAYS call `applyPlacement` after the grow-only `resize` (the grow-only guard
 alone leaves the panel at stale coordinates after a resolution/display change). The
 status menu is rebuilt on every open (`AppDelegate.rebuildMenu`, via NSMenuDelegate) and
-is the ONLY keyboard/VoiceOver path to media transport, agent jump, meeting join, clipboard, and
-tray - the panel itself is non-activating and unreachable by assistive tech; keep new pill actions
+is the ONLY keyboard/VoiceOver path to media transport, agent jump, meeting join, reminder
+completion/capture, clipboard, and tray - the panel itself is non-activating and unreachable by assistive tech; keep new pill actions
 mirrored there. Notification permission is requested at launch, not lazily (a lazy
 request dropped the triggering notification). Scanner title/cwd/Codex-header facts are
 cached in `AgentActivityScanner` (lock-guarded, nil results retried, cap-bounded) - keep
@@ -282,6 +289,8 @@ at cutout+wings via `NotchGeometry.expandedPillWidth`, which keeps the no-feedba
 fixed-width rule intact). All numeric knobs are clamped to their `SettingsStore.*Range`
 bounds on read AND write - keep new knobs on that pattern. Tests:
 `SettingsStoreTests.swift` (isolated UserDefaults suite; runs under Xcode/CI only).
+The one-time `OnboardingView` is a separate activating window so it never changes pill geometry;
+it contains no live user content or permission prompts and remains reopenable from Settings/menu.
 
 ## Build/run
 
@@ -289,9 +298,10 @@ See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (releas
 `.app` bundle + ad-hoc codesign). No Xcode project - SPM executable target only.
 
 `scripts/permission-status.sh` executes the packaged binary with `DESNOTCH_PERMISSION_PROBE=1`
-to print Accessibility/Calendar state without prompting or starting the app. Its inline caveat
+to print Accessibility/Calendar/Reminders state without prompting or starting the app. Its inline caveat
 about responsible-process attribution is authoritative; use `REQUIRE_GRANTED=1` only after
-verifying the normally launched app has both grants.
+verifying the normally launched app has its core grants, and `REQUIRE_REMINDERS_GRANTED=1` only
+when the opt-in Reminders feature is expected to be authorized.
 
 ## Maintaining this file
 

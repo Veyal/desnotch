@@ -117,7 +117,11 @@ struct ProcessHotState {
         // Extend or start streaks for processes above the threshold; drop the rest.
         var next: [Int32: (name: String, cpu: Double, since: Date)] = [:]
         for process in sample where process.cpu >= cpuThreshold {
-            let since = streaks[process.pid]?.since ?? now
+            // A reused PID belongs to a new streak when the executable name changes.
+            // Carrying the previous `since` across PID reuse could flag a brand-new
+            // process immediately.
+            let previous = streaks[process.pid]
+            let since = previous?.name == process.name ? previous?.since ?? now : now
             next[process.pid] = (process.name, process.cpu, since)
         }
         streaks = next

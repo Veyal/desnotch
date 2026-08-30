@@ -68,6 +68,9 @@ public final class SettingsStore: ObservableObject {
     @Published public var nowPlayingEnabled: Bool { didSet { set("nowPlayingEnabled", nowPlayingEnabled) } }
     @Published public var agentActivityEnabled: Bool { didSet { set("agentActivityEnabled", agentActivityEnabled) } }
     @Published public var calendarEnabled: Bool { didSet { set("calendarEnabled", calendarEnabled) } }
+    /// Shows the next actionable reminder. Explicitly opt-in because enabling it can
+    /// trigger a separate Reminders permission prompt.
+    @Published public var remindersEnabled: Bool { didSet { set("remindersEnabled", remindersEnabled) } }
     @Published public var processMonitorEnabled: Bool { didSet { set("processMonitorEnabled", processMonitorEnabled) } }
     @Published public var trayEnabled: Bool { didSet { set("trayEnabled", trayEnabled) } }
     /// Recent plain-text clipboard entries, held in memory only. Explicitly opt-in.
@@ -76,7 +79,7 @@ public final class SettingsStore: ObservableObject {
     @Published public var timelineSeekEnabled: Bool { didSet { set("timelineSeekEnabled", timelineSeekEnabled) } }
     @Published public var batteryEnabled: Bool { didSet { set("batteryEnabled", batteryEnabled) } }
     @Published public var micCameraIndicatorEnabled: Bool { didSet { set("micCameraIndicatorEnabled", micCameraIndicatorEnabled) } }
-    /// Blanks sensitive media, agent, calendar, clipboard, tray, and notification text
+    /// Blanks sensitive media, agent, calendar, reminder, clipboard, tray, and notification text
     /// for screen sharing/recording. Defaults OFF, unlike the feature toggles.
     @Published public var privacyModeEnabled: Bool { didSet { set("privacyModeEnabled", privacyModeEnabled) } }
     @Published public var notifyAgentNeedsYou: Bool { didSet { set(AgentAttentionNotifier.defaultsKey, notifyAgentNeedsYou) } }
@@ -94,6 +97,9 @@ public final class SettingsStore: ObservableObject {
     @Published public private(set) var mutedNotificationApps: [String] {
         didSet { set("mutedNotificationApps", mutedNotificationApps) }
     }
+
+    /// One-time product guide state. The guide is always reopenable from the status menu.
+    @Published public var hasSeenOnboarding: Bool { didSet { set("hasSeenOnboarding", hasSeenOnboarding) } }
 
     public func setNotificationApp(_ appName: String, muted: Bool) {
         let key = appName.lowercased()
@@ -138,6 +144,7 @@ public final class SettingsStore: ObservableObject {
         nowPlayingEnabled = Self.bool(defaults, "nowPlayingEnabled")
         agentActivityEnabled = Self.bool(defaults, "agentActivityEnabled")
         calendarEnabled = Self.bool(defaults, "calendarEnabled")
+        remindersEnabled = defaults.object(forKey: "remindersEnabled") as? Bool ?? false
         processMonitorEnabled = Self.bool(defaults, "processMonitorEnabled")
         trayEnabled = Self.bool(defaults, "trayEnabled")
         clipboardHistoryEnabled = defaults.object(forKey: "clipboardHistoryEnabled") as? Bool ?? false
@@ -150,6 +157,7 @@ public final class SettingsStore: ObservableObject {
         notificationMirrorEnabled = defaults.object(forKey: "notificationMirrorEnabled") as? Bool ?? false
         dismissSystemBanners = defaults.object(forKey: "dismissSystemBanners") as? Bool ?? false
         mutedNotificationApps = defaults.stringArray(forKey: "mutedNotificationApps") ?? []
+        hasSeenOnboarding = defaults.object(forKey: "hasSeenOnboarding") as? Bool ?? false
 
         pillMode = (defaults.string(forKey: "pillMode")).flatMap(PillVisibilityMode.init(rawValue:)) ?? .hoverAuto
         // Default is the STATIC note, not the equalizer: an always-visible pill must
