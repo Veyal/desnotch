@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.9.0 — 2026-08-31
+
 - **Actionable reminders:** optional and off by default; shows the next overdue/nearby due
   reminder using public EventKit APIs, supports completion and privacy-safe quick capture from
   both pill and status menu, and keeps no reminder database of its own.
@@ -32,9 +34,10 @@
 - **Distribution readiness:** refreshed production app icon, host/static and runtime bundle smoke
   checks, optional validated universal arm64+x86_64 builds, configurable bundle identity, and
   opt-in Developer ID/hardened-runtime/notarization support. The non-prompting packaged-app probe
-  reports Accessibility and Calendar authorization state. External signing and physical-notch/
+  reports Accessibility, Calendar, and Reminders authorization state. External signing and physical-notch/
   Intel runtime checks remain gated on the corresponding credentials and hardware.
-- **Privacy fixes:** agent task titles, media metadata, calendar titles, and tray filenames no
+- **Privacy fixes:** agent task titles, media metadata, calendar/reminder titles, clipboard previews,
+  and tray filenames no
   longer leak through VoiceOver labels or tooltips while Privacy mode is enabled.
 
 ## v0.8.1 — 2026-08-01
