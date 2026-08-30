@@ -96,6 +96,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <key>LSUIElement</key><true/>
     <key>NSCalendarsUsageDescription</key><string>desnotch shows your next meeting in the notch pill.</string>
     <key>NSCalendarsFullAccessUsageDescription</key><string>desnotch shows your next meeting in the notch pill.</string>
+    <key>NSRemindersUsageDescription</key><string>desnotch shows and completes your next due reminder.</string>
+    <key>NSRemindersFullAccessUsageDescription</key><string>desnotch shows, creates, and completes reminders you choose to manage.</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST

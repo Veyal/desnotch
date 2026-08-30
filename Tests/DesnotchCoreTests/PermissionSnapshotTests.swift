@@ -21,13 +21,15 @@ final class PermissionSnapshotTests: XCTestCase {
     func testSnapshotJSONUsesStablePublicLabels() throws {
         let snapshot = PermissionSnapshot(
             accessibility: .trusted,
-            calendar: .fullAccess
+            calendar: .fullAccess,
+            reminders: .denied
         )
         let encoded = try JSONEncoder().encode(snapshot)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: String])
         XCTAssertEqual(object, [
             "accessibility": "trusted",
-            "calendar": "fullAccess"
+            "calendar": "fullAccess",
+            "reminders": "denied"
         ])
     }
 }

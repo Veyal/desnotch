@@ -12,6 +12,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var nowPlayingController: NowPlayingController?
     private var agentActivityController: AgentActivityController?
     private var calendarController: CalendarController?
+    private var remindersController: RemindersController?
     private var processMonitorController: ProcessMonitorController?
     private var displayAwakeController: DisplayAwakeController?
     private var clipboardController: ClipboardController?
@@ -22,6 +23,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateChecker: UpdateChecker?
     private var windowController: NotchWindowController?
     private var settingsWindow: NSWindow?
+    private var onboardingWindow: NSWindow?
+    private var reminderCaptureWindow: NSWindow?
     private var statusMenu: NSMenu?
     private var statusItem: NSStatusItem?
     private var retryObserver: NSObjectProtocol?
@@ -57,6 +60,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let calendarController = MainActor.assumeIsolated {
             CalendarController(permissionRequestsEnabled: !smokeTestMode)
         }
+        let remindersController = MainActor.assumeIsolated {
+            RemindersController(permissionRequestsEnabled: !smokeTestMode)
+        }
         let processMonitorController = MainActor.assumeIsolated { ProcessMonitorController() }
         let displayAwakeController = MainActor.assumeIsolated { DisplayAwakeController() }
         let clipboardController = MainActor.assumeIsolated { ClipboardController() }
@@ -69,6 +75,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.nowPlayingController = nowPlayingController
         self.agentActivityController = agentActivityController
         self.calendarController = calendarController
+        self.remindersController = remindersController
         self.processMonitorController = processMonitorController
         self.displayAwakeController = displayAwakeController
         self.clipboardController = clipboardController
@@ -89,6 +96,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             controller: nowPlayingController,
             agentActivity: agentActivityController,
             calendar: calendarController,
+            reminders: remindersController,
+            onAddReminder: { [weak self] in self?.openReminderCapture(nil) },
             processMonitor: processMonitorController,
             clipboard: clipboardController,
             tray: trayController,
@@ -111,6 +120,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let npc = self.nowPlayingController,
                       let aac = self.agentActivityController,
                       let cal = self.calendarController,
+                      let reminders = self.remindersController,
                       let pmc = self.processMonitorController,
                       let clipboard = self.clipboardController,
                       let trayC = self.trayController,
@@ -121,6 +131,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                           controller: npc,
                           agentActivity: aac,
                           calendar: cal,
+                          reminders: reminders,
+                          onAddReminder: { [weak self] in self?.openReminderCapture(nil) },
                           processMonitor: pmc,
                           clipboard: clipboard,
                           tray: trayC,
@@ -136,6 +148,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.retryObserver = nil
                 }
             }
+        }
+
+        if !smokeTestMode,
+           !MainActor.assumeIsolated({ SettingsStore.shared.hasSeenOnboarding }) {
+            DispatchQueue.main.async { [weak self] in self?.showOnboarding() }
         }
     }
 
@@ -246,6 +263,50 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
             }
 
+            if SettingsStore.shared.remindersEnabled {
+                let remindersItem = NSMenuItem(title: "Reminders", action: nil, keyEquivalent: "")
+                let remindersMenu = NSMenu()
+
+                if let reminder = remindersController?.nextReminder {
+                    let title = privacy ? "Reminder" : String(reminder.title.prefix(48))
+                    remindersMenu.addItem(NSMenuItem(
+                        title: "\(title) — \(RemindersController.dueLabel(reminder))",
+                        action: nil,
+                        keyEquivalent: ""
+                    ))
+                    let complete = NSMenuItem(
+                        title: "Mark Complete",
+                        action: #selector(menuCompleteReminder(_:)),
+                        keyEquivalent: ""
+                    )
+                    complete.target = self
+                    complete.representedObject = reminder.id
+                    remindersMenu.addItem(complete)
+                    remindersMenu.addItem(NSMenuItem.separator())
+                } else if remindersController?.accessState == .denied {
+                    let permission = NSMenuItem(
+                        title: "Reminders Access Needed…",
+                        action: #selector(openRemindersPrivacy(_:)),
+                        keyEquivalent: ""
+                    )
+                    permission.target = self
+                    remindersMenu.addItem(permission)
+                    remindersMenu.addItem(NSMenuItem.separator())
+                }
+
+                let add = NSMenuItem(
+                    title: "Add Reminder…",
+                    action: #selector(openReminderCapture(_:)),
+                    keyEquivalent: ""
+                )
+                add.target = self
+                add.isEnabled = remindersController?.accessState == .granted
+                remindersMenu.addItem(add)
+                remindersItem.submenu = remindersMenu
+                menu.addItem(remindersItem)
+                menu.addItem(NSMenuItem.separator())
+            }
+
             if let trayItems = trayController?.items, !trayItems.isEmpty {
                 let submenu = NSMenu()
                 for url in trayItems {
@@ -325,6 +386,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        let onboardingItem = NSMenuItem(
+            title: "Getting Started…",
+            action: #selector(openGettingStarted(_:)),
+            keyEquivalent: ""
+        )
+        onboardingItem.target = self
+        menu.addItem(onboardingItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -451,6 +520,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    @objc func menuCompleteReminder(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? String else { return }
+        MainActor.assumeIsolated {
+            if remindersController?.complete(identifier) == true {
+                presentation?.flashOpen()
+            } else {
+                NSSound.beep()
+            }
+        }
+    }
+
+    @objc func openRemindersPrivacy(_ sender: Any?) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     @objc func menuCopyClipboardEntry(_ sender: NSMenuItem) {
         guard let value = sender.representedObject as? String, let id = UUID(uuidString: value) else { return }
         MainActor.assumeIsolated { clipboardController?.copy(id) }
@@ -489,7 +575,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         SMAppService.mainApp.status == .enabled
     }
 
-    @objc func openSettings(_ sender: NSMenuItem) {
+    @objc func openSettings(_ sender: Any?) {
         if settingsWindow == nil {
             // Resizable vertically: the pane scrolls, and sizing it to the content's
             // full fitting height (what this used to do) grew the window taller than
@@ -502,7 +588,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             window.title = "desnotch Settings"
             window.contentView = MainActor.assumeIsolated {
-                NSHostingView(rootView: SettingsView(notificationMirror: notificationMirror))
+                NSHostingView(rootView: SettingsView(
+                    notificationMirror: notificationMirror,
+                    onShowOnboarding: { [weak self] in self?.showOnboarding() }
+                ))
             }
             window.isReleasedWhenClosed = false
 
@@ -518,6 +607,84 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = window
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func openGettingStarted(_ sender: Any?) {
+        showOnboarding()
+    }
+
+    private func showOnboarding() {
+        if onboardingWindow == nil {
+            let window = NSWindow(
+                contentRect: .zero,
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Welcome to desnotch"
+            window.contentView = NSHostingView(rootView: OnboardingView(
+                onOpenSettings: { [weak self] in
+                    self?.finishOnboarding()
+                    self?.openSettings(nil)
+                },
+                onDone: { [weak self] in self?.finishOnboarding() }
+            ))
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.setContentSize(NSSize(width: 360, height: 560))
+            window.center()
+            onboardingWindow = window
+        }
+        onboardingWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func finishOnboarding() {
+        MainActor.assumeIsolated { SettingsStore.shared.hasSeenOnboarding = true }
+        onboardingWindow?.close()
+    }
+
+    @objc func openReminderCapture(_ sender: Any?) {
+        let access = MainActor.assumeIsolated { remindersController?.accessState }
+        guard access == .granted else {
+            if access == .denied { openRemindersPrivacy(nil) }
+            return
+        }
+        if reminderCaptureWindow == nil {
+            let window = NSWindow(
+                contentRect: .zero,
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Add Reminder"
+            window.contentView = NSHostingView(rootView: ReminderCaptureView(
+                onCancel: { [weak self] in self?.reminderCaptureWindow?.close() },
+                onSave: { [weak self] title, dueDate, isAllDay in
+                    let saved = MainActor.assumeIsolated {
+                        self?.remindersController?.add(
+                            title: title,
+                            dueDate: dueDate,
+                            isAllDay: isAllDay
+                        ) ?? false
+                    }
+                    if saved {
+                        MainActor.assumeIsolated { self?.presentation?.flashOpen() }
+                        self?.reminderCaptureWindow?.close()
+                    } else {
+                        NSSound.beep()
+                    }
+                    return saved
+                }
+            ))
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.setContentSize(NSSize(width: 360, height: 235))
+            window.center()
+            reminderCaptureWindow = window
+        }
+        reminderCaptureWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -543,5 +710,17 @@ extension AppDelegate: NSMenuDelegate {
     /// Rebuild the dynamic mirror right before the menu shows.
     public func menuNeedsUpdate(_ menu: NSMenu) {
         rebuildMenu()
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    public func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if window === onboardingWindow {
+            MainActor.assumeIsolated { SettingsStore.shared.hasSeenOnboarding = true }
+            onboardingWindow = nil
+        } else if window === reminderCaptureWindow {
+            reminderCaptureWindow = nil
+        }
     }
 }

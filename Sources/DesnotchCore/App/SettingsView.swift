@@ -12,6 +12,8 @@ struct SettingsView: View {
     @ObservedObject var settings = SettingsStore.shared
     /// Present in the real app; nil keeps previews/tests independent of AX state.
     var notificationMirror: NotificationMirrorController?
+    /// Reopens the privacy-safe product guide. Nil keeps previews independent of AppKit windows.
+    var onShowOnboarding: (() -> Void)?
     /// Fixed pane width, shared with the window sizing so both stay in step.
     static let contentWidth: CGFloat = 300
 
@@ -28,6 +30,16 @@ struct SettingsView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let onShowOnboarding {
+                Button(action: onShowOnboarding) {
+                    Label("Getting Started…", systemImage: "sparkles")
+                }
+                .buttonStyle(.link)
+
+                Divider()
+                    .padding(.vertical, 2)
+            }
+
             Text("Pill sections")
                 .font(.headline)
             Toggle("Now playing (media controls)", isOn: $settings.nowPlayingEnabled)
@@ -61,6 +73,13 @@ struct SettingsView: View {
             }
             Toggle("AI agent activity", isOn: $settings.agentActivityEnabled)
             Toggle("Calendar glance", isOn: $settings.calendarEnabled)
+            Toggle("Actionable reminders", isOn: $settings.remindersEnabled)
+                .accessibilityHint(Text("Turning this on may request Reminders access"))
+            Text("Shows the next due or overdue reminder. Add and complete reminders from the pill or status menu; access is requested only when enabled.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(settings.remindersEnabled ? 1 : 0.6)
             Toggle("Stuck-process detector", isOn: $settings.processMonitorEnabled)
             Toggle("File tray", isOn: $settings.trayEnabled)
             Toggle("Clipboard pocket (memory only)", isOn: $settings.clipboardHistoryEnabled)
@@ -141,7 +160,7 @@ struct SettingsView: View {
             Toggle("Drag timeline to seek", isOn: $settings.timelineSeekEnabled)
             Toggle("Mic/camera in-use dots", isOn: $settings.micCameraIndicatorEnabled)
             Toggle("Privacy mode", isOn: $settings.privacyModeEnabled)
-            Text("Privacy mode hides song titles, agent task titles, event names, and tray filenames — for screen sharing.")
+            Text("Privacy mode hides song titles, agent task titles, event and reminder names, clipboard previews, and tray filenames — for screen sharing.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

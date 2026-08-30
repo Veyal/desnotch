@@ -7,12 +7,13 @@ desnotch keeps a compact pill visible at the top of the screen and expands it on
 show system-wide now-playing artwork and transport controls, local Claude Code/Codex/Pi/OpenCode
 activity, calendar glance, process and media-use status, battery changes, notification banners,
 and a file tray. An opt-in clipboard pocket keeps up to eight recent plain-text copies in memory
-only, and recognized Zoom/Teams/Meet/Webex-style calendar links open with one click.
+only, recognized Zoom/Teams/Meet/Webex-style calendar links open with one click, and an opt-in
+Reminders row surfaces the next due task with complete and quick-capture actions.
 
 The status-bar menu provides the keyboard and VoiceOver path for media transport, agent actions,
-meeting links, tray and clipboard items, notification actions, privacy mode, display-awake mode,
-settings, launch at login, and quit. See `AGENTS.md` for load-bearing privacy, geometry, and
-runtime invariants.
+meeting links, reminders, tray and clipboard items, notification actions, privacy mode,
+display-awake mode, the reopenable Getting Started guide, settings, launch at login, and quit.
+See `AGENTS.md` for load-bearing privacy, geometry, and runtime invariants.
 
 ## Running in development
 
@@ -83,6 +84,12 @@ run it anyway. Drag `dist/desnotch.app` to `/Applications`, or run it directly w
 - **Calendar join**: EventKit supplies the next event. Only recognized HTTP(S) conferencing hosts
   become a Join action; event notes and locations are inspected transiently and never displayed or
   persisted.
+- **Actionable reminders**: optional and off by default. EventKit supplies the next incomplete due
+  reminder (overdue first, otherwise nearest within seven days). Titles are bounded, Privacy Mode
+  redacts them, and create/complete actions write directly to the user's default Reminders list;
+  desnotch keeps no reminder database.
+- **Getting Started**: a one-time, privacy-safe guide explains hover, volume scroll, file drops,
+  optional utilities, and Privacy Mode. It can always be reopened from Settings or the status menu.
 - **Notch geometry**: on a MacBook with a physical notch, the pill is sized and positioned
   using `NSScreen.safeAreaInsets` / `auxiliaryTopLeftArea` / `auxiliaryTopRightArea` to hug
   the actual notch cutout. On a screen with no notch (this project was developed on a
@@ -101,7 +108,8 @@ See `AGENTS.md` for implementation details load-bearing for anyone continuing th
 - Distribution signing and notarization require the explicit opt-in configuration described above.
 - Accessibility has no standard Info.plist usage-description key. Enable it for notification
   mirroring in System Settings → Privacy & Security → Accessibility; the app documents and
-  rechecks that grant. Calendar uses the standard usage-description keys.
+  rechecks that grant. Calendar and Reminders use their standard usage-description keys, and
+  Reminders access is requested only after its off-by-default feature is enabled.
 - Universal builds and external signing/notarization are explicit opt-ins. The default host build
   is intentionally retained, and real-notch/Intel runtime verification remains hardware-gated.
 
@@ -111,9 +119,10 @@ CI runs `scripts/smoke-test.sh` after packaging. Locally, use `scripts/smoke-tes
 plist keys, icon and adapter resources, executable architecture, strict nested signatures, and
 obvious orphaned adapter processes. `scripts/runtime-smoke-test.sh` launches the packaged binary
 in non-interactive smoke mode, verifies the adapter starts, sends SIGTERM, and proves both owned
-processes exit. `scripts/permission-status.sh` prints a non-prompting Accessibility and Calendar
-authorization snapshot. Because macOS may attribute a shell-launched Accessibility check to the
+processes exit. `scripts/permission-status.sh` prints a non-prompting Accessibility, Calendar, and
+Reminders authorization snapshot. Because macOS may attribute a shell-launched Accessibility check to the
 responsible parent process, treat `trusted` as diagnostic and verify the normally launched app
-before relying on `REQUIRE_GRANTED=1`; the script documents this caveat beside the check.
+before relying on `REQUIRE_GRANTED=1`; set `REQUIRE_REMINDERS_GRANTED=1` only when validating the
+opt-in Reminders feature. The script documents this caveat beside the check.
 `MANUAL=1 scripts/smoke-test.sh` prints the interactive permission/media/menu/termination/notch/
 Intel checklist; those checks require a desktop session and appropriate hardware.

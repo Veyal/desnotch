@@ -3,7 +3,7 @@ import os
 
 /// Polls the GitHub releases API (at launch, then daily) and reports when a release
 /// newer than the running bundle version exists. Surfaced as a status-menu item that
-/// opens the release page (the user updates via `brew upgrade --cask desnotch`).
+/// opens the release page so the user can download and replace the app bundle.
 /// Bare `swift run` binaries have no bundle version, so dev builds never nag.
 @MainActor
 public final class UpdateChecker {

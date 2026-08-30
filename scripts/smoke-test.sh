@@ -18,6 +18,8 @@ ADAPTER="$APP_BUNDLE/Contents/Resources/MediaRemoteAdapter"
 /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Print :NSCalendarsUsageDescription" "$PLIST" >/dev/null
+/usr/libexec/PlistBuddy -c "Print :NSRemindersUsageDescription" "$PLIST" >/dev/null
+/usr/libexec/PlistBuddy -c "Print :NSRemindersFullAccessUsageDescription" "$PLIST" >/dev/null
 plutil -lint "$PLIST"
 
 archs="$(lipo -archs "$EXECUTABLE")"
@@ -45,7 +47,7 @@ if [[ "${MANUAL:-0}" == 1 ]]; then
 Manual checklist (requires a packaged app and a real desktop session):
   [ ] Launch and confirm the status-menu Quit path terminates desnotch and its adapter.
   [ ] Run REQUIRE_GRANTED=1 scripts/permission-status.sh and confirm all required grants.
-  [ ] Grant Calendar and Accessibility when prompted; verify denied/retry guidance.
+  [ ] Grant Calendar, Reminders, and Accessibility when enabled; verify denied/retry guidance.
   [ ] Play/pause media and verify the pill updates; test volume scroll and menu transport.
   [ ] Exercise notification mirroring only after enabling it and granting Accessibility.
   [ ] On a real notched MacBook, verify the pill never draws behind the cutout.
