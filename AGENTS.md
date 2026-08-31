@@ -297,6 +297,14 @@ it contains no live user content or permission prompts and remains reopenable fr
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal
 `.app` bundle + ad-hoc codesign). No Xcode project - SPM executable target only.
 
+Homebrew distribution lives in `https://github.com/Veyal/homebrew-desnotch`
+(`Casks/desnotch.rb`). A release is not complete until that cask points at the published
+`desnotch-v<version>-universal.zip` with its exact SHA-256; users depend on
+`brew upgrade --cask desnotch`. Validate with `brew style`, strict/online `brew audit`,
+`brew livecheck`, and a real cask install/upgrade. While releases remain ad-hoc signed, keep the
+tap's transparent Gatekeeper caveat; never disable quarantine or recommend removing its metadata.
+Official `homebrew/cask` submission waits for a Developer ID-signed, notarized artifact.
+
 `scripts/permission-status.sh` executes the packaged binary with `DESNOTCH_PERMISSION_PROBE=1`
 to print Accessibility/Calendar/Reminders state without prompting or starting the app. Its inline caveat
 about responsible-process attribution is authoritative; use `REQUIRE_GRANTED=1` only after

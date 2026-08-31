@@ -4,6 +4,10 @@
 
 ## v0.9.0 — 2026-08-31
 
+- **Homebrew distribution restored:** the dedicated `Veyal/desnotch` cask tracks v0.9.0 and
+  supports `brew upgrade --cask desnotch`. The release remains ad-hoc signed and not notarized;
+  first launch uses Finder's **Open** action or **Open Anyway** in System Settings, without
+  stripping macOS quarantine metadata.
 - **Actionable reminders:** optional and off by default; shows the next overdue/nearby due
   reminder using public EventKit APIs, supports completion and privacy-safe quick capture from
   both pill and status menu, and keeps no reminder database of its own.
