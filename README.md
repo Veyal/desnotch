@@ -81,8 +81,8 @@ SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" HARDENED_RUNTIME
 NOTARIZE=1 NOTARY_PROFILE=desnotch-notary scripts/build-app.sh
 ```
 
-External distribution is pending the owner's Developer ID/notary credentials. Gatekeeper may warn
-on other machines; use the first-launch confirmation above. Drag `dist/desnotch.app` to
+Developer ID signing and notarization are pending the owner's credentials. Until then, Gatekeeper
+may warn on other machines; use the first-launch confirmation above. Drag `dist/desnotch.app` to
 `/Applications`, or run it directly with `open dist/desnotch.app`.
 
 ## How it works
