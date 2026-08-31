@@ -15,6 +15,26 @@ meeting links, reminders, tray and clipboard items, notification actions, privac
 display-awake mode, the reopenable Getting Started guide, settings, launch at login, and quit.
 See `AGENTS.md` for load-bearing privacy, geometry, and runtime invariants.
 
+## Install and upgrade with Homebrew
+
+Requires macOS 13 Ventura or later. The fully qualified install command adds the dedicated tap
+and installs `desnotch.app` into `/Applications`:
+
+```sh
+brew install --cask Veyal/desnotch/desnotch
+```
+
+Future releases use the normal short cask name:
+
+```sh
+brew upgrade --cask desnotch
+```
+
+The current release is ad-hoc signed and not notarized. If macOS blocks the first launch,
+right-click `desnotch.app` and choose **Open**, or use **Open Anyway** in
+**System Settings → Privacy & Security**. Developer ID signing and notarization remain the
+distribution-quality follow-up.
+
 ## Running in development
 
 Requires Xcode's command line tools (for `swift`) - no Xcode GUI project needed.
@@ -62,9 +82,8 @@ NOTARIZE=1 NOTARY_PROFILE=desnotch-notary scripts/build-app.sh
 ```
 
 External distribution is pending the owner's Developer ID/notary credentials. Gatekeeper may warn
-on other machines; right-click > Open (or `xattr -dr com.apple.quarantine dist/desnotch.app`) to
-run it anyway. Drag `dist/desnotch.app` to `/Applications`, or run it directly with
-`open dist/desnotch.app`.
+on other machines; use the first-launch confirmation above. Drag `dist/desnotch.app` to
+`/Applications`, or run it directly with `open dist/desnotch.app`.
 
 ## How it works
 

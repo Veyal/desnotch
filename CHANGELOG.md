@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Homebrew distribution restored:** the dedicated `Veyal/desnotch` cask now tracks v0.9.0,
+  the documented upgrade path is again `brew upgrade --cask desnotch`, and install guidance no
+  longer recommends stripping macOS quarantine metadata.
+
 ## v0.9.0 — 2026-08-31
 
 - **Actionable reminders:** optional and off by default; shows the next overdue/nearby due
