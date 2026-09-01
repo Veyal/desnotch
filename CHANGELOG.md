@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.10.0 — 2026-09-01
+
 - **Session-scoped focus timer:** start a 5, 15, 25, or 50 minute session from the
   status menu, then pause, resume, cancel, or dismiss it from the menu or notch. The
   absolute wall-clock deadline survives sleep/wake without drift, completion provides
