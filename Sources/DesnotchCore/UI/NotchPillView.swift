@@ -1318,9 +1318,9 @@ public struct NotchPillView: View {
         )))
     }
 
-    /// Elapsed/total readout with a thin progress bar. `TimelineView` ticks it every
-    /// second, but only while the expanded pill actually renders it - the position is
-    /// extrapolated from the last adapter update, no extra polling of the adapter.
+    /// Elapsed/total readout with a thin progress bar. `TimelineView` redraws at the
+    /// resolved progress cadence only while the expanded pill renders active playback;
+    /// the position is extrapolated from the last adapter update, with no extra polling.
     /// Draggable (when enabled in Settings): drag or click the bar to seek; while
     /// scrubbing the local scrub position is shown, then handed to
     /// `NowPlayingController.seek` on release (optimistic, so the bar doesn't snap back).

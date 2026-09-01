@@ -6,6 +6,7 @@ final class ScannerFixtureTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        AgentActivityScanner.dropCaches()
         home = FileManager.default.temporaryDirectory
             .appendingPathComponent("desnotch-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -13,6 +14,7 @@ final class ScannerFixtureTests: XCTestCase {
 
     override func tearDown() {
         try? FileManager.default.removeItem(at: home)
+        AgentActivityScanner.dropCaches()
         super.tearDown()
     }
 
@@ -124,6 +126,35 @@ final class ScannerFixtureTests: XCTestCase {
         XCTAssertEqual(sessions.first?.state, .working)
     }
 
+#if DEBUG
+    func testOpenCodeCacheReusesUnchangedDatabaseAndInvalidatesAfterWrite() throws {
+        let database = try makeOpenCodeDatabase()
+        let now = Date()
+
+        let first = AgentActivityScanner.scan(home: home, now: now)
+        XCTAssertEqual(first.map(\.projectLabel), ["alpha"])
+        XCTAssertEqual(AgentActivityScanner.openCodeQueryExecutionCountForTesting(), 1)
+
+        let unchanged = AgentActivityScanner.scan(home: home, now: now.addingTimeInterval(5))
+        XCTAssertEqual(unchanged.map(\.projectLabel), ["alpha"])
+        XCTAssertEqual(
+            AgentActivityScanner.openCodeQueryExecutionCountForTesting(), 1,
+            "an unchanged WAL database should reuse cached query output"
+        )
+
+        try runSQLite(
+            database: database,
+            sql: """
+            INSERT INTO session VALUES('beta', '/projects/beta', \(Int64(now.timeIntervalSince1970 * 1_000)), NULL);
+            INSERT INTO message VALUES('m-beta', 'beta', '{"role":"user"}', 1);
+            """
+        )
+        let changed = AgentActivityScanner.scan(home: home, now: now.addingTimeInterval(10))
+        XCTAssertEqual(changed.map(\.projectLabel).sorted(), ["alpha", "beta"])
+        XCTAssertEqual(AgentActivityScanner.openCodeQueryExecutionCountForTesting(), 2)
+    }
+#endif
+
     // MARK: helpers
 
     private func writeCodexFile(name: String, lines: [String]) throws {
@@ -148,5 +179,36 @@ final class ScannerFixtureTests: XCTestCase {
         try (lines.joined(separator: "\n") + "\n").write(
             to: dir.appendingPathComponent("sess2.jsonl"), atomically: true, encoding: .utf8
         )
+    }
+
+    private func makeOpenCodeDatabase() throws -> URL {
+        let directory = home.appendingPathComponent(".local/share/opencode", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let database = directory.appendingPathComponent("opencode.db")
+        let nowMilliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
+        try runSQLite(
+            database: database,
+            sql: """
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE session(id TEXT PRIMARY KEY, directory TEXT, time_updated INTEGER, parent_id TEXT);
+            CREATE TABLE message(id TEXT, session_id TEXT, data TEXT, time_created INTEGER);
+            CREATE TABLE part(id TEXT, session_id TEXT, data TEXT, time_created INTEGER);
+            INSERT INTO session VALUES('alpha', '/projects/alpha', \(nowMilliseconds), NULL);
+            INSERT INTO message VALUES('m-alpha', 'alpha', '{"role":"assistant"}', 1);
+            INSERT INTO part VALUES('p-alpha', 'alpha', '{"type":"step-finish","reason":"stop"}', 1);
+            """
+        )
+        return database
+    }
+
+    private func runSQLite(database: URL, sql: String) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [database.path, sql]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
     }
 }

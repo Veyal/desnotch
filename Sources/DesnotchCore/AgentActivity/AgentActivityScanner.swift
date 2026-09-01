@@ -132,6 +132,9 @@ public enum AgentActivityScanner {
         let shm: FileSignature?
     }
     private static var openCodeQueryCache: (signature: OpenCodeDatabaseSignature, output: Data)?
+#if DEBUG
+    private static var openCodeQueryExecutionCount = 0
+#endif
     private static let cacheCap = 512
 
     /// Test/pressure hatch; also keeps unbounded growth impossible.
@@ -142,8 +145,20 @@ public enum AgentActivityScanner {
         codexTitleCache.removeAll()
         piCWDCache.removeAll()
         openCodeQueryCache = nil
+#if DEBUG
+        openCodeQueryExecutionCount = 0
+#endif
         cacheLock.unlock()
     }
+
+#if DEBUG
+    static func openCodeQueryExecutionCountForTesting() -> Int {
+        cacheLock.lock()
+        let count = openCodeQueryExecutionCount
+        cacheLock.unlock()
+        return count
+    }
+#endif
 
     private static func claudeFacts(for url: URL) -> (cwd: String?, title: String?) {
         let key = url.path
@@ -479,9 +494,18 @@ public enum AgentActivityScanner {
                 data = cached
             } else {
                 guard let fresh = runSQLite(db: db, query: query) else { return [] }
-                cacheLock.lock()
-                openCodeQueryCache = (signature: signature, output: fresh)
-                cacheLock.unlock()
+                // Opening a WAL database read-only can update its SHM mtime. Cache the
+                // post-query signature so that reader-only bookkeeping does not force a
+                // sqlite subprocess on every 5-second scan. If the database or WAL changed
+                // while the query was running, do not cache potentially stale output.
+                if let settled = openCodeDatabaseSignature(db: db),
+                   settled.database == signature.database,
+                   settled.wal == signature.wal
+                {
+                    cacheLock.lock()
+                    openCodeQueryCache = (signature: settled, output: fresh)
+                    cacheLock.unlock()
+                }
                 data = fresh
             }
         } else {
@@ -543,6 +567,11 @@ public enum AgentActivityScanner {
     /// sqlite3 isn't available or the query fails (the DB is opened read-only so it can never
     /// be corrupted by a concurrent writer).
     private static func runSQLite(db: URL, query: String) -> Data? {
+#if DEBUG
+        cacheLock.lock()
+        openCodeQueryExecutionCount += 1
+        cacheLock.unlock()
+#endif
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
         process.arguments = ["file:\(db.path)?mode=ro", query]
