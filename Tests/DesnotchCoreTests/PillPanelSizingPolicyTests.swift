@@ -9,7 +9,7 @@ final class PillPanelSizingPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             PillPanelSizingPolicy.normalizedContentSize(
-                CGSize(width: .infinity, height: 80)
+                CGSize(width: CGFloat.infinity, height: 80)
             ),
             .zero
         )
