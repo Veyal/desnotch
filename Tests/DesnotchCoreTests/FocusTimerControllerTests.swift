@@ -86,6 +86,19 @@ final class FocusTimerControllerTests: XCTestCase {
         XCTAssertNotNil(received?.token)
     }
 
+    func testPauseAtDeadlineCompletesInsteadOfStrandingAtZero() {
+        let clock = Clock(Date(timeIntervalSince1970: 1_000))
+        let scheduler = Scheduler()
+        let controller = FocusTimerController(now: { clock.date }, scheduler: scheduler)
+        XCTAssertTrue(controller.start(duration: 5))
+
+        clock.date = Date(timeIntervalSince1970: 1_005)
+        controller.pause()
+
+        XCTAssertEqual(controller.state, .completed)
+        XCTAssertNotNil(controller.completion)
+    }
+
     func testCancelInvalidatesCompletionAndClearsState() {
         let clock = Clock(Date(timeIntervalSince1970: 1_000))
         let scheduler = Scheduler()

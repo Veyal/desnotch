@@ -1,36 +1,20 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Collapses the pill's many structural animation triggers into one Equatable value.
-/// A single transaction is cheaper and, when several states change together, avoids
-/// whichever chained `.animation` modifier happened to be outermost winning by accident.
-private struct PillPrimaryAnimationState: Equatable {
+/// Only changes that add/remove laid-out sections participate in the structural spring.
+/// Text, progress, polling refreshes, indicator swaps, and transient feedback are scoped
+/// to their own subviews so they cannot restart the whole notch morph.
+private struct PillStructuralAnimationState: Equatable {
     let hasMedia: Bool
+    let hasTimer: Bool
     let hasAgents: Bool
     let hasHotProcesses: Bool
-    let calendarImminent: Bool
-    let reminderUrgent: Bool
-    let reminderID: String?
-    let remindersEnabled: Bool
-    let isHovering: Bool
-    let pillMode: String
-    let minimizedWidth: Double
-    let minimizedHeight: Double
-    let expandedWidth: Double
-    let isDropTargeted: Bool
-    let openFlash: Bool
-    let trayItems: [URL]
-    let animationStyle: String
-    let batteryState: BatteryController.BatteryState?
+    let hasCalendarRow: Bool
+    let hasReminderSection: Bool
+    let hasBattery: Bool
+    let hasClipboard: Bool
     let hasNotification: Bool
-    let notificationArrivalCount: Int
-}
-
-private struct PillSecondaryAnimationState: Equatable {
-    let volumeReadoutVisible: Bool
-    let micInUse: Bool
-    let cameraInUse: Bool
-    let privacyModeEnabled: Bool
+    let trayItems: [URL]
     let clipboardEntryIDs: [UUID]
 }
 
@@ -51,6 +35,7 @@ private struct PillSecondaryAnimationState: Equatable {
 /// through it.
 public struct NotchPillView: View {
     @ObservedObject public var controller: NowPlayingController
+    @ObservedObject public var focusTimer: FocusTimerController
     @ObservedObject public var agentActivity: AgentActivityController
     @ObservedObject public var calendar: CalendarController
     @ObservedObject public var reminders: RemindersController
@@ -75,6 +60,7 @@ public struct NotchPillView: View {
 
     public init(
         controller: NowPlayingController,
+        focusTimer: FocusTimerController,
         agentActivity: AgentActivityController,
         calendar: CalendarController,
         reminders: RemindersController,
@@ -91,6 +77,7 @@ public struct NotchPillView: View {
         onSizeChange: ((CGSize) -> Void)? = nil
     ) {
         self.controller = controller
+        self.focusTimer = focusTimer
         self.agentActivity = agentActivity
         self.calendar = calendar
         self.reminders = reminders
@@ -113,31 +100,29 @@ public struct NotchPillView: View {
         NotchAnimation.resolve(style: settings.animationStyle, reduceMotion: reduceMotion)
     }
 
-    /// The event spring (shape growth, sections appearing).
-    private var spring: Animation { motion.primary }
-
     /// Transition for content arriving in an expanded row - fade always, plus a small
-    /// grow/slide when the vocabulary allows it.
+    /// grow/slide when the vocabulary allows it. Travel stays bounded rather than using
+    /// `.move(edge:)`, which dragged a row its full height.
     private var arrivalTransition: AnyTransition {
-        guard motion.arrivalSlides || motion.arrivalScale != 1 else { return .opacity }
-        var insertion = AnyTransition.opacity
-        if motion.arrivalScale != 1 {
-            insertion = insertion.combined(with: .scale(scale: motion.arrivalScale, anchor: .top))
-        }
-        if motion.arrivalSlides {
-            insertion = insertion.combined(with: .move(edge: .top))
-        }
-        return .asymmetric(insertion: insertion, removal: .opacity)
+        let offset: CGFloat = motion.arrivalSlides ? -5 : 0
+        let active = PillArrivalModifier(
+            opacity: 0,
+            scale: motion.arrivalScale,
+            verticalOffset: offset
+        )
+        let identity = PillArrivalModifier(opacity: 1, scale: 1, verticalOffset: 0)
+        return .modifier(active: active, identity: identity)
     }
 
     /// Swap transition for the small wing indicators.
     private var indicatorTransition: AnyTransition {
         motion.arrivalScale == 1
             ? .opacity
-            : .opacity.combined(with: .scale(scale: 0.6))
+            : .opacity.combined(with: .scale(scale: motion.arrivalScale))
     }
 
     private var hasMedia: Bool { settings.nowPlayingEnabled && controller.hasActiveMedia }
+    private var hasTimer: Bool { focusTimer.state != .idle }
     private var hasNotification: Bool { settings.notificationMirrorEnabled && notificationMirror.latest != nil }
     private var hasAgents: Bool { settings.agentActivityEnabled && agentActivity.summary.hasActivity }
     private var hasHotProcesses: Bool { settings.processMonitorEnabled && !processMonitor.hotProcesses.isEmpty }
@@ -184,6 +169,15 @@ public struct NotchPillView: View {
     /// Timeline position being scrubbed (drag in progress); nil when not scrubbing.
     @State private var scrubPosition: TimeInterval?
 
+    /// Explicit two-stage choreography. The hover source remains solely in the window
+    /// controller; these states only decide how the latest target is rendered.
+    @State private var expansionPhase: PillExpansionPhase = .collapsed
+    @State private var expandedContentVisible = false
+    @State private var compactContentVisible = true
+    @State private var expansionGeneration = 0
+    @State private var feedbackGlow = false
+    @State private var feedbackGeneration = 0
+
     /// Expanded while the pointer is over the pill, while a file drag hovers it, briefly
     /// after a successful drop (so the added item is seen landing) - or permanently, when
     /// the user picked the always-on mode in Settings.
@@ -192,36 +186,18 @@ public struct NotchPillView: View {
             || presentation.isHovering || isDropTargeted || presentation.openFlash
     }
 
-    private var primaryAnimationState: PillPrimaryAnimationState {
-        PillPrimaryAnimationState(
+    private var structuralAnimationState: PillStructuralAnimationState {
+        PillStructuralAnimationState(
             hasMedia: hasMedia,
+            hasTimer: hasTimer,
             hasAgents: hasAgents,
             hasHotProcesses: hasHotProcesses,
-            calendarImminent: calendarImminent,
-            reminderUrgent: reminderUrgent,
-            reminderID: reminders.nextReminder?.id,
-            remindersEnabled: settings.remindersEnabled,
-            isHovering: presentation.isHovering,
-            pillMode: settings.pillMode.rawValue,
-            minimizedWidth: settings.minimizedWidth,
-            minimizedHeight: settings.minimizedHeight,
-            expandedWidth: settings.expandedWidth,
-            isDropTargeted: isDropTargeted,
-            openFlash: presentation.openFlash,
-            trayItems: tray.items,
-            animationStyle: settings.animationStyle.rawValue,
-            batteryState: battery.state,
+            hasCalendarRow: showCalendarRow,
+            hasReminderSection: showReminderSection,
+            hasBattery: showBatteryRow && battery.state != nil,
+            hasClipboard: hasClipboard,
             hasNotification: hasNotification,
-            notificationArrivalCount: notificationMirror.arrivalCount
-        )
-    }
-
-    private var secondaryAnimationState: PillSecondaryAnimationState {
-        PillSecondaryAnimationState(
-            volumeReadoutVisible: presentation.volumeFlash != nil,
-            micInUse: mediaUse.micInUse,
-            cameraInUse: mediaUse.cameraInUse,
-            privacyModeEnabled: settings.privacyModeEnabled,
+            trayItems: tray.items,
             clipboardEntryIDs: clipboard.entries.map(\.id)
         )
     }
@@ -242,15 +218,20 @@ public struct NotchPillView: View {
         // visible anyway.
         notchBody
             .background(sizeReader)
-        .onPreferenceChange(PillContentSizePreferenceKey.self) { size in
-            onSizeChange?(size)
-        }
-        .animation(motion.secondary, value: secondaryAnimationState)
-        .animation(spring, value: primaryAnimationState)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        // The pill renders on an always-dark surface; force a dark color scheme so
-        // `.secondary` text stays legible in Light Mode too.
-        .environment(\.colorScheme, .dark)
+            .onPreferenceChange(PillContentSizePreferenceKey.self) { size in
+                onSizeChange?(size)
+            }
+            .onAppear { synchronizeExpansion(animated: false) }
+            .onChange(of: isExpanded) { _ in synchronizeExpansion(animated: true) }
+            .onChange(of: presentation.feedbackToken) { _ in playFeedbackGlow() }
+            .onDisappear {
+                expansionGeneration += 1
+                feedbackGeneration += 1
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // The pill renders on an always-dark surface; force a dark color scheme so
+            // `.secondary` text stays legible in Light Mode too.
+            .environment(\.colorScheme, .dark)
     }
 
     private var sizeReader: some View {
@@ -262,34 +243,51 @@ public struct NotchPillView: View {
 
     // MARK: - Pill
 
-    /// One continuous black shape for both states. The container's width/height animate
-    /// between the minimized notch footprint and the expanded panel, so the notch visually
-    /// *grows into* the panel (and shrinks back on collapse) - never two shapes
-    /// cross-fading, which read as the notch shrinking away while a bigger one appeared.
-    /// Only the content inside cross-fades; `clipShape` keeps the incoming full-size
-    /// content inside the still-growing shape mid-animation.
+    /// One continuous shape, with compact and expanded content sharing a stable layer.
+    /// Expansion is staged: the shape retargets first, then the compact indicators hand
+    /// off to the rows. On collapse the hand-off reverses before the shape shrinks. This
+    /// keeps rapid hover reversals interruptible and avoids unrelated data updates ever
+    /// owning the container spring.
     private var notchBody: some View {
         ZStack(alignment: .top) {
-            if isExpanded {
+            if expansionPhase.keepsExpandedContainer {
                 pillContent
                     .padding(.horizontal, 14)
                     .padding(.top, effectiveNotch.height + 4)
                     .padding(.bottom, 8)
-                    .transition(.opacity)
+                    .opacity(expandedContentVisible ? 1 : motion.expansionContentOpacity)
+                    .scaleEffect(
+                        expandedContentVisible ? 1 : motion.expansionContentScale,
+                        anchor: .top
+                    )
+                    .offset(y: expandedContentVisible ? 0 : motion.expansionContentOffset)
+                    .allowsHitTesting(expandedContentVisible)
+                    .transition(.identity)
             } else {
+                Color.clear
+                    .frame(height: effectiveNotch.height)
+                    .transition(.identity)
+            }
+
+            if compactContentVisible {
                 compactContent
                     .transition(.opacity)
             }
         }
-        .frame(width: isExpanded ? expandedWidth : compactWidth)
+        .frame(width: expansionPhase.keepsExpandedContainer ? expandedWidth : compactWidth)
         .background(
             BottomRoundedRectangle(radius: shapeRadius)
                 .fill(isDropTargeted ? Color(white: 0.13) : Color.black)
+                .animation(motion.secondary, value: isDropTargeted)
         )
         .overlay(
             // Drop-target affordance: the shape itself lights up while a file hovers it.
             BottomRoundedRectangle(radius: shapeRadius)
-                .stroke(Color.white.opacity(isDropTargeted ? 0.6 : 0), lineWidth: 1.5)
+                .stroke(
+                    Color.white.opacity(isDropTargeted ? 0.6 : (feedbackGlow ? 0.22 : 0)),
+                    lineWidth: isDropTargeted ? 1.5 : 1
+                )
+                .animation(motion.secondary, value: isDropTargeted || feedbackGlow)
         )
         .clipShape(BottomRoundedRectangle(radius: shapeRadius))
         .contentShape(BottomRoundedRectangle(radius: shapeRadius))
@@ -316,33 +314,106 @@ public struct NotchPillView: View {
             return accepted
         }
         .overlay(alignment: .bottom) {
-            if let level = presentation.volumeFlash {
-                volumeReadout(level)
-                    .transition(.opacity)
-                    .padding(.bottom, 3)
+            Group {
+                if let level = presentation.volumeFlash {
+                    volumeReadout(level)
+                        .transition(.opacity)
+                        .padding(.bottom, 3)
+                }
             }
+            .animation(motion.secondary, value: presentation.volumeFlash != nil)
         }
         .overlay(alignment: .topTrailing) {
             // Mic/camera in-use dots, hugging the shape's top-right corner in both states
             // (the camera literally lives in the notch, so this is its natural home).
-            if mediaUse.micInUse || mediaUse.cameraInUse {
-                HStack(spacing: 3) {
-                    if mediaUse.micInUse {
-                        Circle().fill(Color.orange).frame(width: 5, height: 5)
+            Group {
+                if mediaUse.micInUse || mediaUse.cameraInUse {
+                    HStack(spacing: 3) {
+                        if mediaUse.micInUse {
+                            Circle().fill(Color.orange).frame(width: 5, height: 5)
+                        }
+                        if mediaUse.cameraInUse {
+                            Circle().fill(Color.green).frame(width: 5, height: 5)
+                        }
                     }
-                    if mediaUse.cameraInUse {
-                        Circle().fill(Color.green).frame(width: 5, height: 5)
-                    }
+                    .padding(.top, 5)
+                    .padding(.trailing, 7)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+                    .accessibilityLabel(Text([
+                        mediaUse.micInUse ? "microphone in use" : nil,
+                        mediaUse.cameraInUse ? "camera in use" : nil
+                    ].compactMap { $0 }.joined(separator: ", ")))
                 }
-                .padding(.top, 5)
-                .padding(.trailing, 7)
-                .transition(.opacity)
-                .allowsHitTesting(false)
-                .accessibilityLabel(Text([
-                    mediaUse.micInUse ? "microphone in use" : nil,
-                    mediaUse.cameraInUse ? "camera in use" : nil
-                ].compactMap { $0 }.joined(separator: ", ")))
             }
+            .animation(
+                motion.secondary,
+                value: mediaUse.micInUse || mediaUse.cameraInUse
+            )
+        }
+    }
+
+    /// Retargets the shared container to the latest expansion source. Delayed work is
+    /// generation-guarded, so a fast hover exit/re-entry cannot replay stale phases.
+    private func synchronizeExpansion(animated: Bool) {
+        expansionGeneration += 1
+        let generation = expansionGeneration
+
+        guard animated else {
+            expansionPhase = isExpanded ? .expanded : .collapsed
+            expandedContentVisible = isExpanded
+            compactContentVisible = !isExpanded
+            return
+        }
+
+        if isExpanded {
+            withAnimation(motion.allowsGeometry ? motion.primary : nil) {
+                expansionPhase = .expanding
+            }
+            scheduleExpansionStep(after: motion.expansionContentDelay, generation: generation) {
+                withAnimation(motion.expansionContent) {
+                    expandedContentVisible = true
+                    compactContentVisible = false
+                    expansionPhase = .expanded
+                }
+            }
+        } else {
+            withAnimation(motion.expansionContent) {
+                expandedContentVisible = false
+                compactContentVisible = true
+                expansionPhase = .collapsing
+            }
+            scheduleExpansionStep(after: motion.collapseShapeDelay, generation: generation) {
+                withAnimation(motion.allowsGeometry ? motion.primary : nil) {
+                    expansionPhase = .collapsed
+                }
+            }
+        }
+    }
+
+    private func scheduleExpansionStep(
+        after delay: TimeInterval,
+        generation: Int,
+        action: @escaping () -> Void
+    ) {
+        guard delay > 0 else {
+            guard generation == expansionGeneration else { return }
+            action()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard generation == expansionGeneration else { return }
+            action()
+        }
+    }
+
+    private func playFeedbackGlow() {
+        feedbackGeneration += 1
+        let generation = feedbackGeneration
+        withAnimation(motion.secondary) { feedbackGlow = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + motion.feedbackHoldDuration) {
+            guard generation == feedbackGeneration else { return }
+            withAnimation(motion.secondary) { feedbackGlow = false }
         }
     }
 
@@ -365,7 +436,9 @@ public struct NotchPillView: View {
         .allowsHitTesting(false)
     }
 
-    private var shapeRadius: CGFloat { isExpanded ? 14 : 10 }
+    private var shapeRadius: CGFloat {
+        expansionPhase.keepsExpandedContainer ? 14 : 10
+    }
 
     private var compactWidth: CGFloat { effectiveNotch.width + Self.wingWidth * 2 }
 
@@ -378,7 +451,7 @@ public struct NotchPillView: View {
     private var showBatteryRow: Bool { settings.batteryEnabled }
 
     private var hasContentBeforePrivacyAction: Bool {
-        hasNotification || hasMedia || hasAgents || hasHotProcesses || hasClipboard || showCalendarRow
+        hasNotification || hasMedia || hasTimer || hasAgents || hasHotProcesses || hasClipboard || showCalendarRow
             || showReminderSection
             || (showBatteryRow && battery.state != nil)
     }
@@ -408,8 +481,10 @@ public struct NotchPillView: View {
             Text("\(state.percent)%")
                 .font(.system(size: 10, weight: .semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
+                .availabilityGuardedNumericText(enabled: motion.allowsGeometry)
         }
         .padding(.vertical, 1)
+        .animation(motion.secondary, value: state)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("Battery \(state.percent) percent\(state.isCharging ? ", charging" : "")"))
     }
@@ -431,7 +506,7 @@ public struct NotchPillView: View {
         VStack(spacing: 0) {
             if hasNotification, let banner = notificationMirror.latest {
                 notificationRow(banner)
-                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow
+                if hasMedia || hasTimer || hasAgents || hasHotProcesses || showCalendarRow
                     || showReminderSection || (showBatteryRow && battery.state != nil)
                     || hasClipboard || trayEnabled {
                     sectionDivider
@@ -440,19 +515,25 @@ public struct NotchPillView: View {
             if hasMedia, let info = controller.info {
                 nowPlayingRow(info)
             }
-            if hasMedia && hasAgents {
+            if hasMedia && hasTimer {
+                sectionDivider
+            }
+            if hasTimer {
+                focusTimerSection
+            }
+            if (hasMedia || hasTimer) && hasAgents {
                 sectionDivider
             }
             if hasAgents {
                 agentSection
             }
-            if (hasMedia || hasAgents) && hasHotProcesses {
+            if (hasMedia || hasTimer || hasAgents) && hasHotProcesses {
                 sectionDivider
             }
             if hasHotProcesses {
                 processSection
             }
-            if (hasMedia || hasAgents || hasHotProcesses) && showCalendarRow {
+            if (hasMedia || hasTimer || hasAgents || hasHotProcesses) && showCalendarRow {
                 sectionDivider
             }
             if showCalendarRow {
@@ -463,19 +544,19 @@ public struct NotchPillView: View {
                 }
             }
             if showReminderSection {
-                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow {
+                if hasMedia || hasTimer || hasAgents || hasHotProcesses || showCalendarRow {
                     sectionDivider
                 }
                 reminderSection
             }
             if showBatteryRow, let state = battery.state {
-                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow || showReminderSection {
+                if hasMedia || hasTimer || hasAgents || hasHotProcesses || showCalendarRow || showReminderSection {
                     sectionDivider
                 }
                 batteryRow(state)
             }
             if hasClipboard {
-                if hasMedia || hasAgents || hasHotProcesses || showCalendarRow || showReminderSection
+                if hasMedia || hasTimer || hasAgents || hasHotProcesses || showCalendarRow || showReminderSection
                     || (showBatteryRow && battery.state != nil) {
                     sectionDivider
                 }
@@ -490,6 +571,167 @@ public struct NotchPillView: View {
                 traySection
             }
         }
+        .animation(
+            motion.allowsGeometry ? motion.primary : nil,
+            value: structuralAnimationState
+        )
+    }
+
+    // MARK: - Focus timer
+
+    @ViewBuilder
+    private var focusTimerSection: some View {
+        Group {
+            switch focusTimer.state {
+            case .running:
+                focusTimerRunningRow
+            case .paused:
+                focusTimerRow(
+                    remaining: focusTimer.remaining,
+                    progress: focusTimer.progress,
+                    paused: true
+                )
+            case .completed:
+                focusTimerCompletedRow
+            case .idle:
+                EmptyView()
+            }
+        }
+        .id(focusTimer.state)
+        .transition(.opacity)
+        .animation(motion.secondary, value: focusTimer.state)
+    }
+
+    private var focusTimerRunningRow: some View {
+        VStack(spacing: 6) {
+            focusTimerControlsRow(paused: false) {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    timerCountdownText(timerRemaining(at: context.date))
+                }
+            }
+            TimelineView(.animation(minimumInterval: motion.progressMinimumInterval)) { context in
+                timerProgressBar(progress: timerProgress(at: context.date), paused: false)
+            }
+            .accessibilityHidden(true)
+        }
+        .padding(.vertical, 1)
+        .frame(minHeight: 38)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func focusTimerRow(
+        remaining: TimeInterval,
+        progress: Double,
+        paused: Bool
+    ) -> some View {
+        VStack(spacing: 6) {
+            focusTimerControlsRow(paused: paused) {
+                timerCountdownText(remaining)
+            }
+            timerProgressBar(progress: progress, paused: paused)
+            .accessibilityHidden(true)
+        }
+        .padding(.vertical, 1)
+        .frame(minHeight: 38)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func focusTimerControlsRow<Countdown: View>(
+        paused: Bool,
+        @ViewBuilder countdown: () -> Countdown
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: paused ? "pause.circle.fill" : "timer")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(paused ? .yellow : .cyan)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Focus timer")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text(paused ? "Paused" : "In focus")
+                    .font(.system(size: 9))
+                    .foregroundStyle(paused ? .yellow : .secondary)
+            }
+
+            Spacer(minLength: 4)
+            countdown()
+
+            controlButton(
+                systemName: paused ? "play.fill" : "pause.fill",
+                label: paused ? "Resume focus timer" : "Pause focus timer"
+            ) {
+                paused ? focusTimer.resume() : focusTimer.pause()
+            }
+            controlButton(systemName: "xmark", label: "Cancel focus timer") {
+                focusTimer.cancel()
+            }
+        }
+    }
+
+    private func timerCountdownText(_ remaining: TimeInterval) -> some View {
+        Text(TimeFormatting.clock(ceil(remaining)))
+            .font(.system(size: 13, weight: .semibold).monospacedDigit())
+            .foregroundStyle(.white)
+            .availabilityGuardedNumericText(enabled: motion.allowsGeometry)
+            .animation(motion.secondary, value: Int(ceil(remaining)))
+            .accessibilityLabel(Text("\(TimeFormatting.clock(ceil(remaining))) remaining"))
+    }
+
+    private func timerProgressBar(progress: Double, paused: Bool) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.16))
+                Capsule()
+                    .fill(paused ? Color.yellow : Color.cyan)
+                    .frame(width: proxy.size.width * CGFloat(min(1, max(0, progress))))
+            }
+        }
+        .frame(height: 3)
+    }
+
+    private var focusTimerCompletedRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.green)
+                .frame(width: 16)
+                .availabilityGuardedBounce(
+                    trigger: focusTimer.completion?.token.hashValue ?? 0,
+                    enabled: motion.allowsPulse
+                )
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Focus complete")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("Nice work — take a break")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button("Done") { focusTimer.reset() }
+                .font(.system(size: 10, weight: .semibold))
+                .buttonStyle(PillButtonStyle())
+                .foregroundStyle(.cyan)
+                .accessibilityLabel(Text("Dismiss completed focus timer"))
+        }
+        .padding(.vertical, 2)
+        .frame(minHeight: 38)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func timerRemaining(at date: Date) -> TimeInterval {
+        guard focusTimer.state == .running, let endDate = focusTimer.endDate else {
+            return focusTimer.remaining
+        }
+        return max(0, endDate.timeIntervalSince(date))
+    }
+
+    private func timerProgress(at date: Date) -> Double {
+        guard focusTimer.duration > 0 else { return 0 }
+        return min(1, max(0, 1 - timerRemaining(at: date) / focusTimer.duration))
     }
 
     // MARK: - Reminders
@@ -523,6 +765,7 @@ public struct NotchPillView: View {
                 reminderEmptyState
             }
         }
+        .animation(motion.secondary, value: reminders.nextReminder?.id)
     }
 
     private func reminderRow(_ reminder: RemindersController.NextReminder) -> some View {
@@ -703,9 +946,8 @@ public struct NotchPillView: View {
 
     /// The mirrored banner row - always the top section (it's the newest event).
     /// Fixed vertical metrics (two fixed-size lines, capped widths) so arrival and
-    /// expiry never change the pill's measured height mid-animation. `.id` on the
-    /// arrival counter makes every new banner re-run the insertion transition even
-    /// when it replaces a still-visible one.
+    /// expiry never change the pill's measured height mid-animation. Replacements
+    /// crossfade locally; only the section's first appearance changes stack geometry.
     private func notificationRow(_ banner: MirroredNotification) -> some View {
         HStack(spacing: 9) {
             // The icon is the alert's anchor: app-sized, rounded like a system badge,
@@ -754,7 +996,8 @@ public struct NotchPillView: View {
         .accessibilityLabel(Text("Notification from \(banner.appName)\(settings.privacyModeEnabled ? "" : (banner.content.map { ": \($0)" } ?? ""))"))
         .accessibilityHint(Text("Opens \(banner.appName)"))
         .id(notificationMirror.arrivalCount)
-        .transition(arrivalTransition)
+        .transition(.opacity)
+        .animation(motion.secondary, value: notificationMirror.arrivalCount)
     }
 
     /// Shown instead of the event row when access was denied - otherwise the feature
@@ -784,15 +1027,17 @@ public struct NotchPillView: View {
     /// MacBook-sized cutout on a notch-less one). Both wings are always laid out while
     /// anything is active (symmetry); an inactive side is just black. The black shape
     /// itself is owned by `notchBody`.
-    /// One indicator per wing. Left: media wins (it has controls), then a stuck-process
-    /// warning, then an imminent meeting, then an urgent reminder. Right: agents,
-    /// notifications, then whichever urgent item the left wing displaced. Anything
-    /// squeezed out is one hover away.
+    /// One indicator per wing. Left: media wins (it has controls), then an active focus
+    /// timer, a stuck-process warning, an imminent meeting, and an urgent reminder.
+    /// Right: agents, a timer displaced by media, notifications, then whichever urgent
+    /// item the left wing displaced. Anything squeezed out is one hover away.
     private var compactContent: some View {
         HStack(spacing: 0) {
             wing {
                 if hasMedia {
                     mediaIndicator
+                } else if hasTimer {
+                    focusTimerIndicator
                 } else if hasHotProcesses {
                     hotProcessIndicator
                 } else if calendarImminent {
@@ -806,6 +1051,8 @@ public struct NotchPillView: View {
             wing {
                 if hasAgents {
                     agentIndicator
+                } else if hasMedia && hasTimer {
+                    focusTimerIndicator
                 } else if hasNotification {
                     notificationIndicator
                 } else if hasMedia && hasHotProcesses {
@@ -867,8 +1114,7 @@ public struct NotchPillView: View {
         }
         .frame(width: 14, height: 14)
         .foregroundStyle(.white)
-        .animation(spring, value: controller.info?.isPlaying == true)
-        .animation(spring, value: settings.musicIndicatorStyle)
+        .animation(motion.secondary, value: resolved)
     }
 
     private var agentIndicator: some View {
@@ -885,6 +1131,51 @@ public struct NotchPillView: View {
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white)
         }
+    }
+
+    @ViewBuilder
+    private var focusTimerIndicator: some View {
+        switch focusTimer.state {
+        case .running:
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                compactTimerContents(
+                    remaining: timerRemaining(at: context.date),
+                    symbol: "timer",
+                    color: .cyan
+                )
+            }
+        case .paused:
+            compactTimerContents(
+                remaining: focusTimer.remaining,
+                symbol: "pause.fill",
+                color: .yellow
+            )
+        case .completed:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.green)
+                .availabilityGuardedBounce(
+                    trigger: focusTimer.completion?.token.hashValue ?? 0,
+                    enabled: motion.allowsPulse
+                )
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    private func compactTimerContents(
+        remaining: TimeInterval,
+        symbol: String,
+        color: Color
+    ) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 8, weight: .semibold))
+            Text(TimeFormatting.clock(ceil(remaining)))
+                .font(.system(size: 9, weight: .bold).monospacedDigit())
+                .lineLimit(1)
+        }
+        .foregroundStyle(color)
     }
 
     // MARK: - Click-to-jump actions (shared with the status-menu mirror)
@@ -928,6 +1219,18 @@ public struct NotchPillView: View {
     private var compactAccessibilityLabel: String {
         var parts: [String] = []
         if hasMedia { parts.append(controller.info?.isPlaying == true ? "media playing" : "media paused") }
+        if hasTimer {
+            switch focusTimer.state {
+            case .running:
+                parts.append("focus timer \(TimeFormatting.clock(ceil(focusTimer.remaining))) remaining")
+            case .paused:
+                parts.append("focus timer paused")
+            case .completed:
+                parts.append("focus timer complete")
+            case .idle:
+                break
+            }
+        }
         if hasAgents {
             parts.append(needsAttention ? "agent needs you" : "\(agentActivity.summary.actionableCount) agents working")
         }
@@ -972,12 +1275,18 @@ public struct NotchPillView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
+                        .contentTransition(.opacity)
                     Text(privacyRedacted(info.artist ?? "", fallback: ""))
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .contentTransition(.opacity)
                 }
                 .frame(maxWidth: 140, alignment: .leading)
+                .animation(
+                    motion.secondary,
+                    value: "\(info.title ?? "")\u{0}\(info.artist ?? "")"
+                )
             }
             .contentShape(Rectangle())
             .onTapGesture { activateMediaApp(info) }
@@ -996,6 +1305,7 @@ public struct NotchPillView: View {
                     controller.togglePlayPause()
                 }
                 .availabilityGuardedSymbolReplace(enabled: motion.allowsPulse)
+                .animation(motion.secondary, value: info.isPlaying)
                 controlButton(systemName: "forward.fill", label: "Next track") {
                     controller.next()
                 }
@@ -1015,7 +1325,10 @@ public struct NotchPillView: View {
     /// scrubbing the local scrub position is shown, then handed to
     /// `NowPlayingController.seek` on release (optimistic, so the bar doesn't snap back).
     private func timeline(_ info: NowPlayingInfo, duration: TimeInterval) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.animation(
+            minimumInterval: motion.progressMinimumInterval,
+            paused: !info.isPlaying || scrubPosition != nil
+        )) { context in
             let livePosition = min(max(info.position(at: context.date) ?? 0, 0), duration)
             let position = scrubPosition ?? livePosition
             let fraction = CGFloat(position / duration)
@@ -1053,7 +1366,7 @@ public struct NotchPillView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .animation(motion.secondary, value: scrubPosition != nil)
+        .animation(motion.press, value: scrubPosition != nil)
         .accessibilityHidden(true)
     }
 
@@ -1096,7 +1409,6 @@ public struct NotchPillView: View {
                 agentRow(session)
             }
         }
-        .animation(nil, value: orderedAgents.count)
     }
 
     private func agentRow(_ session: AgentSession) -> some View {
@@ -1209,7 +1521,6 @@ public struct NotchPillView: View {
                 .accessibilityLabel(Text("\(proc.name) at \(Int(proc.cpu)) percent CPU"))
             }
         }
-        .animation(nil, value: processMonitor.hotProcesses.count)
     }
 
     // MARK: - File tray
@@ -1276,12 +1587,44 @@ public struct NotchPillView: View {
         }
         .padding(.vertical, 1)
         .contentShape(Rectangle())
-        .onTapGesture { NSWorkspace.shared.open(url) }
+        .onTapGesture { _ = tray.open(url) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text(privacyRedacted(
+            url.lastPathComponent,
+            fallback: trayPrivacyName(url)
+        )))
+        .accessibilityHint(Text("Opens file; more file actions are available"))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: Text("Open")) { _ = tray.open(url) }
+        .accessibilityAction(named: Text("Reveal in Finder")) { _ = tray.revealInFinder(url) }
+        .accessibilityAction(named: Text("Copy File")) { _ = tray.copyToPasteboard([url]) }
+        .accessibilityAction(named: Text("Share")) { shareTrayItem(url) }
+        .contextMenu {
+            Button("Open") { _ = tray.open(url) }
+            Button("Reveal in Finder") { _ = tray.revealInFinder(url) }
+            Button("Copy File") { _ = tray.copyToPasteboard([url]) }
+            Button("Share…") { shareTrayItem(url) }
+            Divider()
+            Button("Remove from Tray", role: .destructive) { tray.remove(url) }
+        }
         // `NSItemProvider(contentsOf:)` registers a file representation, so dropping in
         // Finder performs a real copy (the plain NSURL provider only carried a URL type,
         // which Finder ignores).
         .onDrag { NSItemProvider(contentsOf: url) ?? NSItemProvider(object: url as NSURL) }
         .help(privacyRedacted(url.lastPathComponent, fallback: trayPrivacyName(url)))
+    }
+
+    private func shareTrayItem(_ url: URL) {
+        guard tray.items.contains(url),
+              FileManager.default.fileExists(atPath: url.path),
+              let panel = NSApp.windows.compactMap({ $0 as? NSPanel }).first(where: {
+                  $0.styleMask.contains(.nonactivatingPanel)
+              }),
+              let anchor = panel.contentView
+        else { return }
+        let picker = NSSharingServicePicker(items: [url])
+        let rect = NSRect(x: anchor.bounds.midX, y: anchor.bounds.maxY - 1, width: 1, height: 1)
+        picker.show(relativeTo: rect, of: anchor, preferredEdge: .minY)
     }
 
     // MARK: - Calendar glance

@@ -32,6 +32,36 @@ struct BottomRoundedRectangle: Shape {
     }
 }
 
+/// The visual container and its content deliberately do not switch at the same instant.
+/// Expansion grows the black notch first, then reveals content; collapse fades content
+/// first, then lets the container settle back into the hardware. Keeping this semantic
+/// phase separate from the hover source also makes rapid re-entry interruptible: the
+/// newest phase always retargets the same shape instead of queuing another animation.
+enum PillExpansionPhase: Equatable {
+    case collapsed
+    case expanding
+    case expanded
+    case collapsing
+
+    var keepsExpandedContainer: Bool { self != .collapsed }
+}
+
+/// A short, bounded arrival treatment for sections. `.move(edge:)` moved an entire row
+/// height and looked disconnected from the notch; this modifier keeps travel to a few
+/// points and becomes a plain fade when geometry motion is disabled.
+struct PillArrivalModifier: ViewModifier {
+    let opacity: Double
+    let scale: CGFloat
+    let verticalOffset: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(opacity)
+            .scaleEffect(scale, anchor: .top)
+            .offset(y: verticalOffset)
+    }
+}
+
 /// The pill's single motion vocabulary. Every animation in the pill resolves through
 /// here so the feel stays consistent and one switch (`AnimationStyle`, or the system's
 /// Reduce Motion) governs all of it.
@@ -69,6 +99,12 @@ enum NotchAnimation {
         let expansionContentScale: CGFloat
         /// Starting vertical offset for content revealed during expansion.
         let expansionContentOffset: CGFloat
+        /// Shape-to-content hand-off. Zero under Minimal/Reduce Motion.
+        let expansionContentDelay: TimeInterval
+        /// Content-to-shape hand-off on collapse. Zero under Minimal/Reduce Motion.
+        let collapseShapeDelay: TimeInterval
+        /// How long a one-shot rim acknowledgement stays at full opacity.
+        let feedbackHoldDuration: TimeInterval
         /// Cadence for client-side progress readouts. This is not a polling interval.
         let progressMinimumInterval: TimeInterval
         /// Cadence for the opt-in equalizer loop.
@@ -151,6 +187,9 @@ enum NotchAnimation {
                 expansionContentOpacity: 0,
                 expansionContentScale: 1,
                 expansionContentOffset: 0,
+                expansionContentDelay: 0,
+                collapseShapeDelay: 0,
+                feedbackHoldDuration: 0.08,
                 progressMinimumInterval: 1,
                 equalizerMinimumInterval: 1
             )
@@ -170,7 +209,10 @@ enum NotchAnimation {
                 expansionContentOpacity: 0,
                 expansionContentScale: 0.96,
                 expansionContentOffset: 5,
-                progressMinimumInterval: 1,
+                expansionContentDelay: 0.065,
+                collapseShapeDelay: 0.085,
+                feedbackHoldDuration: 0.14,
+                progressMinimumInterval: 1.0 / 15.0,
                 equalizerMinimumInterval: 1.0 / 15.0
             )
         case .subtle, .minimal:
@@ -189,7 +231,10 @@ enum NotchAnimation {
                 expansionContentOpacity: 0,
                 expansionContentScale: 0.985,
                 expansionContentOffset: 3,
-                progressMinimumInterval: 1,
+                expansionContentDelay: 0.045,
+                collapseShapeDelay: 0.065,
+                feedbackHoldDuration: 0.12,
+                progressMinimumInterval: 1.0 / 15.0,
                 equalizerMinimumInterval: 1.0 / 15.0
             )
         }
@@ -202,7 +247,7 @@ enum NotchAnimation {
 /// the equalizer needs actual playback AND motion allowed; everything else is the
 /// static note. Keep every new style's fallback chain in here, not in the view.
 enum MusicIndicatorResolver {
-    enum Resolved {
+    enum Resolved: Equatable {
         case equalizer, note, art
     }
 
@@ -289,6 +334,17 @@ struct PillButtonStyle: ButtonStyle {
 }
 
 extension View {
+    /// Rolling digits are macOS 14+. macOS 13 and motion-suppressed configurations use
+    /// a quiet opacity replacement while keeping the same fixed-width monospaced layout.
+    @ViewBuilder
+    func availabilityGuardedNumericText(enabled: Bool = true) -> some View {
+        if #available(macOS 14.0, *), enabled {
+            contentTransition(.numericText())
+        } else {
+            contentTransition(.opacity)
+        }
+    }
+
     /// `.contentTransition(.symbolEffect(.replace))` is macOS 14+; fall back to no
     /// transition on macOS 13 so the play/pause swap still builds for the 13 min target.
     @ViewBuilder

@@ -75,10 +75,9 @@ without a fixed width the pill fills whatever the panel proposes and the measure
 back into the panel's grow-only sizing. Keep the fixed width (and the per-text `maxWidth` caps)
 when adding content - don't let the expanded pill become content-width-driven again. Natural
 size is reported through the single `PillContentSizePreferenceKey`; don't split width/height into
-separate callbacks, which doubles panel resize and interactivity work during animations. Root
-animation triggers are grouped into `PillPrimaryAnimationState`/`PillSecondaryAnimationState` so
-simultaneous changes resolve predictably; add new triggers to those tokens instead of stacking more
-root `.animation` modifiers.
+separate callbacks, which doubles panel resize and interactivity work during animations. Never add
+broad `.animation` modifiers to the root; structural and content motion have separate authorities
+described under Motion vocabulary below.
 
 ## Notch geometry: never draw behind the cutout
 
@@ -176,9 +175,18 @@ existing `Task.detached` pattern.
 
 - **File tray** (`TrayController`): drop files onto the notch shape (SwiftUI `.onDrop` of
   `.fileURL`); stores path references only (UserDefaults-persisted, dead paths pruned on
-  load, 8 max). Rows: click opens, drag out re-exports via `NSItemProvider`, ✕ removes.
+  load, 8 max). Rows: click opens, drag out re-exports via `NSItemProvider`, and the
+  context/status menus mirror open, reveal in Finder, copy, share, and remove. These actions
+  operate on validated live tray references and never move/delete the underlying file.
   Drag delivery depends on the `.leftMouseDragged` monitors making the panel interactive
   mid-drag (Dropover-style; verify on hardware if drops ever stop landing).
+- **Focus timer** (`FocusTimerController`): one session-scoped 5/15/25/50-minute live
+  activity, started from the status menu and controlled from both menu and pill. It keeps an
+  absolute `Date` deadline, one non-repeating wall-clock completion timer, and derives progress
+  in `TimelineView`; never replace this with a repeating controller poll or persistence. Pausing
+  stores only remaining duration in memory. Completion is a transient token + callback used for
+  the pill reveal/sound/VoiceOver announcement, and the completed row remains until dismissed or
+  a new timer starts.
 - **Clipboard pocket** (`ClipboardController`, OFF by default): stores up to eight bounded
   plain-text copies in memory only and clears on disable/exit. It polls `NSPasteboard.changeCount`
   before reading, skips concealed/transient/password-manager marker types, and never persists or
@@ -186,9 +194,9 @@ existing `Task.detached` pattern.
   mirrored in the status menu.
 - **Now-playing timeline**: `NowPlayingInfo.duration/elapsed/elapsedAt` (adapter `duration`/
   `elapsedTime`/`timestamp`; excluded from `==` on purpose - they change every delivery).
-  Position is extrapolated client-side (`position(at:)`) and ticked by a 1s `TimelineView`
-  only while rendered - no extra adapter polling. Hidden when the source reports no
-  duration (radio/streams).
+  Position is extrapolated client-side (`position(at:)`) and drawn by a 15fps animation
+  `TimelineView` only while expanded and playing - no extra adapter polling. Hidden when the
+  source reports no duration (radio/streams).
 - **Stale-session policy** (`NowPlayingInfo.hasContent`/`pausedExpiry`): browser media
   sessions are never unregistered while the tab lives, so residue lingers system-wide
   (observed: WhatsApp Web's 40ms notification ping titled "(5) WhatsApp" reported for
@@ -231,19 +239,25 @@ existing `Task.detached` pattern.
   Only banners this app actually mirrored are dismissed (muted apps keep their normal
   system banner); Notification Center history is never touched.
 
-Compact wing priority when several things are active: left = media > stuck-process >
-calendar > urgent reminder; right = agents > notification > displaced stuck-process/calendar/
-reminder. Everything else is one hover
-away.
+Compact wing priority when several things are active: left = media > focus timer >
+stuck-process > calendar > urgent reminder; right = agents > timer displaced by media >
+notification > displaced stuck-process/calendar/reminder. Everything else is one hover away.
 
-**Motion vocabulary (v0.8.0)**: every animation resolves through
+**Motion vocabulary**: every animation resolves through
 `NotchAnimation.resolve(style:reduceMotion:)` - don't hand-roll curves in a row.
 Reduce Motion maps to exactly the `.minimal` vocabulary regardless of the user's
 style, `allowsGeometry` gates size/position effects (press scale, scrub knob, row
 slides), `allowsPulse` gates one-shot symbol effects, and `allowsLooping` gates the
 equalizer - the app's only perpetual animation, which is why `musicIndicatorStyle`
 defaults to `.note`. The pill is always on screen: nothing may loop for ordinary
-activity without the user opting in.
+activity without the user opting in. Container expansion is an explicit
+`PillExpansionPhase` choreography: shape first/content second on open, content first/shape
+second on close, generation-guarded so rapid hover reversals retarget instead of queueing.
+Only `PillStructuralAnimationState` owns section layout animation; content replacement,
+polling refresh, direct manipulation, and transient feedback stay scoped to their subviews.
+The stable AppKit host floor covers the full configured width and normal stacked height;
+`PillPanelSizingPolicy` coalesces fractional overflow measurements and never shrinks another
+dimension when one grows. Preserve that separation rather than restoring broad root animations.
 
 Agent row clicks resolve the *owning* host app via the agent process's cwd (`lsof`)
 plus process ancestry (`ps`), not the first running terminal
@@ -275,8 +289,11 @@ completion/capture, clipboard, and tray - the panel itself is non-activating and
 mirrored there. Notification permission is requested at launch, not lazily (a lazy
 request dropped the triggering notification). Scanner title/cwd/Codex-header facts are
 cached in `AgentActivityScanner` (lock-guarded, nil results retried, cap-bounded) - keep
-new derived-from-file facts behind that cache. The agent publish signature includes an
-elapsed-minutes bucket so row times/ordering refresh ~1/min. Calendar queries run off
+new derived-from-file facts behind that cache. Pi CWDs use that same immutable-fact pattern;
+OpenCode query output is cached only while the `opencode.db` + WAL + SHM size/mtime signature is
+unchanged, then reclassified against the current time. Preserve that invalidation so the 5s scan
+doesn't respawn SQLite against multi-gigabyte databases at idle. The agent publish signature
+includes an elapsed-minutes bucket so row times/ordering refresh ~1/min. Calendar queries run off
 the main actor (`queryNextEvent`) and permission is only requested once the feature is
 enabled. Notification menu actions bind the app name they rendered through
 `representedObject`; never retarget an already-open action to a newer `latest` banner.

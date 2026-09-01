@@ -42,12 +42,12 @@ public enum NotchGeometry {
         return CGSize(width: 200, height: height)
     }
 
-    /// A content size generous enough to fit the expanded pill (now-playing artwork + title/
-    /// artist + 3 transport buttons, or an agent headline). The panel is sized to at least
-    /// this so that collapsing/expanding does NOT change the panel size mid-animation - a
-    /// width change during the spring is what produced the horizontal "slide" feel. The panel
-    /// only ever grows beyond this if content genuinely needs more room.
-    public static let contentFloor = CGSize(width: 300, height: 60)
+    /// Stable transparent host room for the expanded pill. Width covers the full supported
+    /// expanded-width range, eliminating AppKit recentering even when the user changes that
+    /// setting; height covers the common stacked layout. Unusually tall content can still
+    /// grow the panel downward, but collapse never shrinks it mid-animation. Hit testing is
+    /// based on the measured visible pill rect, not this transparent floor.
+    public static let contentFloor = CGSize(width: 480, height: 360)
 
     /// The expanded pill's width: the user's preferred width, but never narrower than the
     /// cutout plus both wings (the black shape must always fully cover the hardware).

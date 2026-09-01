@@ -16,6 +16,10 @@ public final class NotchPillPresentation: ObservableObject {
     /// tray, the power cable plugged/unplugged) even without hovering; auto-clears.
     @Published public private(set) var openFlash = false
 
+    /// Monotonic one-shot event for visual acknowledgement. Unlike `openFlash`, this
+    /// changes even when another event arrives while the pill is already being held open.
+    @Published public private(set) var feedbackToken = 0
+
     /// Grace period after the mouse leaves before clearing hover, so briefly crossing the
     /// edge doesn't collapse an expanded pill. User-configurable (Settings > Collapse delay);
     /// read at scheduling time so changes apply to the next exit immediately.
@@ -64,6 +68,7 @@ public final class NotchPillPresentation: ObservableObject {
 
     /// Hold the pill open briefly so a state change is visible without hovering.
     public func flashOpen(for duration: TimeInterval = 1.5) {
+        feedbackToken &+= 1
         openFlash = true
         openFlashTimer?.invalidate()
         let timer = Timer(timeInterval: duration, repeats: false) { [weak self] _ in
@@ -76,6 +81,13 @@ public final class NotchPillPresentation: ObservableObject {
     /// Forget hover state (used when all activity clears).
     public func reset() {
         exitTimer?.invalidate()
+        volumeFlashTimer?.invalidate()
+        openFlashTimer?.invalidate()
+        exitTimer = nil
+        volumeFlashTimer = nil
+        openFlashTimer = nil
         isHovering = false
+        volumeFlash = nil
+        openFlash = false
     }
 }

@@ -2,7 +2,7 @@ import Combine
 import Foundation
 
 /// The lifecycle of the session-scoped focus timer.
-public enum FocusTimerState: Equatable {
+public enum FocusTimerState: Hashable {
     case idle
     case running
     case paused
@@ -35,34 +35,30 @@ protocol FocusTimerScheduledTask: AnyObject {
     func cancel()
 }
 
-private final class DispatchScheduledTask: FocusTimerScheduledTask {
-    private var workItem: DispatchWorkItem?
+private final class RunLoopScheduledTask: FocusTimerScheduledTask {
+    private var timer: Timer?
 
-    init(workItem: DispatchWorkItem) {
-        self.workItem = workItem
+    init(timer: Timer) {
+        self.timer = timer
     }
 
     func cancel() {
-        workItem?.cancel()
-        workItem = nil
+        timer?.invalidate()
+        timer = nil
     }
 }
 
-private final class DispatchFocusTimerScheduler: FocusTimerScheduling {
+/// A wall-clock timer is important here: `DispatchTime` is uptime-based and can leave a
+/// focus session "running" after its absolute deadline when the Mac slept through it.
+/// A non-repeating Foundation timer scheduled for the actual Date fires on the first run
+/// loop pass after wake, matching the Date-derived countdown shown by the UI.
+private final class RunLoopFocusTimerScheduler: FocusTimerScheduling {
     func schedule(at date: Date, action: @escaping () -> Void) -> FocusTimerScheduledTask {
-        let workItem = DispatchWorkItem {
-            guard !Thread.isMainThread else {
-                action()
-                return
-            }
-            DispatchQueue.main.async(execute: action)
+        let timer = Timer(fire: date, interval: 0, repeats: false) { _ in
+            action()
         }
-        let delay = max(0, date.timeIntervalSinceNow)
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(
-            deadline: .now() + delay,
-            execute: workItem
-        )
-        return DispatchScheduledTask(workItem: workItem)
+        RunLoop.main.add(timer, forMode: .common)
+        return RunLoopScheduledTask(timer: timer)
     }
 }
 
@@ -88,7 +84,7 @@ public final class FocusTimerController: ObservableObject {
     public var onCompletion: ((FocusTimerCompletion) -> Void)?
 
     public convenience init() {
-        self.init(now: Date.init, scheduler: DispatchFocusTimerScheduler())
+        self.init(now: Date.init, scheduler: RunLoopFocusTimerScheduler())
     }
 
     init(now: @escaping () -> Date, scheduler: FocusTimerScheduling) {
@@ -136,6 +132,12 @@ public final class FocusTimerController: ObservableObject {
 
     public func pause() {
         guard state == .running else { return }
+        let remaining = remaining
+        if remaining <= 0 {
+            invalidateSchedule()
+            finishIfCurrent(generation: generation)
+            return
+        }
         pausedRemaining = remaining
         endDate = nil
         state = .paused
@@ -144,7 +146,12 @@ public final class FocusTimerController: ObservableObject {
     }
 
     public func resume() {
-        guard state == .paused, let pausedRemaining, pausedRemaining > 0 else { return }
+        guard state == .paused, let pausedRemaining else { return }
+        if pausedRemaining <= 0 {
+            state = .running
+            finishIfCurrent(generation: generation)
+            return
+        }
         generation += 1
         let deadline = now().addingTimeInterval(pausedRemaining)
         self.pausedRemaining = nil

@@ -6,13 +6,16 @@ system status.
 desnotch keeps a compact pill visible at the top of the screen and expands it on hover. It can
 show system-wide now-playing artwork and transport controls, local Claude Code/Codex/Pi/OpenCode
 activity, calendar glance, process and media-use status, battery changes, notification banners,
-and a file tray. An opt-in clipboard pocket keeps up to eight recent plain-text copies in memory
-only, recognized Zoom/Teams/Meet/Webex-style calendar links open with one click, and an opt-in
-Reminders row surfaces the next due task with complete and quick-capture actions.
+and a file tray. A session-scoped focus timer provides 5/15/25/50-minute live countdowns without
+an account, permission, or background polling. An opt-in clipboard pocket keeps up to eight recent
+plain-text copies in memory only, recognized Zoom/Teams/Meet/Webex-style calendar links open with
+one click, and an opt-in Reminders row surfaces the next due task with complete and quick-capture
+actions. Tray files can be opened, revealed in Finder, copied, shared, or removed without moving
+the originals.
 
-The status-bar menu provides the keyboard and VoiceOver path for media transport, agent actions,
-meeting links, reminders, tray and clipboard items, notification actions, privacy mode,
-display-awake mode, the reopenable Getting Started guide, settings, launch at login, and quit.
+The status-bar menu provides the keyboard and VoiceOver path for media transport, focus timers,
+agent actions, meeting links, reminders, tray and clipboard items, notification actions, privacy
+mode, display-awake mode, the reopenable Getting Started guide, settings, launch at login, and quit.
 See `AGENTS.md` for load-bearing privacy, geometry, and runtime invariants.
 
 ## Install and upgrade with Homebrew
@@ -107,6 +110,13 @@ may warn on other machines; use the first-launch confirmation above. Drag `dist/
   reminder (overdue first, otherwise nearest within seven days). Titles are bounded, Privacy Mode
   redacts them, and create/complete actions write directly to the user's default Reminders list;
   desnotch keeps no reminder database.
+- **Focus timer**: one session-scoped countdown driven by an absolute deadline, so sleep/wake and
+  UI workload do not introduce drift. It schedules one completion event and only redraws progress
+  while the timer is visible; there is no repeating controller poll and nothing is persisted.
+- **Motion system**: the notch container, section arrivals, content replacements, direct controls,
+  and one-shot feedback use separate motion channels. Expansion is an interruptible shape-to-content
+  hand-off, Reduce Motion makes geometry changes immediate, and the opt-in equalizer remains the only
+  perpetual animation.
 - **Getting Started**: a one-time, privacy-safe guide explains hover, volume scroll, file drops,
   optional utilities, and Privacy Mode. It can always be reopened from Settings or the status menu.
 - **Notch geometry**: on a MacBook with a physical notch, the pill is sized and positioned

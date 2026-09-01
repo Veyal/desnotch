@@ -556,7 +556,7 @@ public enum AgentActivityScanner {
         }
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return data
+        return process.terminationStatus == 0 ? data : nil
     }
 
     // MARK: - Shared
