@@ -55,11 +55,83 @@ enum NotchAnimation {
         /// Whether arriving rows also slide in from the top edge.
         let arrivalSlides: Bool
 
+        /// Feedback used while a pill control is held down. Keeping this here makes
+        /// direct manipulation feel like the rest of the pill, rather than like a
+        /// separate button animation.
+        let press: Animation
+        /// Geometric squeeze for a pressed control. Reduce Motion resolves this to 1.
+        let pressScale: CGFloat
+        /// Content choreography used after the container has expanded.
+        let expansionContent: Animation
+        /// Starting opacity for content revealed during expansion.
+        let expansionContentOpacity: Double
+        /// Starting scale for content revealed during expansion.
+        let expansionContentScale: CGFloat
+        /// Starting vertical offset for content revealed during expansion.
+        let expansionContentOffset: CGFloat
+        /// Cadence for client-side progress readouts. This is not a polling interval.
+        let progressMinimumInterval: TimeInterval
+        /// Cadence for the opt-in equalizer loop.
+        let equalizerMinimumInterval: TimeInterval
+
         /// Whether size/position-based emphasis (press scale, scrub-knob growth,
         /// row slides) may be used at all. Reduce Motion's central complaint is
         /// geometric movement, so under Minimal/Reduce Motion feedback must be
         /// carried by opacity instead - never by moving or resizing things.
-        var allowsGeometry: Bool { arrivalSlides || arrivalScale != 1 }
+        var allowsGeometry: Bool {
+            arrivalSlides || arrivalScale != 1 || pressScale != 1
+                || expansionContentScale != 1 || expansionContentOffset != 0
+        }
+    }
+
+    /// Semantic motion events. Views should choose an event first and let the policy
+    /// resolve it; this prevents simultaneous state changes from accidentally stacking
+    /// unrelated SwiftUI animations.
+    enum Event: Int, CaseIterable, Hashable {
+        case pollingRefresh
+        case contentReplacement
+        case feedback
+        case structuralInsertion
+        case directManipulation
+        case expansion
+    }
+
+    enum Channel: Equatable {
+        case none, secondary, primary, press
+    }
+
+    struct Policy: Equatable {
+        let event: Event
+        let channel: Channel
+        let allowsGeometry: Bool
+        let allowsPulse: Bool
+    }
+
+    /// Resolves a simultaneous group to one deterministic animation channel. Expansion
+    /// owns container geometry, followed by direct manipulation, structural insertion,
+    /// feedback, content replacement, and finally polling (which is intentionally inert).
+    static func policy(for events: Set<Event>, motion: Motion) -> Policy {
+        let event = events.max { $0.rawValue < $1.rawValue } ?? .pollingRefresh
+        switch event {
+        case .expansion:
+            return Policy(event: event, channel: .primary,
+                          allowsGeometry: motion.allowsGeometry, allowsPulse: false)
+        case .directManipulation:
+            return Policy(event: event, channel: .press,
+                          allowsGeometry: motion.allowsGeometry, allowsPulse: false)
+        case .structuralInsertion:
+            return Policy(event: event, channel: .primary,
+                          allowsGeometry: motion.allowsGeometry, allowsPulse: motion.allowsPulse)
+        case .feedback:
+            return Policy(event: event, channel: .secondary,
+                          allowsGeometry: false, allowsPulse: motion.allowsPulse)
+        case .contentReplacement:
+            return Policy(event: event, channel: .secondary,
+                          allowsGeometry: false, allowsPulse: false)
+        case .pollingRefresh:
+            return Policy(event: event, channel: .none,
+                          allowsGeometry: false, allowsPulse: false)
+        }
     }
 
     /// Reduce Motion always wins: it maps to exactly the `.minimal` vocabulary,
@@ -72,7 +144,15 @@ enum NotchAnimation {
                 allowsLooping: false,
                 allowsPulse: false,
                 arrivalScale: 1,
-                arrivalSlides: false
+                arrivalSlides: false,
+                press: .easeInOut(duration: 0.12),
+                pressScale: 1,
+                expansionContent: .easeInOut(duration: 0.12),
+                expansionContentOpacity: 0,
+                expansionContentScale: 1,
+                expansionContentOffset: 0,
+                progressMinimumInterval: 1,
+                equalizerMinimumInterval: 1
             )
         }
         switch style {
@@ -83,7 +163,15 @@ enum NotchAnimation {
                 allowsLooping: true,
                 allowsPulse: true,
                 arrivalScale: 0.90,
-                arrivalSlides: true
+                arrivalSlides: true,
+                press: .spring(response: 0.20, dampingFraction: 0.60),
+                pressScale: 0.90,
+                expansionContent: .easeOut(duration: 0.24),
+                expansionContentOpacity: 0,
+                expansionContentScale: 0.96,
+                expansionContentOffset: 5,
+                progressMinimumInterval: 1,
+                equalizerMinimumInterval: 1.0 / 15.0
             )
         case .subtle, .minimal:
             // Tighter and better damped than `.dynamic` - it settles without
@@ -94,7 +182,15 @@ enum NotchAnimation {
                 allowsLooping: true,
                 allowsPulse: true,
                 arrivalScale: 0.96,
-                arrivalSlides: true
+                arrivalSlides: true,
+                press: .spring(response: 0.24, dampingFraction: 0.72),
+                pressScale: 0.96,
+                expansionContent: .easeOut(duration: 0.20),
+                expansionContentOpacity: 0,
+                expansionContentScale: 0.985,
+                expansionContentOffset: 3,
+                progressMinimumInterval: 1,
+                equalizerMinimumInterval: 1.0 / 15.0
             )
         }
     }
@@ -129,11 +225,13 @@ enum MusicIndicatorResolver {
 
 /// Tiny three-bar "equalizer" for the minimized wing while media is actually playing -
 /// the classic now-playing affordance. Bar heights are a pure function of absolute time
-/// (`barLevel`, tested), sampled by a `TimelineView` at 20fps - so there is no
+/// (`barLevel`, tested), sampled by a `TimelineView` at the resolved 15fps cadence - so there is no
 /// `repeatForever` @State animation to leak or restart, and the timeline exists only
 /// while the view is rendered: paused/absent media costs literally nothing. Fixed
 /// 12×12 frame so swapping with the static `music.note` never shifts layout.
 struct NowPlayingEqualizer: View {
+    @ObservedObject private var settings = SettingsStore.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     static let barCount = 3
     /// Distinct sub-2Hz frequencies and spread phases per bar so the motion reads
     /// organic rather than mechanical, without any randomness (deterministic in time).
@@ -147,7 +245,11 @@ struct NowPlayingEqualizer: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+        let motion = NotchAnimation.resolve(
+            style: settings.animationStyle,
+            reduceMotion: reduceMotion
+        )
+        TimelineView(.animation(minimumInterval: motion.equalizerMinimumInterval)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(alignment: .bottom, spacing: 2) {
                 ForEach(0..<Self.barCount, id: \.self) { i in
@@ -180,13 +282,8 @@ struct PillButtonStyle: ButtonStyle {
             )
             configuration.label
                 .opacity(configuration.isPressed ? 0.55 : 1)
-                .scaleEffect(motion.allowsGeometry && configuration.isPressed ? 0.9 : 1)
-                .animation(
-                    motion.allowsGeometry
-                        ? .spring(response: 0.2, dampingFraction: 0.6)
-                        : motion.secondary,
-                    value: configuration.isPressed
-                )
+                .scaleEffect(motion.allowsGeometry && configuration.isPressed ? motion.pressScale : 1)
+                .animation(motion.press, value: configuration.isPressed)
         }
     }
 }
