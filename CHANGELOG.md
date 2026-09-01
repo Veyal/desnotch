@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Session-scoped focus timer:** start a 5, 15, 25, or 50 minute session from the
+  status menu, then pause, resume, cancel, or dismiss it from the menu or notch. The
+  absolute wall-clock deadline survives sleep/wake without drift, completion provides
+  sound and VoiceOver feedback, and no timer state is persisted.
+- **Purposeful notch motion:** expansion now stages the container before its content and
+  reverses that hand-off on collapse, while rapid hover reversals retarget cleanly. Section
+  layout, content replacement, direct controls, and transient feedback use separate motion
+  channels; Reduce Motion removes geometric effects, and the panel keeps a stable host size.
+- **Expanded tray actions:** tray items can be opened, revealed in Finder, copied, shared,
+  or removed from both row context menus and the status menu without moving or deleting the
+  underlying files.
+- **Cheaper agent scans:** immutable Pi session facts and unchanged OpenCode query results
+  are cached with bounded, lock-protected invalidation so the five-second activity scan does
+  not repeatedly parse the same files or query an unchanged database.
+
 ## v0.9.0 — 2026-08-31
 
 - **Homebrew distribution restored:** the dedicated `Veyal/desnotch` cask tracks v0.9.0 and

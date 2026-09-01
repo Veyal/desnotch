@@ -120,6 +120,21 @@ public enum AgentActivityScanner {
     private static var claudeFactsCache: [String: (cwd: String?, title: String?)] = [:]
     private static var codexHeaderCache: [String: (cwd: String?, automation: Bool)] = [:]
     private static var codexTitleCache: [String: String] = [:]
+    private static var piCWDCache: [String: String] = [:]
+    private struct FileSignature: Equatable {
+        let size: UInt64
+        let modificationDate: Date
+    }
+    private struct OpenCodeDatabaseSignature: Equatable {
+        let path: String
+        let database: FileSignature
+        let wal: FileSignature?
+        let shm: FileSignature?
+    }
+    private static var openCodeQueryCache: (signature: OpenCodeDatabaseSignature, output: Data)?
+#if DEBUG
+    private static var openCodeQueryExecutionCount = 0
+#endif
     private static let cacheCap = 512
 
     /// Test/pressure hatch; also keeps unbounded growth impossible.
@@ -128,8 +143,22 @@ public enum AgentActivityScanner {
         claudeFactsCache.removeAll()
         codexHeaderCache.removeAll()
         codexTitleCache.removeAll()
+        piCWDCache.removeAll()
+        openCodeQueryCache = nil
+#if DEBUG
+        openCodeQueryExecutionCount = 0
+#endif
         cacheLock.unlock()
     }
+
+#if DEBUG
+    static func openCodeQueryExecutionCountForTesting() -> Int {
+        cacheLock.lock()
+        let count = openCodeQueryExecutionCount
+        cacheLock.unlock()
+        return count
+    }
+#endif
 
     private static func claudeFacts(for url: URL) -> (cwd: String?, title: String?) {
         let key = url.path
@@ -354,7 +383,7 @@ public enum AgentActivityScanner {
             let elapsed = now.timeIntervalSince(mtime)
             guard elapsed <= lookbackWindow else { continue }
 
-            guard let cwd = readPiCWD(url) else { continue }
+            guard let cwd = piCWD(for: url) else { continue }
             guard let turnInProgress = tailPiTurnInProgress(url) else { continue }
             guard let state = classify(elapsed: elapsed, turnInProgress: turnInProgress) else { continue }
 
@@ -377,6 +406,24 @@ public enum AgentActivityScanner {
             obj["type"] as? String == "session"
         else { return nil }
         return obj["cwd"] as? String
+    }
+
+    /// The session header is immutable after Pi creates the file. Keep successful CWD reads
+    /// behind the same bounded cache used for Claude/Codex facts; nil results deliberately
+    /// retry because a just-created session may not have written its header yet.
+    private static func piCWD(for url: URL) -> String? {
+        let key = url.path
+        cacheLock.lock()
+        let cached = piCWDCache[key]
+        cacheLock.unlock()
+        if let cached { return cached }
+
+        guard let cwd = readPiCWD(url), !cwd.isEmpty else { return nil }
+        cacheLock.lock()
+        if piCWDCache.count >= cacheCap { piCWDCache.removeAll() }
+        piCWDCache[key] = cwd
+        cacheLock.unlock()
+        return cwd
     }
 
     /// Pi: a turn is COMPLETE only when the last message is an `assistant` that stopped on a
@@ -434,7 +481,39 @@ public enum AgentActivityScanner {
         ORDER BY s.time_updated DESC;
         """
 
-        guard let data = runSQLite(db: db, query: query), !data.isEmpty else { return [] }
+        let signature = openCodeDatabaseSignature(db: db)
+        let data: Data
+        if let signature {
+            cacheLock.lock()
+            let cached = openCodeQueryCache?.signature == signature
+                ? openCodeQueryCache?.output
+                : nil
+            cacheLock.unlock()
+            if let cached {
+                // The database did not change; only recency classification depends on `now`.
+                data = cached
+            } else {
+                guard let fresh = runSQLite(db: db, query: query) else { return [] }
+                // Opening a WAL database read-only can update its SHM mtime. Cache the
+                // post-query signature so that reader-only bookkeeping does not force a
+                // sqlite subprocess on every 5-second scan. If the database or WAL changed
+                // while the query was running, do not cache potentially stale output.
+                if let settled = openCodeDatabaseSignature(db: db),
+                   settled.database == signature.database,
+                   settled.wal == signature.wal
+                {
+                    cacheLock.lock()
+                    openCodeQueryCache = (signature: settled, output: fresh)
+                    cacheLock.unlock()
+                }
+                data = fresh
+            }
+        } else {
+            guard let fresh = runSQLite(db: db, query: query) else { return [] }
+            data = fresh
+        }
+
+        guard !data.isEmpty else { return [] }
         var sessions: [AgentSession] = []
         for slice in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(slice)) as? [String: Any] else { continue }
@@ -463,10 +542,36 @@ public enum AgentActivityScanner {
         return sessions
     }
 
+    /// SQLite may keep writes in its WAL/SHM sidecars while the main database mtime stays
+    /// unchanged. Include all three files so a 5-second scan remains fresh without spawning
+    /// sqlite3 when there was no write at all.
+    private static func openCodeDatabaseSignature(db: URL) -> OpenCodeDatabaseSignature? {
+        guard let database = fileSignature(db) else { return nil }
+        return OpenCodeDatabaseSignature(
+            path: db.path,
+            database: database,
+            wal: fileSignature(URL(fileURLWithPath: db.path + "-wal")),
+            shm: fileSignature(URL(fileURLWithPath: db.path + "-shm"))
+        )
+    }
+
+    private static func fileSignature(_ url: URL) -> FileSignature? {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+              let size = values.fileSize,
+              let modificationDate = values.contentModificationDate
+        else { return nil }
+        return FileSignature(size: UInt64(size), modificationDate: modificationDate)
+    }
+
     /// Runs a read-only `sqlite3` query against `db` and returns its stdout. Returns nil if
     /// sqlite3 isn't available or the query fails (the DB is opened read-only so it can never
     /// be corrupted by a concurrent writer).
     private static func runSQLite(db: URL, query: String) -> Data? {
+#if DEBUG
+        cacheLock.lock()
+        openCodeQueryExecutionCount += 1
+        cacheLock.unlock()
+#endif
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
         process.arguments = ["file:\(db.path)?mode=ro", query]
@@ -480,7 +585,7 @@ public enum AgentActivityScanner {
         }
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return data
+        return process.terminationStatus == 0 ? data : nil
     }
 
     // MARK: - Shared

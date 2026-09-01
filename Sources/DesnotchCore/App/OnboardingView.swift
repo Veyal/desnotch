@@ -32,10 +32,16 @@ public struct OnboardingView: View {
                         detail: "Place the pointer over the notch and scroll up or down to adjust your default output."
                     )
                     GuideCard(
+                        symbol: "timer",
+                        tint: .cyan,
+                        title: "Start a focus timer",
+                        detail: "Use Focus Timer in the status menu for a 5, 15, 25, or 50 minute session. Pause or finish it from the notch."
+                    )
+                    GuideCard(
                         symbol: "tray.and.arrow.down.fill",
                         tint: .green,
                         title: "Drop files into the tray",
-                        detail: "Drag a file onto the notch for a small, temporary shelf. Click a file to open it or drag it back out."
+                        detail: "Drag a file onto the notch for a small shelf. Click to open, drag it back out, or right-click to reveal, copy, share, or remove it."
                     )
                     GuideCard(
                         symbol: "checklist",

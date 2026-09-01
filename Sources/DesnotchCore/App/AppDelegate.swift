@@ -10,6 +10,7 @@ import SwiftUI
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var presentation: NotchPillPresentation?
     private var nowPlayingController: NowPlayingController?
+    private var focusTimerController: FocusTimerController?
     private var agentActivityController: AgentActivityController?
     private var calendarController: CalendarController?
     private var remindersController: RemindersController?
@@ -56,6 +57,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let presentation = NotchPillPresentation()
         self.presentation = presentation
         let nowPlayingController = NowPlayingController(presentation: presentation)
+        let focusTimerController = MainActor.assumeIsolated { FocusTimerController() }
+        MainActor.assumeIsolated {
+            focusTimerController.onCompletion = { _ in
+                presentation.flashOpen(for: 4)
+                NSAccessibility.post(
+                    element: NSApplication.shared,
+                    notification: .announcementRequested,
+                    userInfo: [
+                        .announcement: "Focus timer complete",
+                        .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                    ]
+                )
+                if NSSound(named: NSSound.Name("Glass"))?.play() != true {
+                    NSSound.beep()
+                }
+            }
+        }
         let agentActivityController = AgentActivityController(presentation: presentation)
         let calendarController = MainActor.assumeIsolated {
             CalendarController(permissionRequestsEnabled: !smokeTestMode)
@@ -73,6 +91,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             NotificationMirrorController(presentation: presentation, settings: .shared)
         }
         self.nowPlayingController = nowPlayingController
+        self.focusTimerController = focusTimerController
         self.agentActivityController = agentActivityController
         self.calendarController = calendarController
         self.remindersController = remindersController
@@ -94,6 +113,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let windowController = NotchWindowController(
             controller: nowPlayingController,
+            focusTimer: focusTimerController,
             agentActivity: agentActivityController,
             calendar: calendarController,
             reminders: remindersController,
@@ -118,6 +138,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       self.windowController == nil,
                       let presentation = self.presentation,
                       let npc = self.nowPlayingController,
+                      let timer = self.focusTimerController,
                       let aac = self.agentActivityController,
                       let cal = self.calendarController,
                       let reminders = self.remindersController,
@@ -129,6 +150,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                       let mirror = self.notificationMirror,
                       let wc = NotchWindowController(
                           controller: npc,
+                          focusTimer: timer,
                           agentActivity: aac,
                           calendar: cal,
                           reminders: reminders,
@@ -232,6 +254,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
             }
 
+            let timerItem = NSMenuItem(title: "Focus Timer", action: nil, keyEquivalent: "")
+            timerItem.submenu = makeFocusTimerSubmenu()
+            menu.addItem(timerItem)
+            menu.addItem(NSMenuItem.separator())
+
             if let sessions = agentActivityController?.sessions, !sessions.isEmpty {
                 menu.addItem(NSMenuItem(title: "Agents", action: nil, keyEquivalent: ""))
                 for session in sessions.prefix(6) {
@@ -313,11 +340,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     let name = privacy
                         ? (url.pathExtension.isEmpty ? "file" : "file.\(url.pathExtension)")
                         : url.lastPathComponent
-                    let item = NSMenuItem(
-                        title: name, action: #selector(menuOpenTrayItem(_:)), keyEquivalent: ""
-                    )
-                    item.target = self
-                    item.representedObject = url
+                    let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
+                    item.submenu = makeTrayItemSubmenu(url: url)
                     submenu.addItem(item)
                 }
                 let trayItem = NSMenuItem(title: "Tray", action: nil, keyEquivalent: "")
@@ -456,6 +480,91 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
+    private func makeTrayItemSubmenu(url: URL) -> NSMenu {
+        let menu = NSMenu()
+        let actions: [(String, Selector)] = [
+            ("Open", #selector(menuOpenTrayItem(_:))),
+            ("Reveal in Finder", #selector(menuRevealTrayItem(_:))),
+            ("Copy File", #selector(menuCopyTrayItem(_:))),
+            ("Share…", #selector(menuShareTrayItem(_:)))
+        ]
+        for (title, action) in actions {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+            menu.addItem(item)
+        }
+        menu.addItem(NSMenuItem.separator())
+        let remove = NSMenuItem(
+            title: "Remove from Tray",
+            action: #selector(menuRemoveTrayItem(_:)),
+            keyEquivalent: ""
+        )
+        remove.target = self
+        remove.representedObject = url
+        menu.addItem(remove)
+        return menu
+    }
+
+    @MainActor
+    private func makeFocusTimerSubmenu() -> NSMenu {
+        let menu = NSMenu()
+        if let timer = focusTimerController {
+            switch timer.state {
+            case .running, .paused:
+                let suffix = timer.state == .paused ? " (Paused)" : ""
+                menu.addItem(NSMenuItem(
+                    title: "\(TimeFormatting.clock(ceil(timer.remaining))) remaining\(suffix)",
+                    action: nil,
+                    keyEquivalent: ""
+                ))
+                let toggle = NSMenuItem(
+                    title: timer.state == .paused ? "Resume" : "Pause",
+                    action: #selector(menuToggleFocusTimer(_:)),
+                    keyEquivalent: ""
+                )
+                toggle.target = self
+                menu.addItem(toggle)
+                let cancel = NSMenuItem(
+                    title: "Cancel Timer",
+                    action: #selector(menuCancelFocusTimer(_:)),
+                    keyEquivalent: ""
+                )
+                cancel.target = self
+                menu.addItem(cancel)
+                menu.addItem(NSMenuItem.separator())
+            case .completed:
+                menu.addItem(NSMenuItem(
+                    title: "Focus complete",
+                    action: nil,
+                    keyEquivalent: ""
+                ))
+                let dismiss = NSMenuItem(
+                    title: "Dismiss",
+                    action: #selector(menuCancelFocusTimer(_:)),
+                    keyEquivalent: ""
+                )
+                dismiss.target = self
+                menu.addItem(dismiss)
+                menu.addItem(NSMenuItem.separator())
+            case .idle:
+                break
+            }
+        }
+
+        for minutes in [5, 15, 25, 50] {
+            let item = NSMenuItem(
+                title: "Start \(minutes)-Minute Timer",
+                action: #selector(menuStartFocusTimer(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = NSNumber(value: minutes * 60)
+            menu.addItem(item)
+        }
+        return menu
+    }
+
     @objc func menuOpenNotificationSource(_ sender: NSMenuItem) {
         guard let appName = sender.representedObject as? String else { return }
         MainActor.assumeIsolated { notificationMirror?.activateSource(appName: appName) }
@@ -506,13 +615,61 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { nowPlayingController?.previous() }
     }
 
+    @objc func menuStartFocusTimer(_ sender: NSMenuItem) {
+        guard let seconds = (sender.representedObject as? NSNumber)?.doubleValue else { return }
+        MainActor.assumeIsolated {
+            if focusTimerController?.start(duration: seconds) == true {
+                presentation?.flashOpen(for: 2)
+            }
+        }
+    }
+
+    @objc func menuToggleFocusTimer(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated {
+            switch focusTimerController?.state {
+            case .running: focusTimerController?.pause()
+            case .paused: focusTimerController?.resume()
+            default: break
+            }
+        }
+    }
+
+    @objc func menuCancelFocusTimer(_ sender: NSMenuItem) {
+        MainActor.assumeIsolated { focusTimerController?.cancel() }
+    }
+
     @objc func menuJumpToAgent(_ sender: NSMenuItem) {
         AppActivation.activateAgentHost(projectPath: sender.representedObject as? String)
     }
 
     @objc func menuOpenTrayItem(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        NSWorkspace.shared.open(url)
+        MainActor.assumeIsolated { _ = trayController?.open(url) }
+    }
+
+    @objc func menuRevealTrayItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        MainActor.assumeIsolated { _ = trayController?.revealInFinder(url) }
+    }
+
+    @objc func menuCopyTrayItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        MainActor.assumeIsolated { _ = trayController?.copyToPasteboard([url]) }
+    }
+
+    @objc func menuShareTrayItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL,
+              MainActor.assumeIsolated({ trayController?.items.contains(url) }) == true,
+              FileManager.default.fileExists(atPath: url.path),
+              let anchor = statusItem?.button
+        else { return }
+        let picker = NSSharingServicePicker(items: [url])
+        picker.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    @objc func menuRemoveTrayItem(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        MainActor.assumeIsolated { trayController?.remove(url) }
     }
 
     @objc func menuJoinMeeting(_ sender: NSMenuItem) {

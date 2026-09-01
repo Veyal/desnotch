@@ -1,6 +1,43 @@
 import AppKit
 import SwiftUI
 
+/// Pure grow-only sizing rules for the AppKit bridge. SwiftUI can report many fractional
+/// intermediate sizes during one spring; normalizing and coalescing them keeps the panel
+/// from chasing every frame while preserving a stable top-center anchor.
+enum PillPanelSizingPolicy {
+    static let growthThreshold: CGFloat = 1
+
+    static func normalizedContentSize(_ size: CGSize) -> CGSize {
+        guard size.width.isFinite, size.height.isFinite else { return .zero }
+        return CGSize(
+            width: max(0, size.width).rounded(.up),
+            height: max(0, size.height).rounded(.up)
+        )
+    }
+
+    static func coalesced(_ first: CGSize, _ second: CGSize) -> CGSize {
+        CGSize(width: max(first.width, second.width), height: max(first.height, second.height))
+    }
+
+    static func growthTarget(contentSize: CGSize, currentWindowSize: CGSize) -> CGSize? {
+        let content = normalizedContentSize(contentSize)
+        guard content.width > 0, content.height > 0 else { return nil }
+        let floored = CGSize(
+            width: max(content.width, NotchGeometry.contentFloor.width),
+            height: max(content.height, NotchGeometry.contentFloor.height)
+        )
+        let proposed = NotchGeometry.windowSize(forContent: floored)
+        let target = CGSize(
+            width: max(currentWindowSize.width, proposed.width),
+            height: max(currentWindowSize.height, proposed.height)
+        )
+        guard target.width - currentWindowSize.width >= growthThreshold
+                || target.height - currentWindowSize.height >= growthThreshold
+        else { return nil }
+        return target
+    }
+}
+
 /// Owns the borderless, transparent, always-on-top panel the pill lives in.
 ///
 /// The panel is resized to fit the pill's reported content size (plus shadow room) so
@@ -9,6 +46,7 @@ import SwiftUI
 public final class NotchWindowController {
     private let panel: NSPanel
     private let controller: NowPlayingController
+    private let focusTimer: FocusTimerController
     private let agentActivity: AgentActivityController
     private let calendar: CalendarController
     private let reminders: RemindersController
@@ -26,6 +64,8 @@ public final class NotchWindowController {
     private var notchSize: CGSize?
     private var scrollMonitor: Any?
     private var mouseMoveMonitors: [Any] = []
+    private var pendingContentSize: CGSize = .zero
+    private var resizeWorkItem: DispatchWorkItem?
 
     /// The pill's current visual size as reported by SwiftUI (tracks the collapse/expand
     /// animation), used to compute the only region of the panel that should take events.
@@ -33,6 +73,7 @@ public final class NotchWindowController {
 
     public init?(
         controller: NowPlayingController,
+        focusTimer: FocusTimerController,
         agentActivity: AgentActivityController,
         calendar: CalendarController,
         reminders: RemindersController,
@@ -47,6 +88,7 @@ public final class NotchWindowController {
     ) {
         guard let screen = NotchGeometry.preferredScreen() else { return nil }
         self.controller = controller
+        self.focusTimer = focusTimer
         self.agentActivity = agentActivity
         self.calendar = calendar
         self.reminders = reminders
@@ -138,6 +180,7 @@ public final class NotchWindowController {
     private func rebuildHosting() {
         let rootView = NotchPillView(
             controller: controller,
+            focusTimer: focusTimer,
             agentActivity: agentActivity,
             calendar: calendar,
             reminders: reminders,
@@ -152,9 +195,11 @@ public final class NotchWindowController {
             hasPhysicalNotch: hasPhysicalNotch,
             notchSize: notchSize,
             onSizeChange: { [weak self] size in
-                self?.pillContentSize = size
-                self?.resize(toContent: size)
-                self?.updateInteractivity()
+                guard let self else { return }
+                let normalized = PillPanelSizingPolicy.normalizedContentSize(size)
+                self.pillContentSize = normalized
+                self.scheduleResize(toContent: normalized)
+                self.updateInteractivity()
             }
         )
         let hosting = NSHostingView(rootView: rootView)
@@ -163,19 +208,29 @@ public final class NotchWindowController {
     }
 
     private func resize(toContent contentSize: CGSize) {
+        guard let target = PillPanelSizingPolicy.growthTarget(
+            contentSize: contentSize,
+            currentWindowSize: panel.frame.size
+        ) else { return }
+        applyPlacement(windowSize: target)
+    }
+
+    /// Coalesce one frame of layout feedback. Importantly this is leading/coalescing,
+    /// not a long trailing debounce: the panel still grows promptly when content truly
+    /// exceeds the stable floor, but never processes every fractional spring sample.
+    private func scheduleResize(toContent contentSize: CGSize) {
         guard contentSize.width > 0, contentSize.height > 0 else { return }
-        // Floor to a size that fits the expanded pill, then grow-only. Keeping the panel a
-        // stable size across collapse/expand means only the SwiftUI content animates (a clean
-        // top-anchored scale) instead of the panel recentering mid-spring (the horizontal
-        // "slide"). The panel only grows if content exceeds the floor; it never shrinks.
-        let floored = CGSize(
-            width: max(contentSize.width, NotchGeometry.contentFloor.width),
-            height: max(contentSize.height, NotchGeometry.contentFloor.height)
-        )
-        let windowSize = NotchGeometry.windowSize(forContent: floored)
-        let current = panel.frame.size
-        guard windowSize.width > current.width || windowSize.height > current.height else { return }
-        applyPlacement(windowSize: windowSize)
+        pendingContentSize = PillPanelSizingPolicy.coalesced(pendingContentSize, contentSize)
+        guard resizeWorkItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let pending = self.pendingContentSize
+            self.pendingContentSize = .zero
+            self.resizeWorkItem = nil
+            self.resize(toContent: pending)
+        }
+        resizeWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60.0, execute: item)
     }
 
     /// Positions the panel for `currentScreen` at the given size, unconditionally.
@@ -201,7 +256,11 @@ public final class NotchWindowController {
         }
         // Grow if the content needs it, then ALWAYS re-anchor to the new screen geometry
         // (the grow-only guard in resize used to swallow the reposition entirely).
-        resize(toContent: lastContentSize())
+        resizeWorkItem?.cancel()
+        resizeWorkItem = nil
+        let content = PillPanelSizingPolicy.coalesced(lastContentSize(), pendingContentSize)
+        pendingContentSize = .zero
+        resize(toContent: content)
         applyPlacement(windowSize: panel.frame.size)
     }
 
@@ -240,6 +299,7 @@ public final class NotchWindowController {
     }
 
     deinit {
+        resizeWorkItem?.cancel()
         if let scrollMonitor {
             NSEvent.removeMonitor(scrollMonitor)
         }
