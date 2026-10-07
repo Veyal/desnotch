@@ -44,12 +44,14 @@ app.mainMenu = mainMenu
 // let a dispatch source observe it.
 signal(SIGTERM, SIG_IGN)
 signal(SIGINT, SIG_IGN)
-let delegate = AppDelegate()
+// Top-level code runs on the main thread, which is the main actor's executor.
+let delegate = MainActor.assumeIsolated { AppDelegate() }
 app.delegate = delegate
 let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 let intSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 let shutdown = {
-    delegate.stopOwnedProcesses()
+    // The signal sources are attached to `.main`, so this handler runs on the main actor.
+    MainActor.assumeIsolated { delegate.stopOwnedProcesses() }
     exit(0)
 }
 termSource.setEventHandler(handler: shutdown)
