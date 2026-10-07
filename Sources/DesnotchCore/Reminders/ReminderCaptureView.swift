@@ -46,10 +46,14 @@ struct ReminderCaptureView: View {
                 .onChange(of: title) { _ in saveError = nil }
 
             if let saveError {
-                Label(saveError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .accessibilityLabel(Text(saveError))
+                // Red text on the window background is ~3.5:1; keep the red on the icon only.
+                Label {
+                    Text(saveError).foregroundStyle(.primary)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                }
+                .font(.caption)
+                .accessibilityLabel(Text(saveError))
             }
 
             Picker("Due", selection: $dueChoice) {

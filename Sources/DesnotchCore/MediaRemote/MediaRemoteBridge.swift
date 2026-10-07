@@ -17,7 +17,7 @@ import os
 /// over a pipe.
 ///
 /// Resilience notes (this is where the silent-death paths used to live):
-/// - All mutable stream state (`streamProcess`, `stdoutBuffer`) is touched only on
+/// - All mutable stream state (`streamProcess`, `lineBuffer`) is touched only on
 ///   `queue`, the readability handler included, so there are no data races between
 ///   the read callback and main-thread stop calls.
 /// - `stderr` is sent to `/dev/null`, not an undrained `Pipe` whose 64 KB buffer
@@ -58,9 +58,14 @@ public final class MediaRemoteBridge {
     /// handler-vs-main data races the strict-concurrency checker flagged.
     private let queue = DispatchQueue(label: "desnotch.mediaremote")
     private var streamProcess: Process?
-    private var stdoutBuffer = Data()
+    private var lineBuffer = AdapterLineBuffer()
     private var isStopping = false
-    private var restartAttempt = 0
+    private var backoff = AdapterRestartBackoff()
+    /// Bumped on every launch. Pipe reads and termination callbacks hop onto `queue`
+    /// asynchronously, so a late one from a dead adapter must not touch the new stream's
+    /// buffer or state.
+    private var streamGeneration = 0
+    private var streamLaunchedAt: TimeInterval = 0
     /// One-shot reconciliation is bounded and independently owned so a wedged `get`
     /// can neither block the stream's serial state queue nor survive app shutdown.
     private let getRunner = SubprocessRunner(outputByteCap: 32 * 1024 * 1024)
@@ -77,7 +82,8 @@ public final class MediaRemoteBridge {
 
     /// Resolves the vendored adapter. In a packaged `.app` it lives under
     /// `Contents/Resources/MediaRemoteAdapter` (sealed by codesign - notarizable). When
-    /// running via `swift run` it comes from the SPM resource bundle (`Bundle.module`).
+    /// running via `swift run` it comes from the SPM resource bundle (`Bundle.module`), which is
+    /// never consulted from a packaged app.
     private static func locateAdapter() -> (scriptURL: URL, frameworkPath: String)? {
         if let resources = Bundle.main.resourceURL {
             let dir = resources.appendingPathComponent("MediaRemoteAdapter", isDirectory: true)
@@ -86,7 +92,9 @@ public final class MediaRemoteBridge {
                 return (script, dir.appendingPathComponent("MediaRemoteAdapter.framework").path)
             }
         }
-        if let resources = Bundle.module.resourceURL {
+        // `Bundle.module` traps (fatalError) when its resource bundle is missing, so a packaged
+        // app with an incomplete bundle must degrade to "now-playing disabled", not crash.
+        if shouldConsultModuleBundle(bundleURL: Bundle.main.bundleURL), let resources = Bundle.module.resourceURL {
             let dir = resources.appendingPathComponent("MediaRemoteAdapter", isDirectory: true)
             let script = dir.appendingPathComponent("mediaremote-adapter.pl")
             if FileManager.default.fileExists(atPath: script.path) {
@@ -94,6 +102,50 @@ public final class MediaRemoteBridge {
             }
         }
         return nil
+    }
+
+    /// `Bundle.module` is the `swift run` fallback only; a packaged `.app` never uses it.
+    static func shouldConsultModuleBundle(bundleURL: URL) -> Bool {
+        bundleURL.pathExtension != "app"
+    }
+
+    // MARK: - Adapter process
+
+    /// Environment for every perl launch. Inherited `PERL5OPT`/`PERL5LIB`/`DYLD_*` would
+    /// otherwise run attacker-chosen code inside an entitled Apple-signed interpreter.
+    static func adapterEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        SubprocessRunner.sanitizedEnvironment(base: base)
+    }
+
+    /// The one place that builds an adapter `Process` (stream, send, seek): fixed
+    /// interpreter, sanitized environment, no inherited stdin.
+    static func makeAdapterProcess(
+        scriptURL: URL,
+        frameworkPath: String,
+        arguments: [String],
+        environment: [String: String] = MediaRemoteBridge.adapterEnvironment()
+    ) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [scriptURL.path, frameworkPath] + arguments
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        return process
+    }
+
+    /// Fire-and-forget adapter subcommand (`send`, `seek`).
+    private func runOneShot(_ arguments: [String], label: String) {
+        guard let scriptURL, let frameworkPath else { return }
+        let process = Self.makeAdapterProcess(scriptURL: scriptURL, frameworkPath: frameworkPath, arguments: arguments)
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            logger.error("Adapter \(label, privacy: .public) failed: \(error.localizedDescription, privacy: .public).")
+        }
     }
 
     // MARK: - Stream
@@ -106,14 +158,20 @@ public final class MediaRemoteBridge {
     }
 
     private func launchStream() {
-        guard let scriptURL, let frameworkPath else { return }
+        guard !isStopping, let scriptURL, let frameworkPath else { return }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         // --debounce=100 coalesces the burst of updates that fire on a track change
         // (title/artist/artwork/elapsed arrive separately) so the pill isn't re-decoded
         // a half-dozen times per change.
-        process.arguments = [scriptURL.path, frameworkPath, "stream", "--no-diff", "--debounce=100"]
+        let process = Self.makeAdapterProcess(
+            scriptURL: scriptURL,
+            frameworkPath: frameworkPath,
+            arguments: ["stream", "--no-diff", "--debounce=100"]
+        )
+
+        streamGeneration += 1
+        let generation = streamGeneration
+        lineBuffer.reset()
 
         let stdout = Pipe()
         process.standardOutput = stdout
@@ -123,15 +181,20 @@ public final class MediaRemoteBridge {
 
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                // EOF: the adapter closed its end. Without clearing the handler, Foundation
+                // keeps invoking it with empty data in a tight loop until the pipe is freed.
+                handle.readabilityHandler = nil
+                return
+            }
             self?.queue.async {
-                self?.consume(data)
+                self?.consume(data, generation: generation)
             }
         }
 
         process.terminationHandler = { [weak self] _ in
             self?.queue.async {
-                self?.handleStreamTermination()
+                self?.handleStreamTermination(generation: generation)
             }
         }
 
@@ -139,27 +202,29 @@ public final class MediaRemoteBridge {
             try process.run()
         } catch {
             logger.error("Failed to launch adapter stream: \(error.localizedDescription, privacy: .public).")
-            scheduleRestart()
+            stdout.fileHandleForReading.readabilityHandler = nil
+            scheduleRestart(uptime: nil)
             return
         }
         streamProcess = process
-        if restartAttempt != 0 {
-            logger.info("Adapter stream recovered after \(self.restartAttempt) relaunch attempt(s).")
-        }
-        restartAttempt = 0
+        streamLaunchedAt = ProcessInfo.processInfo.systemUptime
+        // The backoff is NOT reset here: a launch that dies instantly must keep climbing the
+        // delay ladder. It resets on the first valid JSON line or after `stableUptime`.
     }
 
-    private func handleStreamTermination() {
+    private func handleStreamTermination(generation: Int) {
+        // A termination callback from an already-replaced adapter is stale.
+        guard generation == streamGeneration else { return }
+        let uptime = ProcessInfo.processInfo.systemUptime - streamLaunchedAt
         streamProcess = nil
-        stdoutBuffer = Data()
+        lineBuffer.reset()
         guard !isStopping else { return }
         logger.notice("Adapter stream exited unexpectedly; scheduling relaunch.")
-        scheduleRestart()
+        scheduleRestart(uptime: uptime)
     }
 
-    private func scheduleRestart() {
-        restartAttempt += 1
-        let delay = min(30.0, pow(2.0, Double(restartAttempt - 1)))
+    private func scheduleRestart(uptime: TimeInterval?) {
+        let delay = backoff.nextDelay(afterUptime: uptime)
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.isStopping else { return }
             self.launchStream()
@@ -168,13 +233,12 @@ public final class MediaRemoteBridge {
 
     /// The adapter writes newline-delimited JSON; `availableData` doesn't respect
     /// line boundaries, so incomplete lines are buffered across calls.
-    private func consume(_ data: Data) {
-        stdoutBuffer.append(data)
-        while let newlineIndex = stdoutBuffer.firstIndex(of: 0x0A) {
-            let lineData = stdoutBuffer[stdoutBuffer.startIndex..<newlineIndex]
-            stdoutBuffer.removeSubrange(stdoutBuffer.startIndex...newlineIndex)
-            guard !lineData.isEmpty else { continue }
-            handle(line: Data(lineData))
+    private func consume(_ data: Data, generation: Int) {
+        // Bytes read from an adapter that has since been replaced (or has exited) would
+        // glue its truncated last line onto the new stream's first line and corrupt it.
+        guard generation == streamGeneration else { return }
+        for line in lineBuffer.append(data) {
+            handle(line: line)
         }
     }
 
@@ -182,6 +246,9 @@ public final class MediaRemoteBridge {
         guard let payload = Self.payload(from: line) else {
             logger.error("Failed to parse adapter JSON line.")
             return
+        }
+        if backoff.recordHealthyOutput() {
+            logger.info("Adapter stream recovered after relaunch.")
         }
         let info = payload.isEmpty ? nil : NowPlayingInfo(adapterPayload: payload)
         DispatchQueue.main.async { [weak self] in
@@ -231,34 +298,14 @@ public final class MediaRemoteBridge {
     // MARK: - Commands
 
     public func send(_ command: Command) {
-        guard let scriptURL, let frameworkPath else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        process.arguments = [scriptURL.path, frameworkPath, "send", String(command.rawValue)]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            logger.error("Adapter send(\(command.rawValue)) failed: \(error.localizedDescription, privacy: .public).")
-        }
+        runOneShot(["send", String(command.rawValue)], label: "send(\(command.rawValue))")
     }
 
     /// Seeks to an absolute timeline position via the adapter's `seek` subcommand
     /// (which takes microseconds). Same fire-and-forget shape as `send(_:)`.
     public func seek(to seconds: TimeInterval) {
-        guard let scriptURL, let frameworkPath else { return }
         let micros = Int64((max(0, seconds) * 1_000_000).rounded())
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        process.arguments = [scriptURL.path, frameworkPath, "seek", String(micros)]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            logger.error("Adapter seek(\(micros)) failed: \(error.localizedDescription, privacy: .public).")
-        }
+        runOneShot(["seek", String(micros)], label: "seek(\(micros))")
     }
 
     // MARK: - Shutdown
@@ -275,6 +322,7 @@ public final class MediaRemoteBridge {
             }
             proc?.terminate()
             streamProcess = nil
+            streamGeneration += 1
         }
         getRunner.shutdown(timeout: 1)
     }
@@ -307,5 +355,58 @@ public final class MediaRemoteBridge {
             payload = object
         }
         return .success(payload.isEmpty ? nil : NowPlayingInfo(adapterPayload: payload))
+    }
+}
+
+/// Restart delay ladder for the adapter stream (1s, 2s, 4s ... capped at 30s).
+///
+/// A relaunch only counts as recovered once the adapter proves it is healthy: it emits a
+/// valid JSON line, or it stays up for `stableUptime` before dying. Resetting at launch
+/// would pin a crash-on-startup adapter at the 1s rung forever, forking perl every second.
+struct AdapterRestartBackoff {
+    static let stableUptime: TimeInterval = 10
+    static let maxDelay: TimeInterval = 30
+
+    private(set) var attempt = 0
+
+    /// Call on each valid adapter line. Returns true when this ended a failure streak.
+    mutating func recordHealthyOutput() -> Bool {
+        defer { attempt = 0 }
+        return attempt != 0
+    }
+
+    /// Delay before the next launch. `uptime` is how long the previous adapter lived, or
+    /// nil when it failed to launch at all.
+    mutating func nextDelay(afterUptime uptime: TimeInterval?) -> TimeInterval {
+        if let uptime, uptime >= Self.stableUptime { attempt = 0 }
+        attempt += 1
+        return min(Self.maxDelay, pow(2.0, Double(attempt - 1)))
+    }
+}
+
+/// Splits the adapter's newline-delimited JSON stream back into whole lines. `availableData`
+/// doesn't respect line boundaries, so a partial trailing line is held until its newline
+/// arrives. Empty lines are dropped.
+struct AdapterLineBuffer {
+    private var pending = Data()
+
+    /// Bytes of an incomplete trailing line still waiting for its newline.
+    var pendingByteCount: Int { pending.count }
+
+    /// Appends `data` and returns every line it completed, in order, without the newline.
+    mutating func append(_ data: Data) -> [Data] {
+        pending.append(data)
+        var lines: [Data] = []
+        while let newlineIndex = pending.firstIndex(of: 0x0A) {
+            let line = pending[pending.startIndex..<newlineIndex]
+            pending.removeSubrange(pending.startIndex...newlineIndex)
+            if !line.isEmpty { lines.append(Data(line)) }
+        }
+        return lines
+    }
+
+    /// Drops any partial line (a new adapter stream must never inherit a dead one's tail).
+    mutating func reset() {
+        pending = Data()
     }
 }

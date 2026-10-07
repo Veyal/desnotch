@@ -45,7 +45,6 @@ final class MirroredNotificationParsingTests: XCTestCase {
         XCTAssertEqual(a.deduplicationKey, b.deduplicationKey)
     }
 
-
     func testParsedDeduplicationKeyNormalizesWhitespaceAndCase() {
         let first = MirroredNotification.parse(
             rawDescription: " Slack \n New   message ",
@@ -202,11 +201,11 @@ final class NotificationMirrorSettingsTests: XCTestCase {
         // Enabling moves off .off; the concrete state depends on the test host's AX
         // trust (CI runners are untrusted -> .needsPermission), so assert the split.
         store.notificationMirrorEnabled = true
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05)) // let the sink deliver
+        drainMainQueue() // let the sink deliver
         XCTAssertNotEqual(controller.permission, .off)
         // Disabling always returns to .off and clears any banner.
         store.notificationMirrorEnabled = false
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        drainMainQueue()
         XCTAssertEqual(controller.permission, .off)
         XCTAssertNil(controller.latest)
     }
@@ -217,9 +216,9 @@ final class NotificationMirrorSettingsTests: XCTestCase {
             presentation: NotchPillPresentation(), settings: store
         )
         store.notificationMirrorEnabled = false
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        drainMainQueue()
         store.notificationMirrorEnabled = false
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        drainMainQueue()
         XCTAssertEqual(controller.permission, .off)
         XCTAssertNil(controller.latest)
     }

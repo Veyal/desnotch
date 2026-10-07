@@ -14,6 +14,11 @@ public struct NowPlayingInfo: Equatable {
     public var artist: String?
     public var album: String?
     public var artwork: NSImage?
+    /// Dominant vivid color of `artwork`, lifted to be legible on black (nil for
+    /// grayscale/missing art). Derived once per artwork bytes off the main thread (see
+    /// `ArtworkCache`) and, like `elapsed`, excluded from equality: it is presentation
+    /// data that changes with the artwork, never an independent track change.
+    public var accent: NSColor?
     public var isPlaying: Bool
     public var uniqueIdentifier: String?
     /// Which app is reporting; included in equality so a same-title track playing in a
@@ -36,6 +41,11 @@ public struct NowPlayingInfo: Equatable {
         if let duration { return min(extrapolated, duration) }
         return extrapolated
     }
+
+    /// Identity of the visible text (title + artist), used by the pill to key its
+    /// track-change transition. Deliberately not the unique identifier, which can flip
+    /// between payloads of one track and would replay the transition.
+    var trackTextKey: String { "\(title ?? "")\u{0}\(artist ?? "")" }
 
     public static func == (lhs: NowPlayingInfo, rhs: NowPlayingInfo) -> Bool {
         lhs.title == rhs.title
@@ -100,9 +110,12 @@ public struct NowPlayingInfo: Equatable {
         if let base64 = payload["artworkData"] as? String,
             let data = Data(base64Encoded: base64)
         {
-            artwork = ArtworkCache.downsampled(data: data)
+            let decoded = ArtworkCache.decode(data: data)
+            artwork = decoded.image
+            accent = decoded.accent
         } else {
             artwork = nil
+            accent = nil
         }
     }
 
@@ -145,7 +158,9 @@ public struct NowPlayingInfo: Equatable {
 ///
 /// The adapter sends the full-resolution artwork (~1 MB) on every update, even on a
 /// play/pause flip. Decoding it to an `NSImage` on every tick is wasteful for a 16/24pt
-/// view, so decode results are downsampled to a view-appropriate size and cached.
+/// view, so decode results are downsampled to a view-appropriate size and cached - along
+/// with the accent color derived from them (`ArtworkAccent`), so the 16x16 color sampling
+/// also runs once per distinct artwork, on the caller's (adapter) queue, never per frame.
 ///
 /// The key MUST identify the bytes. It used to be the track's `uniqueIdentifier`, or
 /// the first 8 bytes hexed when that was nil, and both forms bound the wrong image:
@@ -156,33 +171,60 @@ public struct NowPlayingInfo: Equatable {
 /// artwork poisoned that id permanently. Content addressing fixes both, and is a
 /// bonus for albums whose tracks share one cover: identical bytes decode once.
 enum ArtworkCache {
-    private static let cache = NSCache<NSString, NSImage>()
-    private static let maxDimension: CGFloat = 128 // ~64pt @2x, enough for the 24pt view
+    /// One cached decode. A class so `NSCache` can hold it (a nil accent is a valid,
+    /// cached answer for grayscale art).
+    final class Entry {
+        let image: NSImage?
+        let accent: NSColor?
+        init(image: NSImage?, accent: NSColor?) {
+            self.image = image
+            self.accent = accent
+        }
+    }
+
+    private static let cache: NSCache<NSString, Entry> = {
+        let cache = NSCache<NSString, Entry>()
+        cache.countLimit = 16
+        return cache
+    }()
+    private static let maxDimension: CGFloat = 128 // ~64pt @2x, enough for the 40pt view
 
     static func downsampled(data: Data) -> NSImage? {
+        decode(data: data).image
+    }
+
+    static func decode(data: Data) -> Entry {
         let key = data.contentKey
         if let cached = cache.object(forKey: key as NSString) {
             return cached
         }
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            return NSImage(data: data)
-        }
-        let opts: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxDimension
-        ]
+        var thumbnail: CGImage?
         let image: NSImage?
-        if let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary) {
-            image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        if let source = CGImageSourceCreateWithData(data as CFData, nil) {
+            let opts: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxDimension
+            ]
+            if let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary) {
+                thumbnail = cg
+                image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            } else {
+                image = NSImage(data: data)
+            }
         } else {
             image = NSImage(data: data)
         }
-        if let image {
-            cache.setObject(image, forKey: key as NSString)
+        if thumbnail == nil, let image {
+            var rect = CGRect(origin: .zero, size: image.size)
+            thumbnail = image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
         }
-        return image
+        let entry = Entry(image: image, accent: thumbnail.flatMap { ArtworkAccent.accent(from: $0) })
+        if image != nil {
+            cache.setObject(entry, forKey: key as NSString)
+        }
+        return entry
     }
 }
 

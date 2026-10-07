@@ -101,6 +101,58 @@ final class TrayControllerTests: XCTestCase {
         XCTAssertEqual(controller.items, Array(files.reversed().prefix(TrayController.maxItems)))
     }
 
+    /// Items pushed out by the cap must release their cached icon/thumbnail too.
+    @MainActor
+    func testEvictedItemsDropCachedIconsAndThumbnails() async {
+        let controller = TrayController(defaults: defaults, pasteboard: pasteboard)
+        let first = makeFile("first.txt")
+        controller.add(first)
+        for _ in 0..<100 where controller.finderIcons[first] == nil {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNotNil(controller.finderIcons[first])
+
+        (0..<TrayController.maxItems).forEach { controller.add(makeFile("later-\($0).txt")) }
+        XCTAssertFalse(controller.items.contains(first))
+        XCTAssertNil(controller.finderIcons[first], "eviction drops the cached icon")
+        XCTAssertNil(controller.thumbnails[first], "eviction drops the cached thumbnail")
+    }
+
+    /// Row bodies must never touch LaunchServices: `icon(for:)` is a dictionary lookup that
+    /// falls back to a generic icon until the Finder icon has been resolved off the main thread.
+    @MainActor
+    func testIconLookupIsCachedAndResolvedOffTheBodyPath() async {
+        let file = makeFile("plain.txt")
+        let controller = TrayController(defaults: defaults, pasteboard: pasteboard)
+        controller.add(file)
+
+        XCTAssertGreaterThan(controller.icon(for: file).size.width, 0, "a placeholder is available at once")
+        for _ in 0..<100 where controller.finderIcons[file] == nil {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertNotNil(controller.finderIcons[file], "the Finder icon is resolved in the background")
+
+        controller.remove(file)
+        XCTAssertNil(controller.finderIcons[file], "removal drops the cached icon")
+    }
+
+    /// A QuickLook render that finishes after the item was removed must not re-insert a
+    /// thumbnail nothing will ever evict.
+    @MainActor
+    func testLateThumbnailForRemovedItemIsDiscarded() {
+        let file = makeFile("late.txt")
+        let controller = TrayController(defaults: defaults, pasteboard: pasteboard)
+        controller.add(file)
+        let image = NSImage(size: NSSize(width: 4, height: 4))
+
+        controller.storeThumbnail(image, for: file)
+        XCTAssertNotNil(controller.thumbnails[file], "a live item keeps its render")
+
+        controller.remove(file)
+        controller.storeThumbnail(image, for: file)
+        XCTAssertNil(controller.thumbnails[file], "a late render for a removed item is dropped")
+    }
+
     private func makeFile(_ name: String) -> URL {
         let url = directory.appendingPathComponent(name)
         FileManager.default.createFile(atPath: url.path, contents: Data(name.utf8))

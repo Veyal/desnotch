@@ -94,4 +94,39 @@ final class RemindersControllerTests: XCTestCase {
         XCTAssertEqual(RemindersController.dueLabel(tomorrow, isAllDay: true, now: now, calendar: calendar), "Tomorrow")
         XCTAssertEqual(RemindersController.dueLabel(yesterday, isAllDay: true, now: now, calendar: calendar), "Overdue")
     }
+
+    func testFailedFetchKeepsLastGoodReminder() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let current = RemindersController.NextReminder(
+            id: "keep", title: "Keep", dueDate: now.addingTimeInterval(600), isAllDay: false
+        )
+
+        XCTAssertEqual(
+            RemindersController.resolveNextReminder(current: current, fetched: nil, now: now),
+            current
+        )
+    }
+
+    func testSuccessfulEmptyFetchClearsReminder() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let current = RemindersController.NextReminder(
+            id: "gone", title: "Gone", dueDate: now.addingTimeInterval(600), isAllDay: false
+        )
+
+        XCTAssertNil(RemindersController.resolveNextReminder(current: current, fetched: [], now: now))
+    }
+
+    func testSuccessfulFetchReplacesReminder() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let current = RemindersController.NextReminder(
+            id: "old", title: "Old", dueDate: now.addingTimeInterval(600), isAllDay: false
+        )
+        let result = RemindersController.resolveNextReminder(
+            current: current,
+            fetched: [.init(id: "new", title: "New", dueDate: now.addingTimeInterval(300), isAllDay: false)],
+            now: now
+        )
+
+        XCTAssertEqual(result?.id, "new")
+    }
 }

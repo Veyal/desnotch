@@ -1,0 +1,95 @@
+import AppKit
+
+/// Owns every long-lived controller and the wiring between them. `AppDelegate` builds one
+/// at launch and hands it to the window coordinator and the status menu, so neither has to
+/// know how a controller is constructed - only that it exists.
+@MainActor
+final class AppComposition {
+    let presentation: NotchPillPresentation
+    let nowPlayingController: NowPlayingController
+    let focusTimerController: FocusTimerController
+    let agentActivityController: AgentActivityController
+    let calendarController: CalendarController
+    let remindersController: RemindersController
+    let processMonitorController: ProcessMonitorController
+    let displayAwakeController: DisplayAwakeController
+    let clipboardController: ClipboardController
+    let trayController: TrayController
+    let batteryController: BatteryController
+    let mediaUseMonitor: MediaUseMonitor
+    let notificationMirror: NotificationMirrorController
+
+    /// Nil in smoke-test mode (never polls GitHub there).
+    private(set) var updateChecker: UpdateChecker?
+    /// Nil in smoke-test mode (must not take a key combination from the developer's apps).
+    private(set) var globalHotKey: GlobalHotKeyController?
+
+    /// Smoke runs skip permission prompts and the optional launch-time services.
+    let smokeTestMode: Bool
+
+    init(smokeTestMode: Bool) {
+        self.smokeTestMode = smokeTestMode
+        let presentation = NotchPillPresentation()
+        self.presentation = presentation
+        nowPlayingController = NowPlayingController(presentation: presentation)
+        let focusTimerController = FocusTimerController()
+        focusTimerController.onCompletion = { _ in
+            presentation.flashOpen(kind: .timerComplete)
+            AccessibilityAnnouncer.announce(PillAnnouncements.timerCompleted, priority: .high)
+            if NSSound(named: NSSound.Name("Glass"))?.play() != true {
+                NSSound.beep()
+            }
+        }
+        self.focusTimerController = focusTimerController
+        agentActivityController = AgentActivityController(presentation: presentation)
+        calendarController = CalendarController(permissionRequestsEnabled: !smokeTestMode)
+        remindersController = RemindersController(permissionRequestsEnabled: !smokeTestMode)
+        processMonitorController = ProcessMonitorController()
+        displayAwakeController = DisplayAwakeController()
+        clipboardController = ClipboardController()
+        trayController = TrayController()
+        batteryController = BatteryController(presentation: presentation)
+        mediaUseMonitor = MediaUseMonitor()
+        notificationMirror = NotificationMirrorController(presentation: presentation, settings: .shared)
+    }
+
+    /// Daily release poll; `onUpdateAvailable` runs on the main actor. No-op in smoke mode.
+    func installUpdateChecker(onUpdateAvailable: @escaping (String) -> Void) {
+        guard !smokeTestMode else { return }
+        let checker = UpdateChecker()
+        checker.onUpdateAvailable = onUpdateAvailable
+        updateChecker = checker
+    }
+
+    /// Global show-notch shortcut. No-op in smoke mode.
+    func installGlobalHotKey(onTrigger: @escaping () -> Void) {
+        guard !smokeTestMode else { return }
+        globalHotKey = GlobalHotKeyController(onTrigger: onTrigger)
+    }
+
+    /// Builds the panel controller, or nil when no display is attached yet.
+    func makeNotchWindowController(onAddReminder: @escaping () -> Void) -> NotchWindowController? {
+        NotchWindowController(
+            controller: nowPlayingController,
+            focusTimer: focusTimerController,
+            agentActivity: agentActivityController,
+            calendar: calendarController,
+            reminders: remindersController,
+            onAddReminder: onAddReminder,
+            processMonitor: processMonitorController,
+            clipboard: clipboardController,
+            tray: trayController,
+            battery: batteryController,
+            mediaUse: mediaUseMonitor,
+            notificationMirror: notificationMirror,
+            presentation: presentation
+        )
+    }
+
+    /// Releases the resources that must not outlive the app (hot key registration and the
+    /// display-awake assertion). The MediaRemote adapter is stopped by `AppDelegate`.
+    func stopOwnedResources() {
+        globalHotKey?.stop()
+        displayAwakeController.stop()
+    }
+}

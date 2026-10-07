@@ -45,36 +45,109 @@ public final class RemindersController: ObservableObject {
         }
     }
 
-    @Published public private(set) var nextReminder: NextReminder?
+    @Published public private(set) var nextReminder: NextReminder? {
+        didSet { lastClockState = clockState }
+    }
     @Published public private(set) var accessState: AccessState = .undetermined
+    /// Bumped when a time-derived value (`isUrgent`, the due label's "Overdue") flips with
+    /// no new reminder: the clock crossing a due time changes nothing EventKit reports.
+    @Published public private(set) var clockRevision = 0
 
     private let store = EKEventStore()
     private let lookahead: TimeInterval = 7 * 24 * 3600
+    /// How far back an overdue reminder is still surfaced. Bounded so the EventKit predicate
+    /// never scans the whole history.
+    nonisolated static let lookbackDays = 365
+    /// The tick only re-reads the clock (`noteClock`); a full EventKit fetch also happens on
+    /// store changes, wake, activation and a clock-state flip, and as a safety net this often
+    /// (a reminder drifting into the seven-day window raises no store notification).
+    nonisolated static let tickInterval: TimeInterval = 30
+    nonisolated static let fullRefreshInterval: TimeInterval = 600
     private var timer: Timer?
     private var changeObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
     private var settingsObserver: AnyCancellable?
+    private var activityObserver: AnyCancellable?
     private let permissionRequestsEnabled: Bool
+    private let settings: SettingsStore
+    private let activity: PollingActivity
+    private let authorizationStatus: () -> Int
+    /// The feature flag as last delivered by the settings publisher. `@Published` emits
+    /// before it stores, so reading `settings.remindersEnabled` inside the sink sees the old
+    /// value; every gate below reads this cache instead.
+    private var isFeatureEnabled: Bool
+    private var isSuspended = false
     private var accessRequested = false
     private var hasAccess = false
     private var refreshGeneration = 0
+    private var lastFetchStart: Date?
+    private var lastClockState = ClockState(urgent: false, overdue: false)
 
-    public init(permissionRequestsEnabled: Bool = true) {
+    private struct ClockState: Equatable {
+        let urgent: Bool
+        let overdue: Bool
+    }
+
+    private var clockState: ClockState {
+        guard let nextReminder else { return ClockState(urgent: false, overdue: false) }
+        return ClockState(
+            urgent: Self.isUrgent(nextReminder),
+            overdue: Self.dueLabel(nextReminder) == "Overdue"
+        )
+    }
+
+    /// `settings` defaults to `SettingsStore.shared`; tests inject an isolated store.
+    public convenience init(
+        permissionRequestsEnabled: Bool = true,
+        settings: SettingsStore? = nil,
+        activity: PollingActivity? = nil
+    ) {
+        self.init(
+            permissionRequestsEnabled: permissionRequestsEnabled,
+            settings: settings,
+            activity: activity,
+            authorizationStatus: { EKEventStore.authorizationStatus(for: .reminder).rawValue }
+        )
+    }
+
+    /// `authorizationStatus` is the raw `EKAuthorizationStatus` (3 = authorized); tests inject it.
+    init(
+        permissionRequestsEnabled: Bool,
+        settings: SettingsStore?,
+        activity: PollingActivity?,
+        authorizationStatus: @escaping () -> Int
+    ) {
         self.permissionRequestsEnabled = permissionRequestsEnabled
-        settingsObserver = SettingsStore.shared.$remindersEnabled
+        let settings = settings ?? .shared
+        self.settings = settings
+        self.activity = activity ?? .shared
+        self.authorizationStatus = authorizationStatus
+        self.isFeatureEnabled = settings.remindersEnabled
+        settingsObserver = settings.$remindersEnabled
             .removeDuplicates()
             // Initialization handles the persisted current value explicitly below;
             // observe only subsequent user changes here.
             .dropFirst()
             .sink { [weak self] enabled in
                 guard let self else { return }
+                self.isFeatureEnabled = enabled
                 if enabled {
                     self.activateIfAuthorized()
                 } else {
-                    self.stopRefreshing()
+                    self.deactivate()
                 }
             }
-        if SettingsStore.shared.remindersEnabled {
+        // Like the other loops, the tick stops while nobody can see the result (displays or
+        // system asleep, session resigned) and refetches on resume.
+        activityObserver = self.activity.$isSuspended
+            .removeDuplicates()
+            .sink { [weak self] suspended in
+                guard let self else { return }
+                self.isSuspended = suspended
+                self.updateRefreshing()
+                if !suspended { self.refresh() }
+            }
+        if isFeatureEnabled {
             activateIfAuthorized()
         }
         activationObserver = NotificationCenter.default.addObserver(
@@ -124,6 +197,20 @@ public final class RemindersController: ObservableObject {
         }.first
     }
 
+    /// Applies a fetch result to the currently shown reminder. A nil `fetched` (the
+    /// EventKit fetch failed) keeps the last good value instead of reading as "no reminders".
+    nonisolated static func resolveNextReminder(
+        current: NextReminder?,
+        fetched: [Candidate]?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> NextReminder? {
+        guard let fetched else { return current }
+        return selectNextReminder(from: fetched, now: now, calendar: calendar).map {
+            NextReminder(id: $0.id, title: $0.title, dueDate: $0.dueDate, isAllDay: $0.isAllDay)
+        }
+    }
+
     nonisolated private static let lookaheadDays: Double = 7
 
     /// Removes line breaks/control characters and caps content for the
@@ -162,7 +249,7 @@ public final class RemindersController: ObservableObject {
     @discardableResult
     public func complete(_ identifier: String) -> Bool {
         guard hasAccess,
-              SettingsStore.shared.remindersEnabled,
+              isFeatureEnabled,
               let reminder = store.calendarItem(withIdentifier: identifier) as? EKReminder
         else { return false }
         reminder.isCompleted = true
@@ -179,7 +266,7 @@ public final class RemindersController: ObservableObject {
     @discardableResult
     public func add(title: String, dueDate: Date?, isAllDay: Bool) -> Bool {
         guard hasAccess,
-              SettingsStore.shared.remindersEnabled,
+              isFeatureEnabled,
               let calendar = store.defaultCalendarForNewReminders()
         else { return false }
         let reminder = EKReminder(eventStore: store)
@@ -195,12 +282,12 @@ public final class RemindersController: ObservableObject {
     }
 
     private func activateIfAuthorized() {
-        guard SettingsStore.shared.remindersEnabled else { return }
-        switch EKEventStore.authorizationStatus(for: .reminder).rawValue {
+        guard isFeatureEnabled else { return }
+        switch authorizationStatus() {
         case 3:
             hasAccess = true
             accessState = .granted
-            startRefreshing()
+            updateRefreshing()
             refresh()
         case 1, 2, 4:
             hasAccess = false
@@ -212,7 +299,7 @@ public final class RemindersController: ObservableObject {
     }
 
     private func requestAccess() {
-        guard SettingsStore.shared.remindersEnabled else { return }
+        guard isFeatureEnabled else { return }
         guard !accessRequested else { return }
         accessRequested = true
         let completion: (Bool, Error?) -> Void = { [weak self] granted, _ in
@@ -225,8 +312,8 @@ public final class RemindersController: ObservableObject {
                 }
                 self.hasAccess = true
                 self.accessState = .granted
-                if SettingsStore.shared.remindersEnabled {
-                    self.startRefreshing()
+                if self.isFeatureEnabled {
+                    self.updateRefreshing()
                     self.refresh()
                 }
             }
@@ -235,11 +322,25 @@ public final class RemindersController: ObservableObject {
         else { store.requestAccess(to: .reminder, completion: completion) }
     }
 
+    /// The tick and store observer run only while access is granted, the feature is on and
+    /// someone could see the result; every other state tears them down.
+    private func updateRefreshing() {
+        if hasAccess && isFeatureEnabled && !isSuspended {
+            startRefreshing()
+        } else {
+            stopRefreshing()
+        }
+    }
+
+    /// Internal so tests can assert the loop follows the setting and the sleep gate.
+    var isRefreshing: Bool { timer != nil }
+
     private func startRefreshing() {
         guard timer == nil else { return }
-        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { [weak self] in self?.refresh() }
+        let timer = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { [weak self] in self?.tick() }
         }
+        timer.tolerance = Self.tickInterval / 6
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
         changeObserver = NotificationCenter.default.addObserver(
@@ -252,31 +353,58 @@ public final class RemindersController: ObservableObject {
     }
 
     private func stopRefreshing() {
-        refreshGeneration += 1
         timer?.invalidate()
         timer = nil
         if let changeObserver {
             NotificationCenter.default.removeObserver(changeObserver)
             self.changeObserver = nil
         }
+    }
+
+    /// The feature was turned off (or access was revoked): stop, invalidate in-flight fetches
+    /// and drop the reminder.
+    private func deactivate() {
+        refreshGeneration += 1
+        stopRefreshing()
         if nextReminder != nil { nextReminder = nil }
     }
 
+    /// One 30s tick: re-read the clock, and fetch only when that moved a time-derived value
+    /// (overdue/urgent also change which reminder wins) or the safety-net interval elapsed.
+    private func tick() {
+        let flipped = noteClock()
+        let stale = lastFetchStart.map {
+            Date().timeIntervalSince($0) >= activity.scaled(Self.fullRefreshInterval)
+        } ?? true
+        if flipped || stale { refresh() }
+    }
+
+    /// Publishes when the clock alone moved a time-derived value (see `clockRevision`).
+    @discardableResult
+    private func noteClock() -> Bool {
+        let state = clockState
+        guard state != lastClockState else { return false }
+        lastClockState = state
+        clockRevision &+= 1
+        return true
+    }
+
     private func refresh() {
-        guard hasAccess, SettingsStore.shared.remindersEnabled else { return }
-        guard EKEventStore.authorizationStatus(for: .reminder).rawValue == 3 else {
+        guard hasAccess, isFeatureEnabled else { return }
+        guard authorizationStatus() == 3 else {
             hasAccess = false
             accessState = .denied
-            stopRefreshing()
+            deactivate()
             return
         }
+        lastFetchStart = Date()
         refreshGeneration += 1
         let generation = refreshGeneration
         let store = self.store
         let lookahead = self.lookahead
         Task.detached(priority: .utility) { [weak self] in
             let now = Date()
-            let start = Calendar.current.date(byAdding: .year, value: -10, to: now) ?? now
+            let start = Calendar.current.date(byAdding: .day, value: -Self.lookbackDays, to: now) ?? now
             let end = Calendar.current.date(byAdding: .day, value: Int(Self.lookaheadDays), to: now)
                 ?? now.addingTimeInterval(lookahead)
             let predicate = store.predicateForIncompleteReminders(
@@ -284,18 +412,19 @@ public final class RemindersController: ObservableObject {
                 ending: end,
                 calendars: nil
             )
-            let reminders = await withCheckedContinuation { continuation in
-                store.fetchReminders(matching: predicate) { continuation.resume(returning: $0 ?? []) }
+            // nil means the fetch failed - distinct from a successful empty result.
+            let fetched: [EKReminder]? = await withCheckedContinuation { continuation in
+                store.fetchReminders(matching: predicate) { continuation.resume(returning: $0) }
             }
-            let candidates = reminders.compactMap { reminder -> Candidate? in
+            let candidates = fetched?.compactMap { reminder -> Candidate? in
                 guard let components = reminder.dueDateComponents,
                       let due = Calendar.current.date(from: components), due >= start, due <= end else { return nil }
                 return Candidate(id: reminder.calendarItemIdentifier, title: Self.sanitizeTitle(reminder.title ?? "Reminder"), dueDate: due, isAllDay: components.hour == nil, isCompleted: reminder.isCompleted)
             }
-            let selected = Self.selectNextReminder(from: candidates, now: now)
             await MainActor.run { [weak self] in
                 guard let self, generation == self.refreshGeneration else { return }
-                self.nextReminder = selected.map { NextReminder(id: $0.id, title: $0.title, dueDate: $0.dueDate, isAllDay: $0.isAllDay) }
+                let updated = Self.resolveNextReminder(current: self.nextReminder, fetched: candidates, now: now)
+                if updated != self.nextReminder { self.nextReminder = updated }
             }
         }
     }
