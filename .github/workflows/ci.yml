@@ -5,13 +5,54 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  lint:
+    # Shell scripts and Swift formatting. Neither needs XCTest, so this stays cheap and fast.
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install linters (only when the runner image lacks them)
+        run: |
+          command -v shellcheck >/dev/null || brew install shellcheck
+          command -v swiftlint >/dev/null || brew install swiftlint
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh
+      - name: SwiftLint
+        # Conservative rules in .swiftlint.yml; warnings annotate, errors fail.
+        run: swiftlint lint --config .swiftlint.yml --reporter github-actions-logging
+
   build-and-test:
     # macOS runner with Xcode: the dev Mac mini has only Command Line Tools (no XCTest),
     # so this is the ONLY place the test suite actually executes. Keep it green.
-    runs-on: macos-14
+    name: build-and-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and tags: build-app.sh derives VERSION and BUILD_NUMBER from git.
+          fetch-depth: 0
+      - name: Cache SwiftPM build products
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ matrix.os }}-${{ hashFiles('Package.swift') }}-${{ github.sha }}
+          restore-keys: |
+            spm-${{ matrix.os }}-${{ hashFiles('Package.swift') }}-
       - name: Build
         run: swift build -v
       - name: Test
@@ -22,5 +63,30 @@ jobs:
         run: scripts/smoke-test.sh dist/desnotch.app
       - name: Packaged permission-status probe
         run: scripts/permission-status.sh dist/desnotch.app
+      - name: Packaged runtime startup and cleanup
+        run: scripts/runtime-smoke-test.sh dist/desnotch.app
+
+  universal-hardened:
+    # The release configuration: universal arm64+x86_64 with hardened runtime. Ad-hoc signed
+    # here (no Developer ID on CI), but the same code path as a real distribution build.
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Cache SwiftPM build products
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build-release-arm64
+            .build-release-x86_64
+          key: spm-universal-${{ hashFiles('Package.swift') }}-${{ github.sha }}
+          restore-keys: |
+            spm-universal-${{ hashFiles('Package.swift') }}-
+      - name: Package (universal, hardened runtime)
+        run: UNIVERSAL=1 HARDENED_RUNTIME=1 scripts/build-app.sh
+      - name: Packaged bundle smoke checks (both slices required)
+        run: REQUIRE_UNIVERSAL=1 scripts/smoke-test.sh dist/desnotch.app
       - name: Packaged runtime startup and cleanup
         run: scripts/runtime-smoke-test.sh dist/desnotch.app

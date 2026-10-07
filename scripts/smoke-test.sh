@@ -13,6 +13,9 @@ ADAPTER="$APP_BUNDLE/Contents/Resources/MediaRemoteAdapter"
 [[ -f "$PLIST" && -x "$EXECUTABLE" ]] || { echo "error: missing plist or executable" >&2; exit 1; }
 [[ -f "$APP_BUNDLE/Contents/Resources/AppIcon.icns" ]] || { echo "error: AppIcon.icns missing" >&2; exit 1; }
 [[ -f "$ADAPTER/mediaremote-adapter.pl" && -d "$ADAPTER/MediaRemoteAdapter.framework" ]] || { echo "error: MediaRemote adapter resources missing" >&2; exit 1; }
+for notice in LICENSE NOTICE.md LICENSE-mediaremote-adapter; do
+  [[ -f "$APP_BUNDLE/Contents/Resources/$notice" ]] || { echo "error: $notice missing from Contents/Resources" >&2; exit 1; }
+done
 
 /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$PLIST" >/dev/null
@@ -29,7 +32,15 @@ if [[ "${REQUIRE_UNIVERSAL:-0}" == 1 ]]; then
   [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || { echo "error: REQUIRE_UNIVERSAL=1 but architectures are '$archs'" >&2; exit 1; }
 fi
 codesign --verify --strict --verbose=2 "$ADAPTER/MediaRemoteAdapter.framework"
-codesign --verify --strict --verbose=2 "$APP_BUNDLE"
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+# A hardened-runtime app (the release build) is denied EventKit unless it carries the calendars
+# entitlement, with no prompt and no TCC entry; catch that here instead of on a user's Mac.
+signed_info="$(codesign -d --verbose=2 "$APP_BUNDLE" 2>&1 || true)"
+if [[ "$signed_info" == *flags=*runtime* ]]; then
+  signed_entitlements="$(codesign -d --entitlements - --xml "$APP_BUNDLE" 2>/dev/null || true)"
+  [[ "$signed_entitlements" == *com.apple.security.personal-information.calendars* ]] \
+    || { echo "error: hardened-runtime app lacks the calendars entitlement" >&2; exit 1; }
+fi
 
 # A previously crashed app must not leave the adapter owned by launchd. Only
 # adapters launched from this bundle count: unrelated tools (nowplaying-cli,

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened runtime denies EventKit access (Calendar glance, Reminders) unless this is
+         present; EventKit covers both events and reminders. Applied only to the main
+         executable and the app bundle, and only when HARDENED_RUNTIME=1. -->
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
+</dict>
+</plist>

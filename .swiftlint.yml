@@ -1,0 +1,28 @@
+# Deliberately minimal: whitespace and obvious-redundancy rules only, so the lint step
+# gates formatting regressions without forcing style rewrites. CI runs `swiftlint lint`
+# (not --strict): warnings are reported as annotations, errors fail the job. Tighten
+# (and add --strict) only after the existing warnings are cleaned up.
+only_rules:
+  - trailing_whitespace
+  - trailing_newline
+  - vertical_whitespace
+  - leading_whitespace
+  - duplicate_imports
+  - empty_enum_arguments
+  - redundant_discardable_let
+  - unused_optional_binding
+  - void_return
+
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+  - .build-release-arm64
+  - .build-release-x86_64
+  - .build-universal
+  - Sources/DesnotchCore/MediaRemote/Vendor
+
+trailing_whitespace:
+  severity: error

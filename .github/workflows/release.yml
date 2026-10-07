@@ -1,0 +1,83 @@
+name: Release
+
+# Push a tag like v0.11.0 to publish desnotch-v0.11.0-universal.zip. See RELEASING.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate the version
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "::error::tag '$TAG' is not vMAJOR.MINOR[.PATCH]"
+            exit 1
+          fi
+          # The tag must be described by the changelog (fails on a missing or empty section).
+          scripts/changelog-section.sh "$version" > release-notes.md
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "ASSET=desnotch-v$version-universal.zip" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: swift test
+
+      - name: Package (universal, hardened runtime, ad-hoc)
+        run: UNIVERSAL=1 HARDENED_RUNTIME=1 VERSION="$VERSION" scripts/build-app.sh
+
+      - name: Verify Info.plist version matches the tag
+        run: |
+          set -euo pipefail
+          plist_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/desnotch.app/Contents/Info.plist)"
+          if [[ "$plist_version" != "$VERSION" ]]; then
+            echo "::error::Info.plist version '$plist_version' does not match tag version '$VERSION'"
+            exit 1
+          fi
+
+      - name: Packaged smoke checks
+        run: |
+          set -euo pipefail
+          REQUIRE_UNIVERSAL=1 scripts/smoke-test.sh dist/desnotch.app
+          scripts/runtime-smoke-test.sh dist/desnotch.app
+
+      - name: Archive and checksum
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent dist/desnotch.app "dist/$ASSET"
+          (cd dist && shasum -a 256 "$ASSET" > "$ASSET.sha256")
+          cat "dist/$ASSET.sha256"
+          {
+            echo
+            echo "SHA-256 of \`$ASSET\`:"
+            echo
+            echo '```'
+            cat "dist/$ASSET.sha256"
+            echo '```'
+          } >> release-notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" "dist/$ASSET" "dist/$ASSET.sha256" \
+            --title "desnotch $TAG" \
+            --notes-file release-notes.md \
+            --verify-tag
