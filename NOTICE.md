@@ -7,18 +7,22 @@ indicated files for full license text.
 
 Source: https://github.com/ungive/mediaremote-adapter
 
-Vendored at `Sources/desnotch/MediaRemote/Vendor/MediaRemoteAdapter/`. Used to read
+Vendored at `Sources/DesnotchCore/MediaRemote/Vendor/MediaRemoteAdapter/`. Used to read
 and control system-wide now-playing state via the private `MediaRemote.framework`,
 loaded into `/usr/bin/perl`'s entitled process. Built as a stock universal binary via
-the upstream project's own CMake build; not hand-modified.
+the upstream project's own CMake build; not hand-modified. The exact bytes are pinned by
+`VENDOR.sha256` in that directory, which `scripts/build-app.sh` verifies on every build.
 
-License: `Sources/desnotch/MediaRemote/Vendor/MediaRemoteAdapter/LICENSE-mediaremote-adapter`
+Packaged apps carry this file, `LICENSE`, and `LICENSE-mediaremote-adapter` in
+`Contents/Resources`, so the BSD-3-Clause notice accompanies every binary redistribution.
+
+License: `Sources/DesnotchCore/MediaRemote/Vendor/MediaRemoteAdapter/LICENSE-mediaremote-adapter`
 
 ## agent-island (MIT)
 
 Source: https://github.com/tristan666666/agent-island (Eric Park)
 
-The detection pattern in `Sources/desnotch/AgentActivity/AgentActivityScanner.swift`
+The detection pattern in `Sources/DesnotchCore/AgentActivity/AgentActivityScanner.swift`
 (enumerate known session-log directories, skip sub-agent/automation fan-out, derive a
 coarse state from file recency plus a turn-completion marker) is adapted from
 agent-island's `SessionScanner.swift`. The per-format parsing detail

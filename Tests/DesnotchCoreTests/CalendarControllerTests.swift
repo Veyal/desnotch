@@ -30,4 +30,55 @@ final class CalendarControllerTests: XCTestCase {
             notes: "ftp://meet.google.com/room"
         ))
     }
+
+    private func candidate(
+        _ title: String,
+        start: TimeInterval,
+        end: TimeInterval,
+        now: Date,
+        allDay: Bool = false,
+        canceled: Bool = false,
+        declined: Bool = false
+    ) -> CalendarController.Candidate {
+        .init(
+            title: title,
+            start: now.addingTimeInterval(start),
+            end: now.addingTimeInterval(end),
+            isAllDay: allDay,
+            isCanceled: canceled,
+            isDeclinedByCurrentUser: declined,
+            joinURL: nil
+        )
+    }
+
+    func testSelectNextEventSkipsCanceledDeclinedAndAllDay() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let result = CalendarController.selectNextEvent(from: [
+            candidate("canceled", start: 60, end: 3600, now: now, canceled: true),
+            candidate("declined", start: 120, end: 3600, now: now, declined: true),
+            candidate("all-day", start: 180, end: 86_400, now: now, allDay: true),
+            candidate("real", start: 7200, end: 10_800, now: now)
+        ], now: now)
+
+        XCTAssertEqual(result?.title, "real")
+    }
+
+    func testSelectNextEventKeepsOngoingAndDropsEnded() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let result = CalendarController.selectNextEvent(from: [
+            candidate("ended", start: -7200, end: -60, now: now),
+            candidate("later", start: 3600, end: 7200, now: now),
+            candidate("ongoing", start: -600, end: 1800, now: now)
+        ], now: now)
+
+        XCTAssertEqual(result?.title, "ongoing")
+    }
+
+    func testSelectNextEventReturnsNilWhenNothingQualifies() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertNil(CalendarController.selectNextEvent(from: [
+            candidate("canceled", start: 60, end: 3600, now: now, canceled: true)
+        ], now: now))
+        XCTAssertNil(CalendarController.selectNextEvent(from: [], now: now))
+    }
 }

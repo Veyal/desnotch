@@ -1,8 +1,8 @@
 import AppKit
 
 /// Click-to-jump targets, shared by the pill's tap gestures and the status-menu mirror
-/// (the menu is the keyboard/VoiceOver path to the same actions - the pill itself lives
-/// in a non-activating panel that assistive tech cannot focus).
+/// (the menu is the keyboard path to the same actions - the pill itself lives in a
+/// non-activating panel that is never key; VoiceOver reaches it only via the cursor when pinned open).
 enum AppActivation {
     /// Terminals/editors that host agent CLIs, in preference order. The session log
     /// doesn't record which app runs it, so activate the first of these that's running;
@@ -46,9 +46,10 @@ enum AppActivation {
             // a newer one and steal focus to the wrong app.
             AgentActivation.pending?.cancel()
             AgentActivation.pending = Task { @MainActor in
-                let ownerPID = await Task.detached(priority: .userInitiated) {
-                    owningHostPID(projectPath: projectPath)
-                }.value
+                let hostPIDs = runningHostPIDs()
+                // Awaits the bounded helpers off the main actor; cancelling this task (a newer
+                // click) also kills an in-flight lsof/ps through SubprocessRunner.
+                let ownerPID = await owningHostPID(projectPath: projectPath, hostPIDs: hostPIDs)
                 guard !Task.isCancelled else { return }
                 if let ownerPID,
                    let app = NSRunningApplication(processIdentifier: ownerPID) {
@@ -78,34 +79,63 @@ enum AppActivation {
         }
     }
 
-    /// PID of the running host app that owns a process whose cwd is `projectPath`,
-    /// or nil when nothing can be resolved. Pure lookup - no activation, no logging
-    /// of the path (it stays a click target, never surfaced).
     /// Total wall-clock budget for the whole resolution (both helpers combined), so a
     /// slow `lsof` can't be followed by an equally slow `ps` and double the wait.
-    private static let resolveBudget: TimeInterval = 2.5
+    static let resolveBudget: TimeInterval = 2.5
 
-    private static func owningHostPID(projectPath: String) -> pid_t? {
-        let hostPIDs = Set(
+    /// Runs one short-lived helper and returns its stdout, or nil on failure/timeout.
+    /// Injectable so the resolution can be tested without spawning `lsof`/`ps`.
+    typealias HelperRun = @Sendable (_ executable: String, _ arguments: [String], _ timeout: TimeInterval) async -> String?
+
+    private static let helperRunner = SubprocessRunner(outputByteCap: 1024 * 1024)
+
+    /// Production helper runner: `SubprocessRunner` supplies the timeout, output cap,
+    /// sanitized environment and kill-on-cancel that a bare `Process` + `readDataToEndOfFile`
+    /// lacked. Exit status is ignored on purpose: `lsof` exits 1 when nothing matches.
+    static let runHelper: HelperRun = { executable, arguments, timeout in
+        guard let result = try? await helperRunner.run(
+            executable: URL(fileURLWithPath: executable),
+            arguments: arguments,
+            cwd: URL(fileURLWithPath: "/", isDirectory: true),
+            timeout: timeout
+        ), !result.truncated else { return nil }
+        return result.stdout
+    }
+
+    private static func runningHostPIDs() -> Set<pid_t> {
+        Set(
             agentHostBundleIDs
                 .flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
                 .map { $0.processIdentifier }
         )
+    }
+
+    /// PID of the running host app that owns a process whose cwd is `projectPath`,
+    /// or nil when nothing can be resolved. Pure lookup - no activation, no logging
+    /// of the path (it stays a click target, never surfaced).
+    static func owningHostPID(
+        projectPath: String,
+        hostPIDs: Set<pid_t>,
+        run: HelperRun = AppActivation.runHelper,
+        budget: TimeInterval = AppActivation.resolveBudget
+    ) async -> pid_t? {
         guard !hostPIDs.isEmpty else { return nil }
 
-        let deadline = Date().addingTimeInterval(resolveBudget)
+        let deadline = Date().addingTimeInterval(budget)
 
         // Processes whose *cwd* is this project (the agent CLI, its children).
-        guard let cwdOutput = run(
-            "/usr/sbin/lsof", ["-a", "-w", "-d", "cwd", "-Fp", "--", projectPath], deadline: deadline
+        let cwdRemaining = deadline.timeIntervalSinceNow
+        guard cwdRemaining > 0, let cwdOutput = await run(
+            "/usr/sbin/lsof", ["-a", "-w", "-d", "cwd", "-Fp", "--", projectPath], cwdRemaining
         ) else { return nil }
         let candidates = parseLsofPIDs(cwdOutput)
         guard !candidates.isEmpty else { return nil }
 
         // One ps snapshot -> child:parent map, then walk each candidate upward.
-        guard let psOutput = run("/bin/ps", ["-axo", "pid=,ppid="], deadline: deadline) else {
-            return nil
-        }
+        let psRemaining = deadline.timeIntervalSinceNow
+        guard psRemaining > 0, let psOutput = await run(
+            "/bin/ps", ["-axo", "pid=,ppid="], psRemaining
+        ) else { return nil }
         return firstHostAncestor(
             candidates: candidates, parent: parseParentMap(psOutput), hosts: hostPIDs
         )
@@ -148,54 +178,6 @@ enum AppActivation {
             }
         }
         return nil
-    }
-
-    /// Stdout buffer filled on a reader thread; the caller only touches it after the
-    /// semaphore confirms the read finished.
-    private final class OutputBox: @unchecked Sendable {
-        var data = Data()
-    }
-
-    /// Runs a short-lived helper within the shared `deadline`, or returns nil.
-    ///
-    /// The read happens on a separate thread so a stalled child can never block the
-    /// caller: on timeout the process is asked to terminate and then, if it still
-    /// hasn't released the pipe, SIGKILLed - which cannot be caught or ignored, so
-    /// the reader always unblocks. `waitUntilExit` is only called on the success path.
-    private static func run(_ path: String, _ arguments: [String], deadline: Date) -> String? {
-        let remaining = deadline.timeIntervalSinceNow
-        guard remaining > 0 else { return nil }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        let stdout = Pipe()
-        process.standardOutput = stdout
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-
-        let box = OutputBox()
-        let finished = DispatchSemaphore(value: 0)
-        let handle = stdout.fileHandleForReading
-        DispatchQueue.global(qos: .userInitiated).async {
-            box.data = handle.readDataToEndOfFile()
-            finished.signal()
-        }
-
-        if finished.wait(timeout: .now() + remaining) == .timedOut {
-            process.terminate()
-            if finished.wait(timeout: .now() + 0.2) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = finished.wait(timeout: .now() + 0.5)
-            }
-            return nil
-        }
-        process.waitUntilExit()
-        return String(data: box.data, encoding: .utf8)
     }
 
     static func activate(_ app: NSRunningApplication) {

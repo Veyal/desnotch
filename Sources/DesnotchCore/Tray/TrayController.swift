@@ -11,6 +11,13 @@ import QuickLookThumbnailing
 public final class TrayController: ObservableObject {
     @Published public private(set) var items: [URL] = []
     @Published public private(set) var thumbnails: [URL: NSImage] = [:]
+    /// Finder icons for items without a QuickLook thumbnail, resolved off the main thread so
+    /// a row's SwiftUI body never touches LaunchServices or the filesystem (a sleeping
+    /// external or network volume would otherwise stall the open/close spring).
+    @Published public private(set) var finderIcons: [URL: NSImage] = [:]
+
+    /// Shown for the instant before a Finder icon arrives, and for anything that never gets one.
+    private static let placeholderIcon = NSWorkspace.shared.icon(for: .data)
 
     private static let defaultsKey = "trayItems"
     public static let maxItems = 8
@@ -44,6 +51,7 @@ public final class TrayController: ObservableObject {
             persist()
         }
         items.forEach(generateThumbnail)
+        items.forEach(loadFinderIcon)
     }
 
     public func add(_ url: URL) {
@@ -51,15 +59,22 @@ public final class TrayController: ObservableObject {
         guard !items.contains(url) else { return }
         items.insert(url, at: 0)
         if items.count > Self.maxItems {
-            items.removeLast(items.count - Self.maxItems)
+            let evicted = items.suffix(from: Self.maxItems)
+            items.removeLast(evicted.count)
+            for url in evicted {
+                thumbnails[url] = nil
+                finderIcons[url] = nil
+            }
         }
         generateThumbnail(for: url)
+        loadFinderIcon(for: url)
         persist()
     }
 
     public func remove(_ url: URL) {
         items.removeAll { $0 == url }
         thumbnails[url] = nil
+        finderIcons[url] = nil
         persist()
     }
 
@@ -94,14 +109,29 @@ public final class TrayController: ObservableObject {
         guard liveItems.count != items.count else { return items }
         let deadURLs = Set(items).subtracting(liveItems)
         items = liveItems
-        deadURLs.forEach { thumbnails[$0] = nil }
+        deadURLs.forEach {
+            thumbnails[$0] = nil
+            finderIcons[$0] = nil
+        }
         persist()
         return liveItems
     }
 
-    /// Best icon for a row: QuickLook thumbnail if one rendered, else the Finder icon.
+    /// Best icon for a row: QuickLook thumbnail if one rendered, else the (pre-resolved)
+    /// Finder icon, else a generic document icon. A pure dictionary lookup: safe in a body.
     public func icon(for url: URL) -> NSImage {
-        thumbnails[url] ?? NSWorkspace.shared.icon(forFile: url.path)
+        thumbnails[url] ?? finderIcons[url] ?? Self.placeholderIcon
+    }
+
+    private func loadFinderIcon(for url: URL) {
+        let path = url.path
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let icon = NSWorkspace.shared.icon(forFile: path)
+            Task { @MainActor [weak self] in
+                guard let self, self.items.contains(url) else { return }
+                self.finderIcons[url] = icon
+            }
+        }
     }
 
     private func generateThumbnail(for url: URL) {
@@ -110,10 +140,18 @@ public final class TrayController: ObservableObject {
         )
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] rep, _ in
             guard let rep else { return } // no preview for this type: Finder icon is used
-            Task { @MainActor in
-                self?.thumbnails[url] = rep.nsImage
+            let image = rep.nsImage
+            Task { @MainActor [weak self] in
+                self?.storeThumbnail(image, for: url)
             }
         }
+    }
+
+    /// Keeps a rendered thumbnail only while its item is still on the shelf: a render that
+    /// finishes after `remove`/`prune` must not re-insert an entry nothing will ever evict.
+    func storeThumbnail(_ image: NSImage, for url: URL) {
+        guard items.contains(url) else { return }
+        thumbnails[url] = image
     }
 
     private func persist() {

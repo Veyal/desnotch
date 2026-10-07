@@ -42,11 +42,18 @@ public final class NotificationMirrorController: ObservableObject {
     private var expiryTimer: Timer?
     private var permissionTimer: Timer?
     private var cancellable: AnyCancellable?
+    private var activityCancellable: AnyCancellable?
+    private let activity: PollingActivity
     private var recentDuplicateKeys: [String: Date] = [:]
 
-    public init(presentation: NotchPillPresentation, settings: SettingsStore) {
+    public init(
+        presentation: NotchPillPresentation,
+        settings: SettingsStore,
+        activity: PollingActivity? = nil
+    ) {
         self.presentation = presentation
         self.settings = settings
+        self.activity = activity ?? .shared
         observer.onBanner = { [weak self] raw in
             self?.handleBanner(raw) ?? false
         }
@@ -54,6 +61,19 @@ public final class NotificationMirrorController: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in
                 self?.applyEnabled(enabled)
+            }
+        // The denied-state recheck only matters while someone can see the result.
+        activityCancellable = self.activity.$isSuspended
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] suspended in
+                guard let self else { return }
+                if suspended {
+                    self.permissionTimer?.invalidate()
+                    self.permissionTimer = nil
+                } else if self.settings.notificationMirrorEnabled, self.permission == .needsPermission {
+                    self.applyEnabled(true)
+                }
             }
     }
 
@@ -105,8 +125,8 @@ public final class NotificationMirrorController: ObservableObject {
     /// While enabled-but-denied, poll the trust flag every 5s so granting it in
     /// System Settings activates the feature without relaunching or re-toggling.
     private func schedulePermissionRecheck() {
-        guard permissionTimer == nil else { return }
-        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+        guard permissionTimer == nil, !activity.isSuspended else { return }
+        let timer = Timer(timeInterval: activity.scaled(5), repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.settings.notificationMirrorEnabled else { return }
                 if NotificationCenterObserver.isTrusted {
@@ -154,8 +174,9 @@ public final class NotificationMirrorController: ObservableObject {
         }
         recentDuplicateKeys[key] = parsed.receivedAt
         latest = parsed
+        primeSourceIcon(for: parsed.appName)
         arrivalCount += 1
-        presentation.flashOpen(for: 4.0)
+        presentation.flashOpen(kind: .notification)
         scheduleExpiry()
         return settings.dismissSystemBanners
     }
@@ -217,9 +238,26 @@ public final class NotificationMirrorController: ObservableObject {
 
     /// Icon for the latest banner's app (nil when it isn't running - the pill falls
     /// back to a bell symbol).
+    ///
+    /// Resolved once per banner (`primeSourceIcon`) and served from a one-entry cache: the
+    /// pill calls this from its SwiftUI body, which re-evaluates during the open/close spring
+    /// and on every published change, and walking `runningApplications` there is main-thread
+    /// work in the middle of an animation.
     public func sourceIcon(for appName: String) -> NSImage? {
-        NSWorkspace.shared.runningApplications.first {
+        if let cached = iconCache, cached.appName.caseInsensitiveCompare(appName) == .orderedSame {
+            return cached.icon
+        }
+        return primeSourceIcon(for: appName)
+    }
+
+    private var iconCache: (appName: String, icon: NSImage?)?
+
+    @discardableResult
+    private func primeSourceIcon(for appName: String) -> NSImage? {
+        let icon = NSWorkspace.shared.runningApplications.first {
             $0.localizedName?.caseInsensitiveCompare(appName) == .orderedSame
         }?.icon
+        iconCache = (appName, icon)
+        return icon
     }
 }

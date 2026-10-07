@@ -57,8 +57,9 @@ public enum AgentSource {
 
 /// A single detected session. `projectLabel` is always a generic basename (never a full path)
 /// so it is safe to render directly in the UI. `taskTitle` is a short, hard-truncated hint
-/// derived from the session's first real user prompt line (owner-approved exception to the
-/// no-transcript rule - see AGENTS.md); nil when the format carries no usable prompt.
+/// derived from the session's first real user prompt line (owner opt-in exception to the
+/// no-transcript rule - see AGENTS.md); nil unless the owner enabled task titles in Settings
+/// and the format carries a usable prompt.
 public struct AgentSession: Identifiable {
     public let id = UUID()
     public let source: AgentSource
@@ -67,6 +68,10 @@ public struct AgentSession: Identifiable {
     /// Absolute project directory for click-to-jump. NEVER rendered (privacy boundary:
     /// only `projectLabel`/`taskTitle` reach pixels) - used solely as an open target.
     public let projectPath: String?
+    /// Opaque, stable per-session identity (source + hash of the transcript path / database
+    /// session id) for cross-scan comparisons such as notification de-duplication - `id` is a
+    /// fresh UUID every scan. NEVER rendered; it is a hash, not a path.
+    public let identityKey: String
     public let state: AgentActivityState
     public let lastActivity: Date
 
@@ -75,6 +80,7 @@ public struct AgentSession: Identifiable {
         projectLabel: String,
         taskTitle: String? = nil,
         projectPath: String? = nil,
+        identityKey: String? = nil,
         state: AgentActivityState,
         lastActivity: Date
     ) {
@@ -82,8 +88,17 @@ public struct AgentSession: Identifiable {
         self.projectLabel = projectLabel
         self.taskTitle = taskTitle
         self.projectPath = projectPath
+        self.identityKey = identityKey ?? "\(source)|\(projectLabel)|\(projectPath ?? "")"
         self.state = state
         self.lastActivity = lastActivity
+    }
+
+    /// The same session without its prompt-derived title.
+    func withoutTaskTitle() -> AgentSession {
+        AgentSession(
+            source: source, projectLabel: projectLabel, taskTitle: nil, projectPath: projectPath,
+            identityKey: identityKey, state: state, lastActivity: lastActivity
+        )
     }
 }
 

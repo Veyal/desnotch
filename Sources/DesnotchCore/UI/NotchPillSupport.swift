@@ -1,37 +1,5 @@
 import SwiftUI
 
-/// Rectangle with only the bottom two corners rounded - flush with the screen's top edge,
-/// so the pill reads as an extension of the physical notch. (Custom shape rather than
-/// `UnevenRoundedRectangle`, which needs macOS 13.3; the package targets 13.0.)
-struct BottomRoundedRectangle: Shape {
-    var radius: CGFloat
-
-    /// Animate radius changes so the minimized→expanded morph doesn't snap corners.
-    var animatableData: CGFloat {
-        get { radius }
-        set { radius = newValue }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let r = min(radius, min(rect.width, rect.height) / 2)
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
-        path.addArc(
-            center: CGPoint(x: rect.maxX - r, y: rect.maxY - r),
-            radius: r, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false
-        )
-        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
-        path.addArc(
-            center: CGPoint(x: rect.minX + r, y: rect.maxY - r),
-            radius: r, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false
-        )
-        path.closeSubpath()
-        return path
-    }
-}
-
 /// The visual container and its content deliberately do not switch at the same instant.
 /// Expansion grows the black notch first, then reveals content; collapse fades content
 /// first, then lets the container settle back into the hardware. Keeping this semantic
@@ -44,201 +12,6 @@ enum PillExpansionPhase: Equatable {
     case collapsing
 
     var keepsExpandedContainer: Bool { self != .collapsed }
-}
-
-/// A short, bounded arrival treatment for sections. `.move(edge:)` moved an entire row
-/// height and looked disconnected from the notch; this modifier keeps travel to a few
-/// points and becomes a plain fade when geometry motion is disabled.
-struct PillArrivalModifier: ViewModifier {
-    let opacity: Double
-    let scale: CGFloat
-    let verticalOffset: CGFloat
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(opacity)
-            .scaleEffect(scale, anchor: .top)
-            .offset(y: verticalOffset)
-    }
-}
-
-/// The pill's single motion vocabulary. Every animation in the pill resolves through
-/// here so the feel stays consistent and one switch (`AnimationStyle`, or the system's
-/// Reduce Motion) governs all of it.
-///
-/// Design intent, Dynamic-Island-like rather than showy: the shape springs only on
-/// meaningful *events* (expand/collapse, a section appearing, a banner arriving);
-/// everything else is a short opacity crossfade. Nothing loops continuously unless the
-/// user opted into it, and Reduce Motion collapses the whole vocabulary to plain fades.
-enum NotchAnimation {
-    struct Motion: Equatable {
-        /// Shape growth, section insertion/removal - the "event" spring.
-        let primary: Animation
-        /// Small state crossfades (indicator swaps, dots, volume readout).
-        let secondary: Animation
-        /// Whether perpetual motion (the equalizer) may run at all.
-        let allowsLooping: Bool
-        /// Whether one-shot symbol pulses (needs-you bounce) may fire.
-        let allowsPulse: Bool
-        /// Scale an arriving row grows from; 1 means "no scale, fade only".
-        let arrivalScale: CGFloat
-        /// Whether arriving rows also slide in from the top edge.
-        let arrivalSlides: Bool
-
-        /// Feedback used while a pill control is held down. Keeping this here makes
-        /// direct manipulation feel like the rest of the pill, rather than like a
-        /// separate button animation.
-        let press: Animation
-        /// Geometric squeeze for a pressed control. Reduce Motion resolves this to 1.
-        let pressScale: CGFloat
-        /// Content choreography used after the container has expanded.
-        let expansionContent: Animation
-        /// Starting opacity for content revealed during expansion.
-        let expansionContentOpacity: Double
-        /// Starting scale for content revealed during expansion.
-        let expansionContentScale: CGFloat
-        /// Starting vertical offset for content revealed during expansion.
-        let expansionContentOffset: CGFloat
-        /// Shape-to-content hand-off. Zero under Minimal/Reduce Motion.
-        let expansionContentDelay: TimeInterval
-        /// Content-to-shape hand-off on collapse. Zero under Minimal/Reduce Motion.
-        let collapseShapeDelay: TimeInterval
-        /// How long a one-shot rim acknowledgement stays at full opacity.
-        let feedbackHoldDuration: TimeInterval
-        /// Cadence for client-side progress readouts. This is not a polling interval.
-        let progressMinimumInterval: TimeInterval
-        /// Cadence for the opt-in equalizer loop.
-        let equalizerMinimumInterval: TimeInterval
-
-        /// Whether size/position-based emphasis (press scale, scrub-knob growth,
-        /// row slides) may be used at all. Reduce Motion's central complaint is
-        /// geometric movement, so under Minimal/Reduce Motion feedback must be
-        /// carried by opacity instead - never by moving or resizing things.
-        var allowsGeometry: Bool {
-            arrivalSlides || arrivalScale != 1 || pressScale != 1
-                || expansionContentScale != 1 || expansionContentOffset != 0
-        }
-    }
-
-    /// Semantic motion events. Views should choose an event first and let the policy
-    /// resolve it; this prevents simultaneous state changes from accidentally stacking
-    /// unrelated SwiftUI animations.
-    enum Event: Int, CaseIterable, Hashable {
-        case pollingRefresh
-        case contentReplacement
-        case feedback
-        case structuralInsertion
-        case directManipulation
-        case expansion
-    }
-
-    enum Channel: Equatable {
-        case none, secondary, primary, press
-    }
-
-    struct Policy: Equatable {
-        let event: Event
-        let channel: Channel
-        let allowsGeometry: Bool
-        let allowsPulse: Bool
-    }
-
-    /// Resolves a simultaneous group to one deterministic animation channel. Expansion
-    /// owns container geometry, followed by direct manipulation, structural insertion,
-    /// feedback, content replacement, and finally polling (which is intentionally inert).
-    static func policy(for events: Set<Event>, motion: Motion) -> Policy {
-        let event = events.max { $0.rawValue < $1.rawValue } ?? .pollingRefresh
-        switch event {
-        case .expansion:
-            return Policy(event: event, channel: .primary,
-                          allowsGeometry: motion.allowsGeometry, allowsPulse: false)
-        case .directManipulation:
-            return Policy(event: event, channel: .press,
-                          allowsGeometry: motion.allowsGeometry, allowsPulse: false)
-        case .structuralInsertion:
-            return Policy(event: event, channel: .primary,
-                          allowsGeometry: motion.allowsGeometry, allowsPulse: motion.allowsPulse)
-        case .feedback:
-            return Policy(event: event, channel: .secondary,
-                          allowsGeometry: false, allowsPulse: motion.allowsPulse)
-        case .contentReplacement:
-            return Policy(event: event, channel: .secondary,
-                          allowsGeometry: false, allowsPulse: false)
-        case .pollingRefresh:
-            return Policy(event: event, channel: .none,
-                          allowsGeometry: false, allowsPulse: false)
-        }
-    }
-
-    /// Reduce Motion always wins: it maps to exactly the `.minimal` vocabulary,
-    /// regardless of the user's style choice.
-    static func resolve(style: AnimationStyle, reduceMotion: Bool) -> Motion {
-        guard !reduceMotion, style != .minimal else {
-            return Motion(
-                primary: .easeInOut(duration: 0.18),
-                secondary: .easeInOut(duration: 0.12),
-                allowsLooping: false,
-                allowsPulse: false,
-                arrivalScale: 1,
-                arrivalSlides: false,
-                press: .easeInOut(duration: 0.12),
-                pressScale: 1,
-                expansionContent: .easeInOut(duration: 0.12),
-                expansionContentOpacity: 0,
-                expansionContentScale: 1,
-                expansionContentOffset: 0,
-                expansionContentDelay: 0,
-                collapseShapeDelay: 0,
-                feedbackHoldDuration: 0.08,
-                progressMinimumInterval: 1,
-                equalizerMinimumInterval: 1
-            )
-        }
-        switch style {
-        case .dynamic:
-            return Motion(
-                primary: .spring(response: 0.52, dampingFraction: 0.74),
-                secondary: .easeInOut(duration: 0.22),
-                allowsLooping: true,
-                allowsPulse: true,
-                arrivalScale: 0.90,
-                arrivalSlides: true,
-                press: .spring(response: 0.20, dampingFraction: 0.60),
-                pressScale: 0.90,
-                expansionContent: .easeOut(duration: 0.24),
-                expansionContentOpacity: 0,
-                expansionContentScale: 0.96,
-                expansionContentOffset: 5,
-                expansionContentDelay: 0.065,
-                collapseShapeDelay: 0.085,
-                feedbackHoldDuration: 0.14,
-                progressMinimumInterval: 1.0 / 15.0,
-                equalizerMinimumInterval: 1.0 / 15.0
-            )
-        case .subtle, .minimal:
-            // Tighter and better damped than `.dynamic` - it settles without
-            // overshoot you can read, which is what makes it feel built-in.
-            return Motion(
-                primary: .spring(response: 0.42, dampingFraction: 0.86),
-                secondary: .easeInOut(duration: 0.18),
-                allowsLooping: true,
-                allowsPulse: true,
-                arrivalScale: 0.96,
-                arrivalSlides: true,
-                press: .spring(response: 0.24, dampingFraction: 0.72),
-                pressScale: 0.96,
-                expansionContent: .easeOut(duration: 0.20),
-                expansionContentOpacity: 0,
-                expansionContentScale: 0.985,
-                expansionContentOffset: 3,
-                expansionContentDelay: 0.045,
-                collapseShapeDelay: 0.065,
-                feedbackHoldDuration: 0.12,
-                progressMinimumInterval: 1.0 / 15.0,
-                equalizerMinimumInterval: 1.0 / 15.0
-            )
-        }
-    }
 }
 
 /// Decides which minimized music indicator actually renders for a given style +
@@ -268,24 +41,38 @@ enum MusicIndicatorResolver {
     }
 }
 
-/// Tiny three-bar "equalizer" for the minimized wing while media is actually playing -
-/// the classic now-playing affordance. Bar heights are a pure function of absolute time
-/// (`barLevel`, tested), sampled by a `TimelineView` at the resolved 15fps cadence - so there is no
-/// `repeatForever` @State animation to leak or restart, and the timeline exists only
-/// while the view is rendered: paused/absent media costs literally nothing. Fixed
-/// 12×12 frame so swapping with the static `music.note` never shifts layout.
+/// "Equalizer" bars while media is actually playing - the classic now-playing affordance.
+/// Bar heights are a pure function of absolute time (`barLevel`, tested), sampled by a
+/// `TimelineView` at the resolved 15fps cadence - so there is no `repeatForever` @State
+/// animation to leak or restart, and the timeline exists only while the view is rendered:
+/// paused/absent media costs literally nothing. Callers also pass `paused` so the timeline
+/// stops whenever the bars are not on screen (the expanded variant only runs while the pill
+/// is fully expanded). The minimized wing uses three 3pt bars in a 14pt slot; the expanded
+/// artwork overlay uses four.
 struct NowPlayingEqualizer: View {
     @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Bars in the compact (wing) variant.
     static let barCount = 3
+    /// Bars in the expanded artwork overlay.
+    static let expandedBarCount = 4
     /// Distinct sub-2Hz frequencies and spread phases per bar so the motion reads
     /// organic rather than mechanical, without any randomness (deterministic in time).
-    private static let frequencies: [Double] = [1.2, 1.7, 0.9]
-    private static let phases: [Double] = [0, 2.1, 4.2]
+    private static let frequencies: [Double] = [1.2, 1.7, 0.9, 1.45]
+    private static let phases: [Double] = [0, 2.1, 4.2, 1.0]
+
+    var bars = NowPlayingEqualizer.barCount
+    var barWidth: CGFloat = 3
+    var spacing: CGFloat = 2
+    var minHeight: CGFloat = 3
+    var maxHeight: CGFloat = 14
+    var tint: Color = .white
+    var paused = false
 
     /// Normalized 0...1 level of one bar at absolute time `t`.
     static func barLevel(_ index: Int, at t: TimeInterval) -> Double {
-        let i = index % barCount
+        let i = ((index % frequencies.count) + frequencies.count) % frequencies.count
         return 0.5 + 0.5 * sin(2 * .pi * frequencies[i] * t + phases[i])
     }
 
@@ -294,41 +81,152 @@ struct NowPlayingEqualizer: View {
             style: settings.animationStyle,
             reduceMotion: reduceMotion
         )
-        TimelineView(.animation(minimumInterval: motion.equalizerMinimumInterval)) { context in
+        TimelineView(.animation(minimumInterval: motion.equalizerMinimumInterval, paused: paused)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .bottom, spacing: 2) {
-                ForEach(0..<Self.barCount, id: \.self) { i in
+            HStack(alignment: .bottom, spacing: spacing) {
+                ForEach(0..<bars, id: \.self) { i in
                     Capsule(style: .continuous)
-                        .frame(width: 2.5, height: 3 + 8 * Self.barLevel(i, at: t))
+                        .fill(tint)
+                        .frame(width: barWidth, height: minHeight + (maxHeight - minHeight) * Self.barLevel(i, at: t))
                 }
             }
         }
-        .frame(width: 12, height: 12, alignment: .bottom)
+        .frame(
+            width: CGFloat(bars) * barWidth + CGFloat(max(0, bars - 1)) * spacing,
+            height: maxHeight,
+            alignment: .bottom
+        )
+        .accessibilityHidden(true)
     }
 }
 
-/// Press feedback for pill buttons. The dim is unconditional - a button must always
-/// acknowledge a press - but the squeeze is geometric, so it's dropped under
-/// Minimal/Reduce Motion. Wrapped in a `View` because a `ButtonStyle` can't hold
-/// `@Environment`/`@ObservedObject` itself.
+/// Press feedback for pill buttons, shared by every section so a press always feels the same.
+/// Two roles, because a 268pt row must not squeeze like a 24pt icon:
+/// - `.icon` (default): a quick spring squeeze + dim on press, a springy release that
+///   overshoots slightly (tactile). The squeeze is geometric, so it is dropped under
+///   Minimal/Reduce Motion; the dim stays, since a button must always acknowledge a press.
+/// - `.row`: a rounded highlight fades in behind the whole row (no squeeze, only a hair of
+///   one in the Lively style). Under Reduce Transparency the highlight is an opaque gray.
+/// Both draw a visible keyboard-focus ring. Wrapped in a `View` because a `ButtonStyle`
+/// can't hold `@Environment`/`@ObservedObject` itself.
 struct PillButtonStyle: ButtonStyle {
+    enum Role { case icon, row }
+
+    var role: Role = .icon
+
     func makeBody(configuration: Configuration) -> some View {
-        PressFeedback(configuration: configuration)
+        PressFeedback(configuration: configuration, role: role)
     }
 
     private struct PressFeedback: View {
         let configuration: ButtonStyleConfiguration
+        let role: Role
         @ObservedObject private var settings = SettingsStore.shared
         @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+        @Environment(\.isFocused) private var isFocused
+        @Environment(\.colorSchemeContrast) private var contrast
+
+        private static let highlightHorizontalBleed: CGFloat = -6
+        private static let highlightVerticalBleed: CGFloat = -2
 
         var body: some View {
             let motion = NotchAnimation.resolve(
                 style: settings.animationStyle, reduceMotion: reduceMotion
             )
-            configuration.label
-                .opacity(configuration.isPressed ? 0.55 : 1)
-                .scaleEffect(motion.allowsGeometry && configuration.isPressed ? motion.pressScale : 1)
-                .animation(motion.press, value: configuration.isPressed)
+            let pressed = configuration.isPressed
+            switch role {
+            case .icon:
+                configuration.label
+                    .opacity(pressed ? 0.55 : 1)
+                    .scaleEffect(motion.allowsGeometry && pressed ? motion.pressScale : 1)
+                    .animation(pressed ? motion.press : motion.release, value: pressed)
+                    // Visible keyboard focus: the system ring is lost with a custom style on
+                    // the black pill, so draw one only while the button holds keyboard focus.
+                    .pillFocusRing(
+                        RoundedRectangle(cornerRadius: PillRadius.control, style: .continuous),
+                        isFocused: isFocused, increasedContrast: contrast == .increased
+                    )
+            case .row:
+                configuration.label
+                    .background(
+                        RoundedRectangle(cornerRadius: PillRadius.row, style: .continuous)
+                            .fill(PillSurface.highlight(
+                                base: reduceTransparency ? 0.10 : 0.08,
+                                reduceTransparency: reduceTransparency,
+                                increasedContrast: contrast == .increased
+                            ))
+                            .padding(.horizontal, Self.highlightHorizontalBleed)
+                            .padding(.vertical, Self.highlightVerticalBleed)
+                            .opacity(pressed ? 1 : 0)
+                    )
+                    .scaleEffect(motion.allowsGeometry && pressed ? motion.rowPressScale : 1)
+                    .animation(pressed ? motion.press : motion.release, value: pressed)
+                    .pillFocusRing(
+                        RoundedRectangle(cornerRadius: PillRadius.row, style: .continuous),
+                        isFocused: isFocused, increasedContrast: contrast == .increased,
+                        horizontalBleed: Self.highlightHorizontalBleed,
+                        verticalBleed: Self.highlightVerticalBleed
+                    )
+            }
+        }
+    }
+}
+
+/// Icon-only button content with a guaranteed minimum hit target (24x24, scaled with the
+/// user's text size) and a full-rectangle `contentShape`, so small glyphs stay easy to click.
+/// Use as the label of a `Button` styled with `PillButtonStyle`.
+struct PillIconLabel: View {
+    let systemName: String
+    var size: CGFloat = 11
+    var weight: Font.Weight = .medium
+    var color: Color = .white
+    /// The button sits at the trailing edge of its row or header: pull the 24pt box out by
+    /// the glyph's slack so the visible glyph ends flush with the content edge shared by
+    /// badges, chips and percent labels (the extra hit area stays inside the pill's inset).
+    var alignsTrailing = false
+
+    @ScaledMetric(relativeTo: .body) private var minimumSide: CGFloat = 24
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: size, weight: weight))
+            .foregroundStyle(color)
+            .frame(minWidth: minimumSide, minHeight: minimumSide)
+            .contentShape(Rectangle())
+            .padding(.trailing, alignsTrailing ? -Self.trailingSlack(side: minimumSide, glyph: size) : 0)
+    }
+
+    /// Empty space between a glyph of about `glyph` points and the right edge of a centered
+    /// `side`-point box.
+    static func trailingSlack(side: CGFloat, glyph: CGFloat) -> CGFloat {
+        max(0, (side - glyph) / 2)
+    }
+}
+
+/// Keyboard/VoiceOver step for the now-playing seek bar's adjustable action.
+enum PlaybackSeekStep {
+    /// Seconds moved per VoiceOver increment/decrement.
+    static let seconds: TimeInterval = 10
+
+    /// The clamped target position after stepping `forward` or backward from `position`.
+    static func target(
+        from position: TimeInterval, duration: TimeInterval, forward: Bool
+    ) -> TimeInterval {
+        let moved = position + (forward ? seconds : -seconds)
+        return min(max(0, moved), max(0, duration))
+    }
+}
+
+extension View {
+    /// Adds an adjustable (swipe up/down) accessibility action only when `enabled`, so a
+    /// read-only value is not announced as adjustable.
+    @ViewBuilder
+    func pillAdjustable(enabled: Bool, _ onAdjust: @escaping (AccessibilityAdjustmentDirection) -> Void) -> some View {
+        if enabled {
+            accessibilityAdjustableAction(onAdjust)
+        } else {
+            self
         }
     }
 }
@@ -356,6 +254,17 @@ extension View {
         }
     }
 
+    /// A control that behaves as a switch: VoiceOver reads the toggle trait on macOS 14+
+    /// (`.isToggle`); on 13, where the trait does not exist, the hint says what the button does.
+    @ViewBuilder
+    func pillToggleSemantics(hint: String) -> some View {
+        if #available(macOS 14.0, *) {
+            accessibilityAddTraits(.isToggle)
+        } else {
+            accessibilityHint(Text(hint))
+        }
+    }
+
     /// `.symbolEffect(.bounce)` is macOS 14+; on 13 the icon change simply doesn't
     /// pulse. `enabled` is the motion vocabulary's `allowsPulse`, so Reduce Motion and
     /// the Minimal style silence the pulse instead of it firing regardless (it used to).
@@ -365,6 +274,27 @@ extension View {
             symbolEffect(.bounce, value: trigger)
         } else {
             self
+        }
+    }
+}
+
+/// Re-renders time-derived text (an event countdown, a due label, a "10m" age) on a
+/// wall-clock cadence. Nothing in a controller publishes when a clock merely moves, so
+/// without this the labels freeze until an unrelated change. A `TimelineView` only ticks
+/// while it is on screen, and the expanded layer is removed when the pill minimizes, so the
+/// collapsed pill stays timer-free.
+struct PillClock<Content: View>: View {
+    enum Cadence { case minute, second }
+
+    var cadence: Cadence = .minute
+    @ViewBuilder let content: (Date) -> Content
+
+    var body: some View {
+        switch cadence {
+        case .minute:
+            TimelineView(.everyMinute) { context in content(context.date) }
+        case .second:
+            TimelineView(.periodic(from: .now, by: 1)) { context in content(context.date) }
         }
     }
 }

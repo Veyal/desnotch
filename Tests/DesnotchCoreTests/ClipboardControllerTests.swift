@@ -101,13 +101,24 @@ final class ClipboardControllerTests: XCTestCase {
         XCTAssertEqual(entry.preview, "safe txt next")
     }
 
+    func testPreviewMarksTruncationWithAnEllipsisOnlyWhenCut() {
+        let long = String(repeating: "word ", count: 30)
+        let cut = ClipboardEntry(text: long).preview
+        XCTAssertTrue(cut.hasSuffix("\u{2026}"), "the memory-bound cut must be visible at any pill width")
+        XCTAssertLessThanOrEqual(cut.unicodeScalars.count, ClipboardEntry.previewScalarLimit + 1)
+
+        let exact = String(repeating: "a", count: ClipboardEntry.previewScalarLimit)
+        XCTAssertEqual(ClipboardEntry(text: exact).preview, exact, "text that fits exactly is not marked")
+        XCTAssertEqual(ClipboardEntry(text: "short").preview, "short")
+        XCTAssertFalse(ClipboardEntry(text: "short").preview.hasSuffix("\u{2026}"))
+    }
+
     @MainActor
     func testStatusMenuExposesCopyAndRemoveForEveryEntry() {
         let entries = (1...ClipboardController.maxEntries).map {
             ClipboardEntry(text: "entry \($0)")
         }
-        let delegate = AppDelegate()
-        let menu = delegate.makeClipboardSubmenu(entries: entries, privacy: false)
+        let menu = StatusMenuBuilder.makeClipboardSubmenu(entries: entries, privacy: false, target: NSObject())
 
         XCTAssertEqual(menu.items.count, ClipboardController.maxEntries + 2)
         for (entry, item) in zip(entries, menu.items.prefix(ClipboardController.maxEntries)) {

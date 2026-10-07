@@ -8,6 +8,9 @@ public struct OnboardingView: View {
     public var onOpenSettings: () -> Void
     public var onDone: () -> Void
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
     public init(onOpenSettings: @escaping () -> Void = {}, onDone: @escaping () -> Void = {}) {
         self.onOpenSettings = onOpenSettings
         self.onDone = onDone
@@ -44,10 +47,22 @@ public struct OnboardingView: View {
                         detail: "Drag a file onto the notch for a small shelf. Click to open, drag it back out, or right-click to reveal, copy, share, or remove it."
                     )
                     GuideCard(
+                        symbol: "keyboard.fill",
+                        tint: .indigo,
+                        title: "Keyboard and VoiceOver",
+                        detail: "Choose Show Notch in the status menu to hold the notch open, or turn on the \(HotKeyBinding.default.displayString) shortcut in Settings. The status menu also lists the next meeting, reminders, agents, and battery, so everything is reachable without hovering."
+                    )
+                    GuideCard(
                         symbol: "checklist",
                         tint: .purple,
                         title: "Turn on only what helps",
                         detail: "Reminders and the clipboard pocket are optional and off by default. Configure them in Settings when you need them."
+                    )
+                    GuideCard(
+                        symbol: "wand.and.rays",
+                        tint: .teal,
+                        title: "Motion that follows you",
+                        detail: "The notch springs open and fades its sections in. Choose Subtle, Dynamic, or Minimal in Settings; macOS Reduce Motion always wins and keeps only short fades."
                     )
                     GuideCard(
                         symbol: "eye.slash.fill",
@@ -65,26 +80,30 @@ public struct OnboardingView: View {
             footer
         }
         .frame(width: 360, height: 560)
-        .background(
-            LinearGradient(
-                colors: [Color(nsColor: .windowBackgroundColor), Color.black.opacity(0.18)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
+        // Solid system background: no gradient, so Reduce Transparency and Increase Contrast
+        // need no special case here.
+        .background(Color(nsColor: .windowBackgroundColor))
+        .environment(\.onboardingEmphasis, OnboardingEmphasis(
+            solidSurface: reduceTransparency, strongEdge: contrast == .increased
+        ))
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 10) {
-                Image(systemName: "rectangle.topthird.inset.filled")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.cyan)
-                    .accessibilityHidden(true)
-                Text("Make the notch yours")
-                    .font(.system(size: 21, weight: .bold, design: .rounded))
-                    .foregroundStyle(.primary)
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            // A static miniature of the pill's silhouette: the same shape and solid black
+            // as the real notch, so the first thing shown is the thing being introduced.
+            NotchShape(topEar: 3, bottomRadius: 8)
+                .fill(Color.black)
+                .frame(width: 72, height: 18)
+                .overlay(
+                    NotchShape(topEar: 3, bottomRadius: 8)
+                        .stroke(Color.primary.opacity(contrast == .increased ? 0.5 : 0.18), lineWidth: 0.5)
+                )
+                .accessibilityHidden(true)
+            Text("Make the notch yours")
+                .font(.system(size: 21, weight: .bold))
+                .foregroundStyle(.primary)
+                .accessibilityAddTraits(.isHeader)
             Text("A few useful shortcuts, always close at hand.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
@@ -109,7 +128,27 @@ public struct OnboardingView: View {
     }
 }
 
+/// Surface treatment for the guide cards, derived once from the accessibility environment.
+private struct OnboardingEmphasis: Equatable {
+    /// Reduce Transparency: opaque card fill instead of a translucent tint.
+    var solidSurface = false
+    /// Increase Contrast: a visibly stronger card edge.
+    var strongEdge = false
+}
+
+private struct OnboardingEmphasisKey: EnvironmentKey {
+    static let defaultValue = OnboardingEmphasis()
+}
+
+private extension EnvironmentValues {
+    var onboardingEmphasis: OnboardingEmphasis {
+        get { self[OnboardingEmphasisKey.self] }
+        set { self[OnboardingEmphasisKey.self] = newValue }
+    }
+}
+
 private struct GuideCard: View {
+    @Environment(\.onboardingEmphasis) private var emphasis
     let symbol: String
     let tint: Color
     let title: String
@@ -135,10 +174,15 @@ private struct GuideCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)
-        .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            emphasis.solidSurface
+                ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
+                : AnyShapeStyle(Color.primary.opacity(0.055)),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(.primary.opacity(0.08), lineWidth: 1)
+                .stroke(Color.primary.opacity(emphasis.strongEdge ? 0.45 : 0.08), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
     }

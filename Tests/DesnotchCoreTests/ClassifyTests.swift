@@ -26,6 +26,17 @@ final class ClassifyTests: XCTestCase {
         XCTAssertEqual(AgentActivityScanner.classify(elapsed: 10 * 60, turnInProgress: false), .idle)
     }
 
+    func testFutureTimestampsAreSkewedNotPinnedAsActive() {
+        // Clock set back / restored files: a transcript hours in the future must not read as
+        // "working" or "needs you" until real time catches up.
+        XCTAssertNil(AgentActivityScanner.classify(elapsed: -3600, turnInProgress: true))
+        XCTAssertNil(AgentActivityScanner.classify(elapsed: -3600, turnInProgress: false))
+        XCTAssertNil(AgentActivityScanner.classify(elapsed: -61, turnInProgress: true))
+        // Small negative ages are ordinary jitter and clamp to "just now".
+        XCTAssertEqual(AgentActivityScanner.classify(elapsed: -5, turnInProgress: true), .working)
+        XCTAssertEqual(AgentActivityScanner.classify(elapsed: -60, turnInProgress: false), .needsYourTurn)
+    }
+
     func testPresentationLabelsStayGeneric() {
         XCTAssertEqual(AgentActivityState.working.presentationLabel, "running")
         XCTAssertEqual(AgentActivityState.needsYourTurn.presentationLabel, "waiting you")

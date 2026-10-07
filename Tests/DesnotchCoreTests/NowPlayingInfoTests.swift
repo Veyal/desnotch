@@ -287,8 +287,8 @@ final class NotchAnimationTests: XCTestCase {
             XCTAssertEqual(resolved, minimal, "\(style) must collapse to minimal under Reduce Motion")
             XCTAssertFalse(resolved.allowsLooping)
             XCTAssertFalse(resolved.allowsPulse)
-            XCTAssertEqual(resolved.arrivalScale, 1)
-            XCTAssertFalse(resolved.arrivalSlides)
+            XCTAssertEqual(resolved.rowArrivalScale, 1)
+            XCTAssertEqual(resolved.rowArrivalOffsetY, 0)
         }
     }
 
@@ -298,11 +298,11 @@ final class NotchAnimationTests: XCTestCase {
         for m in [subtle, dynamic] {
             XCTAssertTrue(m.allowsLooping)
             XCTAssertTrue(m.allowsPulse)
-            XCTAssertTrue(m.arrivalSlides)
+            XCTAssertNotEqual(m.rowArrivalOffsetY, 0)
         }
         XCTAssertNotEqual(subtle, dynamic)
         // Dynamic travels further on arrival; subtle stays restrained.
-        XCTAssertLessThan(dynamic.arrivalScale, subtle.arrivalScale)
+        XCTAssertLessThan(dynamic.rowArrivalScale, subtle.rowArrivalScale)
     }
 
     func testMinimalStyleSuppressesMotionWithoutReduceMotion() {
@@ -488,5 +488,73 @@ final class NowPlayingEqualizerTests: XCTestCase {
         let t = 1.234
         let levels = (0..<NowPlayingEqualizer.barCount).map { NowPlayingEqualizer.barLevel($0, at: t) }
         XCTAssertGreaterThan(Set(levels.map { Int($0 * 1000) }).count, 1)
+    }
+}
+
+final class AppActivationResolutionTests: XCTestCase {
+    private actor Recorder {
+        var calls: [String] = []
+        func record(_ call: String) { calls.append(call) }
+    }
+
+    func testResolvesHostThroughInjectedHelpersWithinBudget() async {
+        let recorder = Recorder()
+        let owner = await AppActivation.owningHostPID(
+            projectPath: "/tmp/project",
+            hostPIDs: [400],
+            run: { executable, _, timeout in
+                await recorder.record(executable)
+                XCTAssertGreaterThan(timeout, 0)
+                XCTAssertLessThanOrEqual(timeout, AppActivation.resolveBudget)
+                return executable.hasSuffix("lsof") ? "p32487\nfcwd\n" : "32487 500\n500 400\n400 1\n"
+            }
+        )
+        XCTAssertEqual(owner, 400)
+        let calls = await recorder.calls
+        XCTAssertEqual(calls, ["/usr/sbin/lsof", "/bin/ps"])
+    }
+
+    func testFailedLsofShortCircuitsWithoutRunningPs() async {
+        let recorder = Recorder()
+        let owner = await AppActivation.owningHostPID(
+            projectPath: "/tmp/project",
+            hostPIDs: [400],
+            run: { executable, _, _ in
+                await recorder.record(executable)
+                return nil
+            }
+        )
+        XCTAssertNil(owner)
+        let calls = await recorder.calls
+        XCTAssertEqual(calls, ["/usr/sbin/lsof"])
+    }
+
+    func testNoRunningHostsSkipsAllHelpers() async {
+        let recorder = Recorder()
+        let owner = await AppActivation.owningHostPID(
+            projectPath: "/tmp/project",
+            hostPIDs: [],
+            run: { executable, _, _ in
+                await recorder.record(executable)
+                return ""
+            }
+        )
+        XCTAssertNil(owner)
+        let calls = await recorder.calls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testExhaustedBudgetSkipsPs() async {
+        let owner = await AppActivation.owningHostPID(
+            projectPath: "/tmp/project",
+            hostPIDs: [400],
+            run: { executable, _, _ in
+                // Burn the whole budget in the first helper.
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                return executable.hasSuffix("lsof") ? "p32487\n" : "32487 400\n"
+            },
+            budget: 0.03
+        )
+        XCTAssertNil(owner)
     }
 }

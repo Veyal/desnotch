@@ -4,15 +4,10 @@ import UserNotifications
 /// Fires when an agent session newly flips to "needs your turn". Packaged `.app`: a local
 /// user notification (with the standard one-time permission prompt). Bare `swift run`
 /// binary: `UNUserNotificationCenter` requires a bundle identity and would crash, so it
-/// falls back to a short sound. Toggleable from the status-bar menu; enabled by default.
+/// falls back to a short sound. Delivery only: it owns no settings. Each caller checks its own
+/// `SettingsStore` toggle (`notifyAgentNeedsYou`, `notifyStuckProcess`) before notifying.
 public final class AgentAttentionNotifier {
     public static let shared = AgentAttentionNotifier()
-    public static let defaultsKey = "notifyAgentNeedsYou"
-
-    public var isEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: Self.defaultsKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: Self.defaultsKey) }
-    }
 
     private var authRequested = false
     private var canUseUserNotifications: Bool { Bundle.main.bundleIdentifier != nil }
@@ -30,7 +25,6 @@ public final class AgentAttentionNotifier {
     }
 
     public func notify(title: String, body: String) {
-        guard isEnabled else { return }
         guard canUseUserNotifications else {
             NSSound(named: "Glass")?.play()
             return

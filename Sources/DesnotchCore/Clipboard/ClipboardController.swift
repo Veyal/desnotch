@@ -18,7 +18,12 @@ public struct ClipboardEntry: Identifiable, Equatable, Sendable {
     public var preview: String {
         var scalars = String.UnicodeScalarView()
         var previousWasSpace = false
+        var truncated = false
         for scalar in text.unicodeScalars {
+            if scalars.count >= Self.previewScalarLimit {
+                truncated = true
+                break
+            }
             let isBidiControl = (0x202A...0x202E).contains(scalar.value)
                 || (0x2066...0x2069).contains(scalar.value)
                 || scalar.value == 0x200E || scalar.value == 0x200F
@@ -31,11 +36,16 @@ public struct ClipboardEntry: Identifiable, Equatable, Sendable {
                 scalars.append(scalar)
                 previousWasSpace = false
             }
-            if scalars.count >= 72 { break }
         }
         let result = String(scalars).trimmingCharacters(in: .whitespacesAndNewlines)
-        return result.isEmpty ? "Text" : result
+        guard !result.isEmpty else { return "Text" }
+        // Mark the memory-bound cut so a wide pill never ends a row mid-word with no sign
+        // of truncation (a narrow row still tail-truncates on its own).
+        return truncated ? result + "\u{2026}" : result
     }
+
+    /// Scalar cap for `preview` (a memory/display bound, not the visible width).
+    static let previewScalarLimit = 72
 }
 
 /// A bounded, opt-in clipboard pocket for recent plain text.
@@ -63,9 +73,13 @@ public final class ClipboardController: ObservableObject {
     private let pasteboard: NSPasteboard
     private let settings: SettingsStore
     private let pollingInterval: TimeInterval
+    private let activity: PollingActivity
     private var lastChangeCount: Int
     private var timer: Timer?
+    private var isEnabled = false
+    private var isSuspended = false
     private var settingsObserver: AnyCancellable?
+    private var activityObservers: [AnyCancellable] = []
     private var copyFeedbackGeneration = 0
 
     public convenience init() {
@@ -75,10 +89,12 @@ public final class ClipboardController: ObservableObject {
     init(
         pasteboard: NSPasteboard,
         settings: SettingsStore,
-        pollingInterval: TimeInterval = 1
+        pollingInterval: TimeInterval = 1,
+        activity: PollingActivity? = nil
     ) {
         self.pasteboard = pasteboard
         self.settings = settings
+        self.activity = activity ?? .shared
         self.pollingInterval = max(0.25, pollingInterval)
         lastChangeCount = pasteboard.changeCount
 
@@ -87,7 +103,24 @@ public final class ClipboardController: ObservableObject {
             .sink { [weak self] enabled in
                 self?.setEnabled(enabled)
             }
+        // Like the other poll loops, the timer stops while nobody can see the result (displays or
+        // system asleep, session resigned) and stretches in Low Power Mode.
+        activityObservers = [
+            self.activity.$isSuspended.removeDuplicates().sink { [weak self] suspended in
+                guard let self else { return }
+                self.isSuspended = suspended
+                self.updateTimer()
+                // Catch a copy made while polling was off.
+                if !suspended, self.isEnabled { self.scanNow() }
+            },
+            self.activity.$isLowPowerMode.removeDuplicates().sink { [weak self] _ in
+                self?.updateTimer()
+            }
+        ]
     }
+
+    /// Internal so tests can assert the timer follows the setting and the sleep gate.
+    var isPolling: Bool { timer != nil }
 
     /// Internal so deterministic tests can drive a scan without waiting for a timer.
     func scanNow() {
@@ -140,18 +173,22 @@ public final class ClipboardController: ObservableObject {
     }
 
     private func setEnabled(_ enabled: Bool) {
+        isEnabled = enabled
+        lastChangeCount = pasteboard.changeCount
+        if !enabled { clear() }
+        updateTimer()
+    }
+
+    private func updateTimer() {
         timer?.invalidate()
         timer = nil
-        lastChangeCount = pasteboard.changeCount
-        guard enabled else {
-            clear()
-            return
-        }
+        guard isEnabled, !isSuspended else { return }
 
-        let timer = Timer(timeInterval: pollingInterval, repeats: true) { [weak self] _ in
+        let interval = activity.scaled(pollingInterval)
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.scanNow() }
         }
-        timer.tolerance = min(0.25, pollingInterval / 4)
+        timer.tolerance = min(0.25, interval / 4)
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
