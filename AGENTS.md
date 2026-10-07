@@ -39,7 +39,12 @@ fallback ~1.5s after a transport tap, in `NowPlayingController.reconcileWithGet`
 Resilience is load-bearing too: all mutable stream state runs through one serial
 `DispatchQueue` (`desnotch.mediaremote`), `stderr` goes to `/dev/null` (not an undrained pipe
 that could deadlock perl), and a `terminationHandler` relaunches the stream with exponential
-backoff (1s→30s) unless `stopStreaming()` set `isStopping`. Don't regress these when editing
+backoff (1s→30s, `AdapterRestartBackoff`) unless `stopStreaming()` set `isStopping`. The backoff
+resets only after the adapter emits a valid JSON line or stays up >=10s - never at launch, or a
+crash-on-start adapter would respawn perl every second forever. Every perl launch goes through
+`MediaRemoteBridge.makeAdapterProcess` with `SubprocessRunner.sanitizedEnvironment()` (no
+`PERL5OPT`/`PERL5LIB`/`DYLD_*`), and pipe/termination callbacks carry a stream generation so bytes
+from a dead adapter can't corrupt the next stream's first line. Don't regress these when editing
 `MediaRemoteBridge`.
 
 If real media is playing but the pill still doesn't appear, first check literally whether
@@ -69,8 +74,17 @@ after 1s while still hovering" bug). Don't reintroduce it. The same test drives
 expanded pill stacks every section at once - no priority switch. An agent needing
 attention changes the wing icon (lightning, yellow) but does NOT force the pill open.
 
+Keyboard/VoiceOver users cannot hover, so `NotchWindowController.isPinnedOpen` (status menu "Show
+Notch" and the opt-in `globalHotkeyEnabled` Carbon `RegisterEventHotKey` shortcut, which needs no
+Accessibility permission) feeds the SAME `updateInteractivity()` decision via
+`PillInteractionPolicy.wantsHover` - it is an extra input, not a second hover source, and it never
+changes `ignoresMouseEvents`. The display that hosts the pill is chosen by
+`DisplaySelection.preferredIndex` (Settings `pillDisplay`, else a notch display, else
+`NSScreen.screens.first`; never the focus-dependent `NSScreen.main`). `AccessibilityAnnouncer`
+posts VoiceOver announcements; never announce banner/reminder/agent text, only that an event happened.
+
 The expanded pill has a **fixed width** (`SettingsStore.expandedWidth`, 300pt by default; on a
-notch screen at least cutout + 2 wings). This is deliberate: the rows contain greedy `Spacer`s, so
+notch screen at least cutout + 2 wings, and never below the minimized pill's `compactWidth`). This is deliberate: the rows contain greedy `Spacer`s, so
 without a fixed width the pill fills whatever the panel proposes and the measured size feeds
 back into the panel's grow-only sizing. Keep the fixed width (and the per-text `maxWidth` caps)
 when adding content - don't let the expanded pill become content-width-driven again. Natural
@@ -88,12 +102,12 @@ with the screen top and the pill renders as a solid-black bottom-rounded extensi
 hardware: minimized = two `wingWidth` wings flanking a `Color.clear` gap exactly the cutout's
 width (indicators live in the wings, **never behind the cutout - that area is opaque hardware
 and anything drawn there is invisible**); expanded = same shape, all content pushed below the
-cutout via `.padding(.top, notch.height + 4)`. Solid `.black` fill (not 0.85 opacity) so it
+cutout via `.padding(.top, notch.height + NotchGeometry.contentTopGap)`. Solid `.black` fill (not 0.85 opacity) so it
 blends seamlessly with the hardware. On a screen with no notch (every non-MacBook display,
 including this project's Mac mini dev machine) the layout is **identical**: it renders around
-a synthetic MacBook-sized cutout (`NotchPillView.fakeNotchSize`, 200×30pt of plain black in
-the middle, wings either side) drawn over the menu bar top-center, so both screen types
-share one code path via `effectiveNotch`. The fallback path is what gets exercised in this
+a synthetic MacBook-sized cutout (`effectiveNotch`, default 200×30pt from
+`SettingsStore.minimizedWidth`/`minimizedHeight`, plain black in the middle, wings either side)
+drawn over the menu bar top-center, so both screen types share one code path via `effectiveNotch`. The fallback path is what gets exercised in this
 dev environment;
 the notch path was built for a MacBook Pro 14" report that the old top-centered layout was
 hidden behind the hardware - verify pixel fit on real hardware after geometry changes.
@@ -113,15 +127,28 @@ Hard privacy constraints for this feature, load-bearing for anyone touching it:
 - All paths are built from `NSHomeDirectory()` (`~/.claude/projects`, `~/.codex/sessions`) -
   never a machine-specific literal.
 - The UI (`NotchPillView.agentSection`) only ever renders counts, generic labels (a project
-  folder's basename via `AgentSession.projectLabel`), and `AgentSession.taskTitle` - a
-  first-prompt-derived hint the owner explicitly opted into, hard-truncated to
+  folder's basename via `AgentSession.projectLabel`, or the generic word "project" when the
+  cwd is unknown - never the encoded directory name), and `AgentSession.taskTitle` - a
+  first-prompt-derived hint behind the OFF-by-default `agentTaskTitlesEnabled` setting
+  (`scan(..., includeTaskTitles:)`: with it off no prompt text is read), hard-truncated to
   `AgentActivityScanner.taskTitleMax` (48 chars), first line only, with harness noise
   (`<...>` wrappers, "Caveat:") rejected. Never full prompts, transcript bodies, or absolute
-  paths. Keep new UI additions on that side of the boundary, and keep the title cap tight -
+  paths. Notifications use the project label only, never the title. Keep new UI additions on
+  that side of the boundary, and keep the title cap tight -
   the pill is permanently on screen and this user screenshots/screen-shares constantly.
-- `AgentActivityScanner` skips Claude Code `subagents/` paths and `agent-*.jsonl` files, and
-  Codex sessions whose `originator`/`source` indicate automation (`exec`, `codex_exec`, etc.) -
-  these are sub-agent/headless fan-out, not a person's session worth surfacing.
+- `AgentActivityScanner` skips Claude Code `subagents/` trees (never descended: `skipDescendants`)
+  and `agent-*.jsonl` files, headless Claude runs (`entrypoint: "sdk-cli"`, read with the cwd and
+  cached with it), and Codex sessions whose `originator`/`source` indicate automation (`exec`,
+  `codex_exec`, etc., or an object-valued `source` such as `{"subagent": {...}}`) - these are
+  sub-agent/headless fan-out, not a person's session worth surfacing. A user-interrupted turn
+  (Codex `turn_aborted`, Claude's `[Request interrupted by user...]` entry) reads as waiting on you,
+  not as a turn in progress.
+
+Code layout: `AgentActivityScanner` (public API, constants, `classify`) orchestrates the `AgentSessionSource`
+conformers (`ClaudeCodeSessionSource`, `CodexSessionSource`, `PiSessionSource`, `OpenCodeSessionSource`, one file each);
+shared caches and byte-level transcript readers live in `AgentScanSupport.swift`. A new provider is a new
+`AgentSessionSource` added to `AgentActivityScanner.sources`. `NotchPillView` is split the same way into
+`NotchPillView+<Section>.swift` extensions; the body, expansion choreography and `pillContent` stay in `NotchPillView.swift`.
 
 State model (`AgentActivityScanner.classify`): a turn in progress becomes `.stalled` after 10
 minutes without a file change (presumed hung); a presumed-hung session is dropped entirely after
@@ -134,9 +161,16 @@ There is no now-playing-vs-agents priority switch anymore: the expanded pill sta
 sections at once, and the minimized state shows both indicators side by side (or one per wing
 on a notch screen).
 
-`AgentActivityController` polls the scanner on a 5s timer (file changes have no OS notification
-to hook, unlike `MediaRemoteBridge`) - keep that off the main actor if you touch it, per the
-existing `Task.detached` pattern.
+`AgentActivityController` polls the scanner on a 5s cadence (file changes have no OS notification
+to hook, unlike `MediaRemoteBridge`) - keep the scan itself off the main actor if you touch it (it
+runs on a plain dispatch queue). Like `MediaUseMonitor` (which only polls as a fallback) and
+`ProcessMonitorController`, the loop is
+started/cancelled from its `SettingsStore` flag and from `PollingActivity.isSuspended` (displays or
+system asleep, session resigned), and `PollingActivity.scaled(_:)` stretches the interval in Low
+Power Mode. New polling loops should follow that pattern; push-driven sources (the MediaRemote
+stream) must not. The process monitor samples via `SubprocessRunner` (`PSProcessSampler`), a full
+`ps` scan every 30s and a pid-scoped `ps -p` refresh while processes are flagged; libproc was
+rejected because `proc_pidinfo` cannot read root-owned processes from a user session.
 
 ## Other pill sections & gestures (v0.3.2)
 
@@ -146,10 +180,12 @@ existing `Task.detached` pattern.
   on the mini's output device; some external DACs have no settable volume - `adjust`
   returns nil and the gesture is a silent no-op there.
 - **Needs-you notifications** (`AgentAttentionNotifier`): fires when a session newly flips
-  to `.needsYourTurn` (keyed by source|project|title across scans, seeded silently on the
-  first scan after launch). Uses `UNUserNotificationCenter` only in a packaged `.app` -
-  a bare `swift run` binary has no bundle identity and would crash, so it falls back to
-  `NSSound`. Toggleable from the status menu (`notifyAgentNeedsYou` default, on by default).
+  to `.needsYourTurn` (keyed by `AgentSession.identityKey`, an opaque hash of the transcript
+  path, across scans; seeded silently on the first scan after launch). Uses
+  `UNUserNotificationCenter` only in a packaged `.app` - a bare `swift run` binary has no
+  bundle identity and would crash, so it falls back to `NSSound`. The notifier is delivery
+  only; callers gate on `SettingsStore.notifyAgentNeedsYou` (agents) and
+  `notifyStuckProcess` (stuck-process detector), both on by default.
 - **Calendar glance** (`CalendarController`, EventKit): next non-all-day event within 24h as
   an expanded row; it keeps the pill alive on its own only when imminent (<30 min or
   ongoing). Usage-description keys live in `scripts/build-app.sh`'s Info.plist. If access is
@@ -160,7 +196,11 @@ existing `Task.detached` pattern.
 - **Actionable reminders** (`RemindersController`, EventKit, OFF by default): shows one incomplete
   reminder (overdue first, otherwise nearest due within seven days), with complete and bounded
   quick-capture actions mirrored in the status menu. Permission is requested only after enablement;
-  queries are generation-checked and stop when disabled. Titles are bounded before publication,
+  queries are generation-checked and stop when disabled. Like `CalendarController` it caches the
+  delivered flag (`isFeatureEnabled`): `@Published` emits before it stores, so never re-read
+  `settings.<flag>` inside its own sink. The 30s tick only re-reads the clock (and stops while
+  `PollingActivity` is suspended); EventKit is fetched on store changes, wake, a clock-state flip and
+  every 10 min. Titles are bounded before publication,
   pass through `privacyRedacted`, and are never logged or persisted by desnotch. Quick capture writes
   directly to the default Reminders list; do not add a parallel reminder store.
 - **Stuck-process detector** (`ProcessMonitorController`): derives interval CPU from accumulated
@@ -183,19 +223,20 @@ existing `Task.detached` pattern.
 - **Focus timer** (`FocusTimerController`): one session-scoped 5/15/25/50-minute live
   activity, started from the status menu and controlled from both menu and pill. It keeps an
   absolute `Date` deadline, one non-repeating wall-clock completion timer, and derives progress
-  in `TimelineView`; never replace this with a repeating controller poll or persistence. Pausing
-  stores only remaining duration in memory. Completion is a transient token + callback used for
-  the pill reveal/sound/VoiceOver announcement, and the completed row remains until dismissed or
-  a new timer starts.
+  in `TimelineView` (1 Hz while running, a no-op hourly period otherwise); never replace this with a
+  repeating controller poll or persistence. Pausing stores only remaining duration in memory.
+  Completion is a transient token + callback used for the pill reveal/sound/VoiceOver announcement,
+  and the completed row remains until dismissed or a new timer starts.
 - **Clipboard pocket** (`ClipboardController`, OFF by default): stores up to eight bounded
-  plain-text copies in memory only and clears on disable/exit. It polls `NSPasteboard.changeCount`
+  plain-text copies in memory only and clears on disable/exit. It polls `NSPasteboard.changeCount` (on the `PollingActivity` gate: stopped while displays/system sleep, stretched in Low Power Mode)
   before reading, skips concealed/transient/password-manager marker types, and never persists or
   logs content. Keep clipboard previews behind `privacyRedacted`; copy/remove/clear must remain
   mirrored in the status menu.
 - **Now-playing timeline**: `NowPlayingInfo.duration/elapsed/elapsedAt` (adapter `duration`/
   `elapsedTime`/`timestamp`; excluded from `==` on purpose - they change every delivery).
-  Position is extrapolated client-side (`position(at:)`) and drawn by a 15fps animation
-  `TimelineView` only while expanded and playing - no extra adapter polling. Hidden when the
+  Position is extrapolated client-side (`position(at:)`) and drawn by a `TimelineView` at
+  `PillProgressCadence` (typically 1-2 fps; 1/15 s only as a floor for very short tracks) only while
+  expanded and playing - no extra adapter polling. Hidden when the
   source reports no duration (radio/streams).
 - **Stale-session policy** (`NowPlayingInfo.hasContent`/`pausedExpiry`): browser media
   sessions are never unregistered while the tab lives, so residue lingers system-wide
@@ -218,7 +259,7 @@ existing `Task.detached` pattern.
   Full-Disk-Access-gated since Sequoia (verified locally on 15.5) and `usernoted` XPC
   is private - do not "upgrade" to either. Needs the Accessibility permission; the
   Settings pane owns the grant/retry/denied flow and the controller self-rechecks
-  trust every 5s while denied. Privacy invariants: banner content lives ONLY in
+  trust every 5s while denied (on the `PollingActivity` gate, like the other loops). Privacy invariants: banner content lives ONLY in
   `NotificationMirrorController.latest` (memory, 60s lifetime), is hard-capped at
   `MirroredNotification.contentMax`, goes through `privacyRedacted` in the UI, and is
   never persisted or put in the status menu (menu shows app name only). Muted apps
@@ -239,25 +280,105 @@ existing `Task.detached` pattern.
   Only banners this app actually mirrored are dismissed (muted apps keep their normal
   system banner); Notification Center history is never touched.
 
-Compact wing priority when several things are active: left = media > focus timer >
+Compact wing priority when several things are active (`WingSelection`): left = media > focus timer >
 stuck-process > calendar > urgent reminder; right = agents > timer displaced by media >
 notification > displaced stuck-process/calendar/reminder. Everything else is one hover away.
 
-**Motion vocabulary**: every animation resolves through
-`NotchAnimation.resolve(style:reduceMotion:)` - don't hand-roll curves in a row.
-Reduce Motion maps to exactly the `.minimal` vocabulary regardless of the user's
-style, `allowsGeometry` gates size/position effects (press scale, scrub knob, row
-slides), `allowsPulse` gates one-shot symbol effects, and `allowsLooping` gates the
-equalizer - the app's only perpetual animation, which is why `musicIndicatorStyle`
-defaults to `.note`. The pill is always on screen: nothing may loop for ordinary
-activity without the user opting in. Container expansion is an explicit
-`PillExpansionPhase` choreography: shape first/content second on open, content first/shape
-second on close, generation-guarded so rapid hover reversals retarget instead of queueing.
-Only `PillStructuralAnimationState` owns section layout animation; content replacement,
-polling refresh, direct manipulation, and transient feedback stay scoped to their subviews.
-The stable AppKit host floor covers the full configured width and normal stacked height;
-`PillPanelSizingPolicy` coalesces fractional overflow measurements and never shrinks another
-dimension when one grows. Preserve that separation rather than restoring broad root animations.
+Wing and stack sizing: `WingMetrics` (`WingIndicator.swift`) grows BOTH wings by `extraWidth` when the
+timer's ring + "25m" label or a two-digit agent count would sit within `minimumInset` of an edge, and adds
+`privacyLane` per side while the mic/camera dots show (the dots live in that lane, never on a wing
+indicator); the compact frame animates on `motion.wing`; the expanded width is independent except that it is floored at `compactWidth`, so hovering never narrows the shape. Its
+constants are measured font widths pinned by `WingMetricsTests` - re-measure when a size changes. The
+expanded stack is not scrollable (scroll adjusts volume), so `PillRowCaps`/`PillStackEstimate` trim
+the lists to the screen height in fixed tiers (a pure function of counts, never of the measured size).
+Anything time-derived in the expanded layer (countdowns, due labels, ages) goes through `PillClock`;
+state the collapsed wings derive from the clock (`isImminent`, `isUrgent`) is republished by the
+controllers' `clockRevision`. Never read props through `self` inside `onChange` closures (the
+marquee froze and `ArtworkGlow` lagged a track that way; `PillMarqueeRenderTests` and
+`ArtworkGlowRenderTests` render them).
+
+**Motion vocabulary** ("fluid hardware extension"): every duration/curve/effect size lives in
+`UI/PillMotion.swift` (`NotchAnimation.Motion` tokens, resolved by
+`NotchAnimation.resolve(style:reduceMotion:)`) - don't hand-roll curves in a row. `.subtle` =
+Fluid (default), `.dynamic` = Lively, `.minimal` and Reduce Motion share one token set (geometry
+snaps, 120ms fades, no blur/scale/loop). `allowsGeometry` gates size/position effects,
+`allowsPulse` one-shot symbol effects, `allowsLooping` the equalizer - the app's only perpetual
+animation, which is why `musicIndicatorStyle` defaults to `.note`. Nothing may loop for ordinary
+activity without opt-in, and blur is capped at 6pt and only during a reveal (also off under Reduce
+Transparency). Structural and content motion have separate authorities:
+- **Shape/container** (`PillExpansionPhase` choreography in `synchronizeExpansion`, generation-guarded
+  so hover reversals retarget): open = shape springs (`shapeOpen`), wings shrink/blur out, then after
+  `shapeLeadDelay` each section reveals via `PillRevealModifier` (opacity/scale/offset/blur,
+  staggered by `PillSectionKind` rank; add new sections to that enum in stacking order, and to
+  `hasSection`). The section stack is NOT built in one pass (that was a 30-90ms main-thread block at the
+  start of every open): `mountSections` mounts it hidden a few sections per run-loop turn (`reveal`
+  gates each section on `mountedThrough`), over `estimatedExpandedHeight` while the shape is already
+  moving (Fluid/Lively) or with the shell held at the collapsed size (Minimal/Reduce Motion, which then
+  snap open and fade the sections in one cheap pass, never showing an empty body); the reveal waits
+  for the last stage. A one-shot `prewarmSections` pays first-use costs shortly after launch. Keep each
+  stage cheap (no single run-loop turn much above one frame) and route every new section through
+  `reveal(_:)`, which is what gates it on the stage. Close =
+  sections fade together (`contentOut`), shape settles (`shapeClose`, critically damped) after
+  `collapseShapeDelay`. `NotchShape` (concave top ear + bottom radius, both animatable, constants in
+  `NotchGeometry`) is the one silhouette for fill, rim, clip and hit shape.
+- **Layout**: expanded content is laid out at a constant width inside the animating, clipped
+  container (content never sees an animated width). Only `PillStructuralAnimationState` owns section
+  insert/remove animation; content replacement, polling refresh, direct manipulation and feedback
+  stay scoped to their subviews; no broad `.animation` on the root.
+- **Flash-open** (`PillFlashKind` via `flashOpen(kind:)`): sets hold time, spotlight section (reveals
+  first, brief highlight, others start dimmed) and rim tint; finite and generation-guarded.
+- **Panel**: the AppKit host never resizes during open/close - `NotchGeometry.contentFloor`
+  (520x720, capped to the screen) covers every normal stack; `PillPanelSizingPolicy` only grows,
+  quantized with headroom, and coalesces fractional overflow. Keep that separation.
+- **Sections and wings** (`PillControls.swift`, `PillStyle.swift`, `WingIndicator.swift`): type scale,
+  row heights and list caps (`PillTextStyle`, `PillRowHeight`, `PillLimits`) are tokens - nothing
+  under 10pt; every row centres its icon in one `PillRowLeading.slot` so titles share a text column
+  (title width caps subtract `PillRowLeading.titleInset`), lists capped so they never force a
+  panel resize. Presses go through one
+  `PillButtonStyle` with two roles: `.icon` (squeeze + dim, `press`/`release` overshoot) and `.row`
+  (highlight only; a squeeze only in Lively). Rows animate as identity changes, not rebuilds: agent
+  rows key on `AgentSession.identityKey` (`PillRowIdentity`), the timer is one persistent
+  `PillTimerRing` across running/paused/completed (it steps once a second - `PillTimerRing.glides` only
+  animates runs short enough to move 0.5pt/s, so none of the 5/15/25/50 min presets glide; no per-frame
+  timeline), the notification row keeps identity and swaps leaves, the reminder row stays as a local
+  "completing" snapshot for `completionHold`. Polling text updates carry `transaction { animation =
+  nil }`; redacted strings crossfade on privacy toggles (opacity only, no blur). Wings are
+  identity-keyed (`WingSelection`, pure and tested: one indicator per wing, swaps via `pillWing`),
+  anchored `NotchGeometry.topEar` + `WingMetrics.inset(of:)` in from the outer edge (so the ear does not
+  clip them and a narrow indicator keeps the same edge margin whatever the other wing shows; spare
+  width opens toward the cutout). The mic/camera dots sit the same ~12pt from the visible edge. Attention is
+  finite: `PillRipple` plays `attentionPulseCount` passes (0 under Reduce Motion = static tint +
+  badge dot) and never loops, so an idle pill runs no animation. Haptics for section actions
+  (tray drop, copy, reminder complete, privacy toggle) fire from the action; the only
+  observer-driven one is `timerComplete`.
+- **Accessibility and fallbacks**: every hold/delay/sweep is a `Motion` token (no raw durations in
+  views; only values derived from a token or the 1 Hz tick may build an `Animation`). Translucent
+  white surfaces go through `PillSurface.highlight` (opaque under Reduce Transparency, stronger under
+  Increase Contrast) and every button carries `pillFocusRing` (one width/opacity, 2pt under Increase
+  Contrast) - it draws only while the panel is key, and the non-activating panel never is, so the
+  status menu stays the keyboard path (see Review-remediation notes). Do not make the panel key to
+  "fix" this: a pinned key panel would take typing away from the frontmost app. `PillArrivalModifier` hides a transitioning view from VoiceOver at once and
+  `.pillFade` replaces `.transition(.opacity)` on controls, so a leaving row/button is never read
+  alongside its replacement; the expanded layer is `accessibilityHidden` until its reveal starts.
+  Settings and onboarding use standard controls with `SettingsNote`/`SettingsHeader` (11pt notes,
+  header trait); there is deliberately no separate "reduce motion in notch" setting - the Animation
+  style plus macOS Reduce Motion already cover it. `PillSourceGuardTests` fails on `.onHover` or
+  `repeatForever` anywhere in `UI/`.
+- **Now playing** (`NowPlayingSectionView`, `NowPlayingControls`, `PillMarquee`): artwork accent
+  (`ArtworkAccent`: 16x16 sample, dominant vivid hue lifted to >= 4.6:1 on black) is derived once per
+  artwork bytes on the adapter queue inside `ArtworkCache`, stored on `NowPlayingInfo.accent` (excluded
+  from `==`) and tints the progress fill, knob, equalizer and a static radial glow whose only
+  animated property is opacity; privacy mode forces white and no glow, and the glow is off under
+  Reduce Motion/Minimal and Reduce Transparency. A track change swaps leaf content only (title/artist
+  `pillBlurSlide`, artwork crossfade keyed on image identity, never the row); the optimistic toggle in
+  `NowPlayingController` is untouched, the glyph/art follow `info.isPlaying` immediately. The progress
+  `TimelineView` runs at `PillProgressCadence` and only while expanded + playing + not scrubbing
+  (scrubbing follows the pointer on `direct`). The title marquee (`MarqueePlan`) runs only while
+  `expansionPhase == .expanded`, at most two passes, generation-guarded; the 4-bar expanded equalizer
+  needs the opt-in `.equalizer` style. Haptics (`PillHaptics`) fire only from button/gesture
+  callbacks. The volume readout is wing glyph + percent while minimized (never behind the cutout) and a
+  chip while expanded. Measure widths with `GeometryReader` `onAppear`/`onChange`, not preference
+  keys: preferences stopped propagating out of a subtree with branching content (headless render).
 
 Agent row clicks resolve the *owning* host app via the agent process's cwd (`lsof`)
 plus process ancestry (`ps`), not the first running terminal
@@ -267,13 +388,14 @@ newest click cancels any in-flight lookup. tmux/cmux ancestry doesn't reach a
 terminal app, so those fall back to the old first-running-host guess.
 
 v0.4.0 additions, one line each: rows are clickable (media → source app via
-`bundleIdentifier`; agent → first running app in `NotchPillView.agentHostBundleIDs`, else
+`bundleIdentifier`; agent → first running app in `AppActivation.agentHostBundleIDs`, else
 reveal `AgentSession.projectPath` - a click-to-jump-only field, NEVER rendered); the
 needs-you wing icon bounces on count change (macOS 14+ symbolEffect); `BatteryController`
 (IOKit push notifications, plug/unplug flashes the pill open, nil state on desktops);
 `UpdateChecker` (daily GitHub latest-release poll, status-menu item; inert in dev builds
-with no bundle version; `isVersion(_:newerThan:)` is tested); `MediaUseMonitor` (5s poll
-of CoreAudio/CMIO "running somewhere" - no capture permission needed - orange mic/green
+with no bundle version; `isVersion(_:newerThan:)` is tested); `MediaUseMonitor` (push:
+CoreAudio/CMIO "running somewhere" property listeners via `HardwareMediaUseSource`, 5s poll
+only as the fallback if registration fails - no capture permission needed - orange mic/green
 camera dots overlaid top-trailing on the shape); privacy mode (`privacyModeEnabled`,
 default OFF, quick toggle in the status menu) follows the centralized
 `NotchPillView.privacyRedacted` boundary above; tray drag-out uses
@@ -283,21 +405,27 @@ QuickLook thumbnails cached in `TrayController.thumbnails`.
 Review-remediation notes (2026-07-31), keep these invariants: `updateForScreenChange`
 must ALWAYS call `applyPlacement` after the grow-only `resize` (the grow-only guard
 alone leaves the panel at stale coordinates after a resolution/display change). The
-status menu is rebuilt on every open (`AppDelegate.rebuildMenu`, via NSMenuDelegate) and
+status menu is rebuilt on every open (`StatusMenuBuilder.rebuildMenu`, via NSMenuDelegate) and
 is the ONLY keyboard/VoiceOver path to media transport, agent jump, meeting join, reminder
-completion/capture, clipboard, and tray - the panel itself is non-activating and unreachable by assistive tech; keep new pill actions
-mirrored there. Notification permission is requested at launch, not lazily (a lazy
-request dropped the triggering notification). Scanner title/cwd/Codex-header facts are
-cached in `AgentActivityScanner` (lock-guarded, nil results retried, cap-bounded) - keep
-new derived-from-file facts behind that cache. Pi CWDs use that same immutable-fact pattern;
+completion/capture, clipboard, and tray - the panel itself is non-activating and never key, so keyboard
+focus cannot reach it (its controls still carry button/label/adjustable semantics for VoiceOver when
+pinned open); keep new pill actions mirrored there. Notification permission is requested at launch, not lazily (a lazy
+request dropped the triggering notification). Scanner cwd/Codex-header facts are
+cached in `AgentActivityScanner` (lock-guarded, nil results retried, cap-bounded), titles also
+cache misses (`shouldRetryMissingTitle`), and turn state is cached per path under (mtime, size)
+and pruned per scan - keep new derived-from-file facts behind those caches. Tail reads escalate
+64KB -> 1MB -> 4MB until a turn signal is found, and header/head reads cut lines at the byte
+level before decoding (never UTF-8-decode a raw prefix). Pi CWDs use that same immutable-fact pattern;
 OpenCode query output is cached only while the `opencode.db` + WAL + SHM size/mtime signature is
-unchanged, then reclassified against the current time. Preserve that invalidation so the 5s scan
+unchanged (WAL/SHM-only changes are throttled to one query per `openCodeWALThrottle`), then
+reclassified against the current time; the query is scoped to recently updated sessions and runs
+through `SubprocessRunner` (timeout + output cap). Preserve that invalidation so the 5s scan
 doesn't respawn SQLite against multi-gigabyte databases at idle. The agent publish signature
 includes an elapsed-minutes bucket so row times/ordering refresh ~1/min. Calendar queries run off
 the main actor (`queryNextEvent`) and permission is only requested once the feature is
 enabled. Notification menu actions bind the app name they rendered through
 `representedObject`; never retarget an already-open action to a newer `latest` banner.
-CI (.github/workflows/ci.yml, macos-14) is where tests actually run.
+CI (.github/workflows/ci.yml, macos-14 and macos-15) is where tests actually run.
 
 Pill behavior/sizing is user-configurable via `SettingsStore` (Settings window):
 `pillMode` (hover-auto vs always-expanded), `hoverCollapseDelay`, `minimizedWidth/Height`
@@ -306,13 +434,39 @@ at cutout+wings via `NotchGeometry.expandedPillWidth`, which keeps the no-feedba
 fixed-width rule intact). All numeric knobs are clamped to their `SettingsStore.*Range`
 bounds on read AND write - keep new knobs on that pattern. Tests:
 `SettingsStoreTests.swift` (isolated UserDefaults suite; runs under Xcode/CI only).
+Stored keys live in the `SettingsStore.Key` enum: raw values are the on-disk names and must never
+be renamed. A change to a stored value's meaning bumps `currentSchemaVersion` and adds an
+idempotent step to `SettingsStore.migrations`. Settings export/import (`SettingsTransfer.swift`)
+is an explicit allowlist (`transferFields`): preferences only, never muted-app names, the pill
+display id, onboarding state, or any feature content; a new preference is exported only if it is
+added there. `checkForUpdates` (default ON) gates every `UpdateChecker` request; `pillDisplay`
+(`automatic` or an opaque display id) is stored but machine-specific and not exported. Launch at
+login is `LaunchAtLogin` (shared by the status menu and Settings; `.requiresApproval` is surfaced,
+not treated as off). Controllers that observe a flag take an injectable `settings:` store.
 The one-time `OnboardingView` is a separate activating window so it never changes pill geometry;
 it contains no live user content or permission prompts and remains reopenable from Settings/menu.
+
+## App wiring (`Sources/DesnotchCore/App/`)
+
+`AppDelegate` (`@MainActor`) is only the single-instance guard plus launch/terminate sequencing.
+`AppComposition` owns every controller and their wiring (update checker and global hot key are nil in
+smoke-test mode); `WindowCoordinator` owns the notch panel's `NotchWindowController` (hover authority
+stays there) and the lazily created Settings / Getting Started / Add Reminder windows;
+`StatusMenuBuilder` (+ `StatusMenuBuilder+Actions.swift`) owns the status item, the rebuild-on-open
+menu, and every menu action handler. New controllers go in `AppComposition`; new menu actions need a
+`#selector` in `StatusMenuBuilder` and a handler in the `+Actions` extension.
 
 ## Build/run
 
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal
-`.app` bundle + ad-hoc codesign). No Xcode project - SPM executable target only.
+`.app` bundle + inside-out codesign verified with `--deep --strict`; ad-hoc by default, Developer
+ID/notarization opt-in). `HARDENED_RUNTIME=1` signs the main executable and app with
+`scripts/desnotch.entitlements` (calendars; EventKit is denied silently without it) and fails if it is
+missing. `VERSION` comes from the environment or the latest git tag and the build
+fails without either. The vendored adapter is pinned by `VENDOR.sha256` (verified before and
+after bundling). `CONTRIBUTING.md` covers build/test/lint (XCTest only runs in CI), and
+`RELEASING.md` the tag-driven `release.yml` flow. No Xcode project - SPM executable target only.
+`CLAUDE.md` is a symlink to this file: edit `AGENTS.md` only.
 
 Homebrew distribution lives in `https://github.com/Veyal/homebrew-desnotch`
 (`Casks/desnotch.rb`). A release is not complete until that cask points at the published

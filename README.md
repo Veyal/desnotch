@@ -62,31 +62,46 @@ scripts/build-app.sh
 ```
 
 This runs `swift build -c release`, bundles the host-architecture binary into `dist/desnotch.app`
-with a minimal `Info.plist` (version from the latest git tag, or `VERSION=...`), places the
-MediaRemote adapter under `Contents/Resources/MediaRemoteAdapter`, validates version/build
-metadata and required resources, then ad-hoc codesigns it inside-out (no `--deep`, so each
-component has its own signature). The current host build remains the default. For a validated
-arm64+x86_64 executable, opt in with `UNIVERSAL=1 scripts/build-app.sh`; it cross-builds both
-targets and lipo-merges them (the adapter is already universal). A stable reverse-DNS bundle ID
-can be selected with `BUNDLE_ID=com.example.desnotch`. For external distribution, provide a
-Developer ID identity and hardened runtime explicitly:
+with a minimal `Info.plist`, places the MediaRemote adapter under
+`Contents/Resources/MediaRemoteAdapter`, and copies `LICENSE`, `NOTICE.md`, and the adapter's
+BSD-3-Clause license into `Contents/Resources`. Before assembling it checks the vendored adapter
+against `VENDOR.sha256` and validates version/build metadata and required resources. It then
+codesigns inside-out (every nested Mach-O, then the framework, the executable, and the app; no
+`--deep` signing) and finishes with `codesign --verify --deep --strict`.
+
+The version comes from `VERSION=x.y.z` or, failing that, the latest git tag. There is no silent
+fallback: a checkout with neither (for example a shallow clone without tags) stops with an error.
+The current host build remains the default. For a validated arm64+x86_64 executable, opt in with
+`UNIVERSAL=1 scripts/build-app.sh`; it cross-builds both targets and lipo-merges them (the adapter
+is already universal). A stable reverse-DNS bundle ID can be selected with
+`BUNDLE_ID=com.example.desnotch`. For external distribution, provide a Developer ID identity and
+hardened runtime explicitly (real identities also get a secure `--timestamp`):
 
 ```sh
 SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 HARDENED_RUNTIME=1 scripts/build-app.sh
 ```
 
-Notarization is also opt-in and uses a preconfigured notarytool keychain profile; credentials
-are never stored in the repository:
+Notarization is also opt-in. Credentials are never stored in the repository: use either a
+preconfigured notarytool keychain profile or an App Store Connect API key supplied through
+environment variables. The script submits, waits, requires an `Accepted` result, staples the
+ticket, and runs `stapler validate` and a Gatekeeper `spctl` assessment:
 
 ```sh
 SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" HARDENED_RUNTIME=1 \
 NOTARIZE=1 NOTARY_PROFILE=desnotch-notary scripts/build-app.sh
+
+# or, with an API key (NOTARY_ISSUER_ID is needed for team keys):
+NOTARIZE=1 NOTARY_KEY_PATH=~/keys/AuthKey_ABC123.p8 NOTARY_KEY_ID=ABC123 \
+NOTARY_ISSUER_ID=00000000-0000-0000-0000-000000000000 \
+SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" HARDENED_RUNTIME=1 \
+scripts/build-app.sh
 ```
 
 Developer ID signing and notarization are pending the owner's credentials. Until then, Gatekeeper
 may warn on other machines; use the first-launch confirmation above. Drag `dist/desnotch.app` to
-`/Applications`, or run it directly with `open dist/desnotch.app`.
+`/Applications`, or run it directly with `open dist/desnotch.app`. Maintainers: see
+[`RELEASING.md`](RELEASING.md) for the tag-driven release workflow.
 
 ## How it works
 
@@ -96,6 +111,19 @@ may warn on other machines; use the first-launch confirmation above. Drag `dist/
   `Sources/DesnotchCore/MediaRemote/Vendor/MediaRemoteAdapter/NOTICE.md`. Packaged apps resolve
   it from `Contents/Resources/MediaRemoteAdapter`; `swift run` uses the SwiftPM resource.
   Updates stay notification/stream-driven, never polled, so idle CPU stays near zero.
+- **Agent activity**: on by default; turn it off in Settings > "AI agent activity". It reads
+  only local session-log locations for Claude Code, Codex, Pi, and OpenCode
+  (`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, and OpenCode's local
+  SQLite database, read-only) to decide whether each session is working, waiting for you, or
+  stalled. Nothing leaves the machine. The pill and status
+  menu show only counts and a project folder name; prompt text is never read unless you turn on
+  "Show agent task titles" (off by default, 48 characters at most), and notifications never
+  include it.
+- **Update check**: on by default. Once a day desnotch asks GitHub's public releases API
+  (`api.github.com/repos/Veyal/desnotch/releases/latest`) whether a newer version exists and
+  shows a status-menu item if so. The request carries no identifiers beyond a fixed
+  `User-Agent`. Turn it off with Settings > "Check for updates" (`checkForUpdates`); when off,
+  desnotch makes no network request. Development builds without a bundle version never check.
 - **Notification mirror**: optional and off by default. It uses an Accessibility observer for
   notification banners, keeps banner content in memory only, and does not scrape the notification
   database.
@@ -125,7 +153,8 @@ may warn on other machines; use the first-launch confirmation above. Drag `dist/
   Mac mini, which has none), it renders the same wings-around-cutout layout around a synthetic
   MacBook-sized notch at the top center of the screen.
 
-See `AGENTS.md` for implementation details load-bearing for anyone continuing this project.
+See `AGENTS.md` for implementation details load-bearing for anyone continuing this project, and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for build, test, and lint instructions.
 
 ## Current Boundaries
 
