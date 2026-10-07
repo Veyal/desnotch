@@ -10,6 +10,7 @@ import SwiftUI
 /// all drop out under Reduce Motion/Minimal, and the glow and blur also drop out under
 /// Reduce Transparency. Privacy mode blanks title/artist upstream and additionally turns
 /// off the accent and glow here (the artwork's colors identify the track).
+@MainActor
 struct NowPlayingSectionView: View {
     let info: NowPlayingInfo
     /// Already passed through `privacyRedacted`.

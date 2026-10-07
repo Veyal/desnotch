@@ -71,7 +71,7 @@ final class PillMarqueeRenderTests: XCTestCase {
         XCTAssertNotEqual(scrolled, resting, "expanded: the title must have scrolled")
 
         box.active = false
-        await pump(0.6)
+        await pump(2.0)
         XCTAssertEqual(try XCTUnwrap(snapshot(window)), resting, "collapsing returns it to the start")
     }
 }

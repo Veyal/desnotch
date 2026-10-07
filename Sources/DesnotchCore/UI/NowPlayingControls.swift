@@ -107,6 +107,7 @@ private struct SymbolSwap: ViewModifier {
 /// controller exactly as before and the glyph follows `controller.info.isPlaying` (which
 /// the controller flips optimistically), so the morph starts on the tap, not after the
 /// MediaRemote round-trip.
+@MainActor
 struct NowPlayingTransportButton: View {
     let systemName: String
     let label: String
@@ -180,6 +181,7 @@ struct NowPlayingTransportButton: View {
 /// local `scrubPosition` follows the pointer on the direct-manipulation spring, then is
 /// handed to `NowPlayingController.seek` on release (optimistic, so the bar does not snap
 /// back). VoiceOver sees one adjustable element, unchanged.
+@MainActor
 struct NowPlayingProgressRow: View {
     let info: NowPlayingInfo
     let duration: TimeInterval

@@ -127,7 +127,7 @@ public final class TrayController: ObservableObject {
         let path = url.path
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let icon = NSWorkspace.shared.icon(forFile: path)
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, self.items.contains(url) else { return }
                 self.finderIcons[url] = icon
             }
@@ -141,7 +141,7 @@ public final class TrayController: ObservableObject {
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] rep, _ in
             guard let rep else { return } // no preview for this type: Finder icon is used
             let image = rep.nsImage
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.storeThumbnail(image, for: url)
             }
         }
