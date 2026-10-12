@@ -1,0 +1,5 @@
+# Tests that pass under Apple's XCTest on CI but fail under the stub harness (they need real
+# offscreen rendering or run-loop timing the stub does not reproduce). Verified on the base commit
+# (before any voice work). run.sh does not count these as failures. Add nothing here for voice tests.
+ArtworkGlowRenderTests.testGlowFollowsTheCurrentAccentNotThePreviousOne
+PillMarqueeRenderTests.testLongTitleScrollsAfterTheStartDelayOnceActive

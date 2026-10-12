@@ -151,7 +151,9 @@ final class SettingsStoreTests: XCTestCase {
             "dismissSystemBanners", "mutedNotificationApps", "hasSeenOnboarding", "checkForUpdates",
             "globalHotkeyEnabled",
             "pillMode", "musicIndicatorStyle", "animationStyle", "pillDisplay",
-            "hoverCollapseDelay", "minimizedWidth", "minimizedHeight", "expandedWidth"
+            "hoverCollapseDelay", "minimizedWidth", "minimizedHeight", "expandedWidth",
+            "voiceEnabled", "voiceLocale", "voiceHermesLane", "voiceTTSEnabled", "voiceDuckMedia",
+            "voiceHotkey"
         ]
         XCTAssertEqual(Set(SettingsStore.Key.allCases.map(\.rawValue)), expected)
     }

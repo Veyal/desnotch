@@ -58,6 +58,9 @@ public struct NotchPillView: View {
 
     @ObservedObject public var notificationMirror: NotificationMirrorController
 
+    /// Voice-control presentation state. Nothing renders from it yet; WP-UI adds the section.
+    @ObservedObject public var voice: VoiceSessionModel
+
     @ObservedObject public var presentation: NotchPillPresentation
 
     public let onAddReminder: () -> Void
@@ -98,6 +101,7 @@ public struct NotchPillView: View {
         battery: BatteryController,
         mediaUse: MediaUseMonitor,
         notificationMirror: NotificationMirrorController,
+        voice: VoiceSessionModel,
         presentation: NotchPillPresentation,
         hasPhysicalNotch: Bool,
         notchSize: CGSize? = nil,
@@ -116,6 +120,7 @@ public struct NotchPillView: View {
         self.battery = battery
         self.mediaUse = mediaUse
         self.notificationMirror = notificationMirror
+        self.voice = voice
         self.presentation = presentation
         self.hasPhysicalNotch = hasPhysicalNotch
         self.notchSize = notchSize

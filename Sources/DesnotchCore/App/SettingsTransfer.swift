@@ -200,5 +200,13 @@ extension SettingsStore {
         }
         pillDisplay = Self.automaticPillDisplay
         if !mutedNotificationApps.isEmpty { clearMutedNotificationApps() }
+        // Voice settings are never exported or imported (permission-triggering opt-ins), but a
+        // reset must still switch them back off.
+        voiceEnabled = false
+        voiceLocale = Self.defaultVoiceLocale
+        voiceHermesLane = false
+        voiceTTSEnabled = false
+        voiceDuckMedia = true
+        voiceHotkey = Self.defaultVoiceHotkey
     }
 }

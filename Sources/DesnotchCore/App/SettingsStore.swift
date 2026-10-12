@@ -31,6 +31,15 @@ public enum MusicIndicatorStyle: String, CaseIterable {
     case albumArt
 }
 
+/// Which key combination is push-to-talk for voice control. Every choice is Option-Command based:
+/// Control+Option is avoided on purpose (it is VoiceOver's modifier). The Carbon key codes live
+/// with `CarbonPushToTalk` (Voice/Platform); this enum is only the stored choice.
+public enum VoiceHotkeyChoice: String, CaseIterable {
+    case optionCommandV
+    case shiftOptionCommandV
+    case optionCommandJ
+}
+
 /// User-toggleable feature switches and pill-behavior knobs, UserDefaults-backed.
 /// The pill view gates its sections on these; pollers (process monitor, calendar,
 /// agent scanner) also check them so disabled features stop doing background work.
@@ -60,6 +69,11 @@ public final class SettingsStore: ObservableObject {
     public static let expandedWidthRange: ClosedRange<Double> = 260...480
     public static let defaultExpandedWidth = 300.0
 
+    /// Recognition locales voice control offers (the on-device recognizer is single-locale).
+    public static let supportedVoiceLocales = ["en-US", "id-ID"]
+    public static let defaultVoiceLocale = "en-US"
+    public static let defaultVoiceHotkey = VoiceHotkeyChoice.optionCommandV
+
     nonisolated public static func clamp(_ value: Double, to range: ClosedRange<Double>) -> Double {
         min(max(value, range.lowerBound), range.upperBound)
     }
@@ -86,6 +100,7 @@ public final class SettingsStore: ObservableObject {
         case hasSeenOnboarding, checkForUpdates, globalHotkeyEnabled
         case pillMode, musicIndicatorStyle, animationStyle, pillDisplay
         case hoverCollapseDelay, minimizedWidth, minimizedHeight, expandedWidth
+        case voiceEnabled, voiceLocale, voiceHermesLane, voiceTTSEnabled, voiceDuckMedia, voiceHotkey
 
         /// Value used when nothing is stored (only meaningful for boolean keys). Feature
         /// toggles default ON; permission-triggering or privacy-sensitive opt-ins default OFF.
@@ -93,7 +108,8 @@ public final class SettingsStore: ObservableObject {
             switch self {
             case .remindersEnabled, .clipboardHistoryEnabled, .privacyModeEnabled,
                  .agentTaskTitlesEnabled, .notificationMirrorEnabled, .dismissSystemBanners,
-                 .hasSeenOnboarding, .globalHotkeyEnabled:
+                 .hasSeenOnboarding, .globalHotkeyEnabled,
+                 .voiceEnabled, .voiceHermesLane, .voiceTTSEnabled:
                 return false
             default:
                 return true
@@ -181,6 +197,28 @@ public final class SettingsStore: ObservableObject {
     /// global shortcut takes the key combination away from every other app.
     @Published public var globalHotkeyEnabled: Bool { didSet { set(.globalHotkeyEnabled, globalHotkeyEnabled) } }
 
+    // MARK: Voice control (all OFF by default; never exported or imported, see SettingsTransfer)
+
+    /// Master switch for voice control. OFF by default: enabling it requests Microphone and
+    /// Speech Recognition access. Voice is inert in smoke-test mode regardless of this value.
+    @Published public var voiceEnabled: Bool { didSet { set(.voiceEnabled, voiceEnabled) } }
+    /// Recognition locale, one of `supportedVoiceLocales`; anything else normalizes to the default.
+    @Published public var voiceLocale: String {
+        didSet {
+            let normalized = Self.normalizedVoiceLocale(voiceLocale)
+            if normalized != voiceLocale { voiceLocale = normalized }
+            set(.voiceLocale, normalized)
+        }
+    }
+    /// Allow utterances that are not local commands to go to the Hermes agent (cloud-routed).
+    /// OFF by default; additionally gated by the profile preflight at runtime.
+    @Published public var voiceHermesLane: Bool { didSet { set(.voiceHermesLane, voiceHermesLane) } }
+    /// Speak replies aloud. OFF by default; always silent in privacy mode.
+    @Published public var voiceTTSEnabled: Bool { didSet { set(.voiceTTSEnabled, voiceTTSEnabled) } }
+    /// Lower other audio while the mic is open.
+    @Published public var voiceDuckMedia: Bool { didSet { set(.voiceDuckMedia, voiceDuckMedia) } }
+    @Published public var voiceHotkey: VoiceHotkeyChoice { didSet { set(.voiceHotkey, voiceHotkey.rawValue) } }
+
     /// One-time product guide state. The guide is always reopenable from the status menu.
     @Published public var hasSeenOnboarding: Bool { didSet { set(.hasSeenOnboarding, hasSeenOnboarding) } }
 
@@ -267,6 +305,13 @@ public final class SettingsStore: ObservableObject {
         hasSeenOnboarding = Self.bool(defaults, .hasSeenOnboarding)
         checkForUpdates = Self.bool(defaults, .checkForUpdates)
         globalHotkeyEnabled = Self.bool(defaults, .globalHotkeyEnabled)
+        voiceEnabled = Self.bool(defaults, .voiceEnabled)
+        voiceLocale = Self.normalizedVoiceLocale(Self.string(defaults, .voiceLocale))
+        voiceHermesLane = Self.bool(defaults, .voiceHermesLane)
+        voiceTTSEnabled = Self.bool(defaults, .voiceTTSEnabled)
+        voiceDuckMedia = Self.bool(defaults, .voiceDuckMedia)
+        voiceHotkey = Self.string(defaults, .voiceHotkey)
+            .flatMap(VoiceHotkeyChoice.init(rawValue:)) ?? Self.defaultVoiceHotkey
 
         pillMode = Self.string(defaults, .pillMode).flatMap(PillVisibilityMode.init(rawValue:)) ?? Self.defaultPillMode
         musicIndicatorStyle = Self.string(defaults, .musicIndicatorStyle)
@@ -306,6 +351,12 @@ public final class SettingsStore: ObservableObject {
     }
 
     private static let maxPillDisplayLength = 128
+
+    /// Unsupported or missing locales fall back to the default rather than reaching the recognizer.
+    static func normalizedVoiceLocale(_ raw: String?) -> String {
+        guard let raw, supportedVoiceLocales.contains(raw) else { return defaultVoiceLocale }
+        return raw
+    }
 
     private func set(_ key: Key, _ value: Any) {
         defaults.set(value, forKey: key.rawValue)

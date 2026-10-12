@@ -18,6 +18,9 @@ final class AppComposition {
     let batteryController: BatteryController
     let mediaUseMonitor: MediaUseMonitor
     let notificationMirror: NotificationMirrorController
+    /// Presentation state for voice control. Always exists (it is inert data); the voice
+    /// coordinator that drives it is wired by WP-HERMES and stays off unless `voiceEnabled`.
+    let voiceModel = VoiceSessionModel()
 
     /// Nil in smoke-test mode (never polls GitHub there).
     private(set) var updateChecker: UpdateChecker?
@@ -82,6 +85,7 @@ final class AppComposition {
             battery: batteryController,
             mediaUse: mediaUseMonitor,
             notificationMirror: notificationMirror,
+            voice: voiceModel,
             presentation: presentation
         )
     }
