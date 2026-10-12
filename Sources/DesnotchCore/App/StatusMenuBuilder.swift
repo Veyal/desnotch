@@ -36,6 +36,34 @@ final class StatusMenuBuilder: NSObject, NSMenuDelegate {
         rebuildMenu()
     }
 
+    private func appendVoiceItems(to menu: NSMenu) {
+        guard SettingsStore.shared.voiceEnabled else { return }
+        let model = composition.voiceModel
+        let debugTyping = ProcessInfo.processInfo.environment["DESNOTCH_VOICE_DEBUG"] == "1"
+        let specs = StatusMenuText.voiceMenuItems(
+            state: model.state,
+            pending: model.pendingConfirmation,
+            debugTyping: debugTyping
+        )
+        for spec in specs {
+            if spec.action == .typeCommand {
+                menu.addItem(NSMenuItem.separator())
+            }
+            let item = NSMenuItem(
+                title: spec.title,
+                action: spec.action == nil ? nil : #selector(menuVoiceAction(_:)),
+                keyEquivalent: ""
+            )
+            if let action = spec.action {
+                item.target = self
+                item.representedObject = VoiceMenuPayload(action: action, nonce: spec.nonce)
+                item.isEnabled = spec.isEnabled
+            }
+            menu.addItem(item)
+        }
+        menu.addItem(NSMenuItem.separator())
+    }
+
     /// Rebuild the dynamic mirror right before the menu shows.
     func menuNeedsUpdate(_ menu: NSMenu) {
         rebuildMenu()
@@ -85,6 +113,8 @@ final class StatusMenuBuilder: NSObject, NSMenuDelegate {
         }
         menu.addItem(showItem)
         menu.addItem(NSMenuItem.separator())
+
+        appendVoiceItems(to: menu)
 
         if let version = composition.updateChecker?.availableVersion {
             let item = NSMenuItem(

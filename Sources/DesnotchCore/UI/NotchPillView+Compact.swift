@@ -36,7 +36,8 @@ extension NotchPillView {
             hasHotProcesses: hasHotProcesses,
             hasNotification: hasNotification,
             calendarImminent: calendarImminent,
-            reminderUrgent: reminderUrgent
+            reminderUrgent: reminderUrgent,
+            voiceState: voiceState == .idle ? nil : voiceState
         )
     }
 
@@ -75,6 +76,16 @@ extension NotchPillView {
         case .reminder: reminderIndicator
         case .agent: agentIndicator
         case .notification: notificationIndicator
+        case .voice:
+            if side == .left {
+                voiceWingGlyph(for: voiceState)
+            } else if voiceState == .listening {
+                VoiceWingMeterHost(model: voice, motion: motion)
+            } else if voiceState == .awaitingApproval {
+                Circle()
+                    .fill(PillPalette.amber.color)
+                    .frame(width: 6, height: 6)
+            }
         case .volume:
             if let level = presentation.volumeFlash {
                 if side == .left {
@@ -287,6 +298,9 @@ extension NotchPillView {
 
     private var compactAccessibilityLabel: String {
         var parts: [String] = []
+        if let voiceLabel = Self.voiceCompactLabel(voiceState) {
+            parts.append(voiceLabel)
+        }
         if hasMedia { parts.append(controller.info?.isPlaying == true ? "media playing" : "media paused") }
         if hasTimer {
             switch focusTimer.state {

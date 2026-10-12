@@ -26,6 +26,16 @@ enum PillHaptics {
         case timerComplete
         /// The privacy switch was toggled.
         case privacyToggle
+        /// Voice capture became live (the first audio buffer, not the key-down).
+        case voiceStart
+        /// A voice command was committed, or a reply finished.
+        case voiceCommit
+        /// An approval card appeared.
+        case voiceNeedsConfirm
+        /// The user approved a card.
+        case voiceApproved
+        /// A voice failure. Two taps, same as a finished timer.
+        case voiceError
     }
 
     /// Haptics closer together than this are dropped, so a begin immediately followed by a
@@ -34,15 +44,19 @@ enum PillHaptics {
 
     static func pattern(for event: Event) -> NSHapticFeedbackManager.FeedbackPattern {
         switch event {
-        case .transport, .clipboardCopy, .privacyToggle: return .generic
-        case .scrubBegin, .scrubCommit, .trayDrop: return .alignment
-        case .scrubEdge, .reminderComplete, .timerComplete: return .levelChange
+        case .transport, .clipboardCopy, .privacyToggle, .voiceCommit: return .generic
+        case .scrubBegin, .scrubCommit, .trayDrop, .voiceStart: return .alignment
+        case .scrubEdge, .reminderComplete, .timerComplete, .voiceNeedsConfirm, .voiceApproved, .voiceError:
+            return .levelChange
         }
     }
 
-    /// Taps in one haptic event (a completed timer is a double tap).
+    /// Taps in one haptic event (a completed timer, and a voice failure, are a double tap).
     static func tapCount(for event: Event) -> Int {
-        event == .timerComplete ? 2 : 1
+        switch event {
+        case .timerComplete, .voiceError: return 2
+        default: return 1
+        }
     }
 
     /// Gap between the taps of a multi-tap event, comfortably above `minimumInterval`.

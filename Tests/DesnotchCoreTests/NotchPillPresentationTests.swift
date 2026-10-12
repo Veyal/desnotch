@@ -84,4 +84,12 @@ final class NotchPillPresentationTests: XCTestCase {
         XCTAssertFalse(presentation.openFlash)
         XCTAssertNil(presentation.flashKind)
     }
+
+    func testVoiceFlashUsesAThreeSecondCyanHold() {
+        XCTAssertEqual(PillFlashKind.voice.holdDuration, 3.0)
+        XCTAssertEqual(PillFlashKind.voice.spotlight, .voice)
+        let rim = PillFlashKind.voice.rim()
+        XCTAssertEqual(rim.hue, .cyan)
+        XCTAssertEqual(rim.opacity, 0.5)
+    }
 }

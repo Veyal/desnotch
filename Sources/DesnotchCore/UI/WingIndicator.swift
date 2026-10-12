@@ -4,7 +4,7 @@ import Foundation
 /// over to another (media -> timer, a timer displaced to the other wing) animates as a swap
 /// instead of snapping.
 enum WingIndicator: Hashable {
-    case media, timer, hotProcess, calendar, reminder, agent, notification, volume
+    case media, timer, hotProcess, calendar, reminder, agent, notification, volume, voice
 }
 
 /// Everything the wing selection depends on.
@@ -17,6 +17,8 @@ struct WingInputs: Equatable {
     var hasNotification = false
     var calendarImminent = false
     var reminderUrgent = false
+    /// Nil while voice is idle. Defaults to nil so existing callers keep today's wings.
+    var voiceState: VoiceState? = nil
 }
 
 /// The collapsed pill's wing priorities, as a pure function so a refactor cannot change which
@@ -31,6 +33,7 @@ enum WingSelection {
     }
 
     private static func left(_ i: WingInputs) -> WingIndicator? {
+        if i.voiceState != nil { return .voice }
         if i.volumeActive { return .volume }
         if i.hasMedia { return .media }
         if i.hasTimer { return .timer }
@@ -41,6 +44,7 @@ enum WingSelection {
     }
 
     private static func right(_ i: WingInputs) -> WingIndicator? {
+        if i.voiceState == .listening || i.voiceState == .awaitingApproval { return .voice }
         if i.volumeActive { return .volume }
         if i.hasAgents { return .agent }
         if i.hasMedia && i.hasTimer { return .timer }
@@ -96,7 +100,7 @@ enum WingMetrics {
             return timerShowsLabel
                 ? timerRingWidth + timerGap + timerLabelWidth
                 : timerRingWidth
-        case .hotProcess, .calendar, .reminder, .notification: return 16
+        case .hotProcess, .calendar, .reminder, .notification, .voice: return 16
         case .agent:
             return agentGlyphWidth + agentGap + agentCharacterWidth * CGFloat(max(1, agentLabelLength))
         case .volume: return 23 // speaker glyph (left) / up to "100" (right)
@@ -109,6 +113,7 @@ enum WingMetrics {
         case .volume: return minimumInset
         case .timer: return timerShowsLabel ? textInset : persistentInset // ring alone is a glyph
         case .agent: return textInset
+        case .voice: return persistentInset
         default: return persistentInset
         }
     }

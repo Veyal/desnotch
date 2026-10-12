@@ -18,6 +18,8 @@ private struct PillStructuralAnimationState: Equatable {
     let hotProcessIDs: [Int32]
     let trayItems: [URL]
     let clipboardEntryIDs: [UUID]
+    let hasVoice: Bool
+    let voiceCardShown: Bool
 }
 
 /// The single live-activity pill: always rendered as a (real or synthetic) notch shape,
@@ -58,8 +60,11 @@ public struct NotchPillView: View {
 
     @ObservedObject public var notificationMirror: NotificationMirrorController
 
-    /// Voice-control presentation state. Nothing renders from it yet; WP-UI adds the section.
-    @ObservedObject public var voice: VoiceSessionModel
+    /// Voice-control presentation state. The pill keeps only the phase; the section host
+    /// observes the model so level updates do not rebuild the rest of the stack.
+    public let voice: VoiceSessionModel
+
+    @State var voiceState: VoiceState
 
     @ObservedObject public var presentation: NotchPillPresentation
 
@@ -121,6 +126,7 @@ public struct NotchPillView: View {
         self.mediaUse = mediaUse
         self.notificationMirror = notificationMirror
         self.voice = voice
+        _voiceState = State(initialValue: MainActor.assumeIsolated { voice.state })
         self.presentation = presentation
         self.hasPhysicalNotch = hasPhysicalNotch
         self.notchSize = notchSize
@@ -295,7 +301,9 @@ public struct NotchPillView: View {
             agentRowKeys: visibleAgentRows.map(\.key),
             hotProcessIDs: processMonitor.hotProcesses.prefix(rowCaps.processes).map(\.id),
             trayItems: tray.items,
-            clipboardEntryIDs: clipboard.entries.map(\.id)
+            clipboardEntryIDs: clipboard.entries.map(\.id),
+            hasVoice: hasVoice,
+            voiceCardShown: voiceState == .awaitingApproval
         )
     }
 
@@ -337,6 +345,10 @@ public struct NotchPillView: View {
                 feedbackGeneration += 1
                 completionGeneration += 1
             }
+            .onReceive(voice.$state.removeDuplicates()) { newState in
+                voiceState = newState
+            }
+            .modifier(VoiceAnnouncementModifier(state: voiceState, model: voice))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             // The pill renders on an always-dark surface; force a dark color scheme so
             // `.secondary` text stays legible in Light Mode too.
@@ -850,6 +862,14 @@ public struct NotchPillView: View {
     /// the expanded pill still shows a small placeholder rather than an empty black blob.
     private var pillContent: some View {
         VStack(spacing: 0) {
+            if hasVoice {
+                reveal(.voice) { voiceSection }
+                // Only content that renders between the voice section and the privacy row needs this rule. When the voice
+                // section is the only content, `hasContentBeforePrivacyAction` draws the single divider before the privacy row.
+                if hasNotification || hasMiddleSection {
+                    revealDivider(.notification)
+                }
+            }
             if hasNotification, let banner = notificationMirror.latest {
                 reveal(.notification) { notificationRow(banner) }
                 // Only a section that renders between the notification and the privacy row

@@ -73,6 +73,28 @@ final class PillSectionTokenTests: XCTestCase {
             XCTAssertLessThanOrEqual(motion.landingFlashPeak, 0.2)
         }
     }
+
+    func testVoiceIsFirstAndEveryOtherKindShiftsByOne() {
+        XCTAssertEqual(PillSectionKind.allCases.count, 12)
+        XCTAssertEqual(PillSectionKind.voice.order, 0)
+        XCTAssertEqual(PillSectionKind.notification.order, 1)
+        XCTAssertEqual(PillSectionKind.media.order, 2)
+        XCTAssertEqual(PillSectionKind.timer.order, 3)
+        XCTAssertEqual(PillSectionKind.agents.order, 4)
+        XCTAssertEqual(PillSectionKind.processes.order, 5)
+        XCTAssertEqual(PillSectionKind.calendar.order, 6)
+        XCTAssertEqual(PillSectionKind.reminders.order, 7)
+        XCTAssertEqual(PillSectionKind.battery.order, 8)
+        XCTAssertEqual(PillSectionKind.clipboard.order, 9)
+        XCTAssertEqual(PillSectionKind.privacy.order, 10)
+        XCTAssertEqual(PillSectionKind.tray.order, 11)
+    }
+
+    func testApproveHoldDurationIsTheSameInEveryTokenSet() {
+        XCTAssertEqual(NotchAnimation.Motion.minimal.approveHoldDuration, 0.6)
+        XCTAssertEqual(NotchAnimation.Motion.fluid.approveHoldDuration, 0.6)
+        XCTAssertEqual(NotchAnimation.Motion.lively.approveHoldDuration, 0.6)
+    }
 }
 
 final class PillTypeScaleTests: XCTestCase {
@@ -428,7 +450,8 @@ final class PillSectionHapticsTests: XCTestCase {
 
     func testOnlyTimerCompletionIsADoubleTap() {
         for event in PillHaptics.Event.allCases {
-            XCTAssertEqual(PillHaptics.tapCount(for: event), event == .timerComplete ? 2 : 1, "\(event)")
+            let taps = (event == .timerComplete || event == .voiceError) ? 2 : 1
+            XCTAssertEqual(PillHaptics.tapCount(for: event), taps, "\(event)")
         }
         // The second tap must clear the rate limiter or it would be dropped.
         XCTAssertGreaterThan(PillHaptics.repeatInterval, PillHaptics.minimumInterval)

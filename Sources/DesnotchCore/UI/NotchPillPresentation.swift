@@ -4,7 +4,7 @@ import Foundation
 /// spotlighted (it reveals first and gets a brief highlight), and the rim glow tint. It is
 /// visual only: VoiceOver announcements are passed separately and are unchanged.
 public enum PillFlashKind: Equatable, CaseIterable {
-    case tray, power, reminder, timerStarted, timerComplete, notification
+    case tray, power, reminder, timerStarted, timerComplete, notification, voice
 
     /// How long the pill is held open (seconds).
     public var holdDuration: TimeInterval {
@@ -13,6 +13,7 @@ public enum PillFlashKind: Equatable, CaseIterable {
         case .power: return 2.4
         case .timerStarted: return 2.0
         case .timerComplete, .notification: return 4.0
+        case .voice: return 3.0
         }
     }
 
@@ -24,6 +25,7 @@ public enum PillFlashKind: Equatable, CaseIterable {
         case .reminder: return .reminders
         case .timerStarted, .timerComplete: return .timer
         case .notification: return .notification
+        case .voice: return .voice
         }
     }
 
@@ -39,6 +41,7 @@ public enum PillFlashKind: Equatable, CaseIterable {
         case .timerStarted: return (.cyan, 0.5)
         case .timerComplete: return (.green, 0.6)
         case .notification: return (.neutral, 0.30)
+        case .voice: return (.cyan, 0.5)
         }
     }
 }

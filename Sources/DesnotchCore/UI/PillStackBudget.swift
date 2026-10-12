@@ -48,6 +48,8 @@ struct PillStackEstimate: Equatable {
     var clipboard = 0
     var trayEnabled = false
     var tray = 0
+    var hasVoice = false
+    var voiceState: VoiceState? = nil
 
     static let notificationHeight = PillRowHeight.tall
     static let mediaHeight: CGFloat = 80
@@ -59,6 +61,8 @@ struct PillStackEstimate: Equatable {
     static let emptyTrayHeight: CGFloat = 72
     /// A divider with the spacing around it.
     static let dividerHeight: CGFloat = 14
+    static let voiceHeight = VoiceCardLayout.sectionHeightBudget
+    static let voiceApprovalHeight = VoiceCardLayout.approvalHeightBudget
 
     private static func list(rows: Int, rowHeight: CGFloat) -> CGFloat {
         guard rows > 0 else { return 0 }
@@ -67,6 +71,12 @@ struct PillStackEstimate: Equatable {
 
     func height(caps: PillRowCaps) -> CGFloat {
         var sections: [CGFloat] = []
+        if hasVoice {
+            sections.insert(
+                voiceState == .awaitingApproval ? Self.voiceApprovalHeight : Self.voiceHeight,
+                at: 0
+            )
+        }
         if hasNotification { sections.append(Self.notificationHeight) }
         if hasMedia { sections.append(Self.mediaHeight) }
         if hasTimer { sections.append(Self.timerHeight) }
