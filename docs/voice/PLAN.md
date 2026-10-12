@@ -881,6 +881,29 @@ These apply to every work package. They are not suggestions.
 Files no implementer may touch (all packages): `Package.swift`, `.github/*`, `Sources/DesnotchCore/Voice/Contracts/*`, `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift`,
 `Tests/DesnotchCoreTests/Voice/VoiceContractSmokeTests.swift`, `docs/voice/*`, `scripts/voice-harness/*`, `Sources/DesnotchCore/MediaRemote/Vendor/*`, `~/.hermes/**`, and any file owned by another package.
 
+### Supervisor conventions (for whoever dispatches and reviews implementers, including weak or cheap models)
+
+These are not numbered rules, so section numbers and cross-references elsewhere stay valid.
+
+- **Ambiguity rule.** When the doc is ambiguous, silent or self-contradictory, choose the SAFEST FAIL-CLOSED behavior (refuse,
+  deny, do nothing, keep the microphone/agent/volume in its safe state) and write the choice in a code comment at the place it
+  applies (`// AMBIGUITY: <what the doc left open>; chose <behavior> because it fails closed`). Also list it under
+  `QUESTIONS` in the final report (rule 10 and 11 above). Never pick the permissive reading to make a test pass.
+- **Reading order.** Read PLAN.md sections 13 and 14, then the work package's own file top to bottom, then the contract files.
+  A weak model must not skim: the sentences marked "read twice", "exact", "mandatory" or "crash rule" are load-bearing.
+- **One package, one writer, one worktree.** An implementer touches only the files its package owns (`scripts/voice-harness/ownership.tsv`).
+  If it needs a change elsewhere it writes an `AMENDMENT REQUEST` and stops on that point; it never edits the other file.
+- **Small verified steps.** After each file: `swift build` must be warning-free, then run the harness for that package.
+  Do not batch many files before the first build. A failing build or harness is fixed before the next file is started.
+- **Copy the pattern, not the shortcut.** Where the doc shows a pattern (for example `AsyncStream<T>.makeStream()`, the lock
+  discipline around a continuation, `i < levels.count ? levels[i] : 0`), reproduce it exactly. Do not copy a force unwrap
+  or other shortcut from a contract stub or a test double (the package's DO NOT rules win).
+- **Review is a separate pass.** The supervisor (or a reviewer agent) never accepts the implementer's own "all green". It
+  re-runs the build, the harness and `lint-lite.sh` itself, greps the diff for `!`, `try!`, `TODO`, `test.skip`, stub tests and
+  unimplemented branches, and rejects any `AMBIGUITY` comment whose choice is not fail-closed.
+- **Stuck rule.** After two failed attempts at the same compile or test error, the implementer stops, reports the exact error
+  and what it tried, and does not widen scope or weaken a test to get past it.
+
 ## 14. Privacy and safety invariants (WP-HERMES summarises the load-bearing ones in `AGENTS.md` and links this section; it does not paste all twelve)
 
 1. Audio is never written to disk and never leaves the process. Recognition is on-device only; a locale without on-device support fails instead of falling back to a server.
