@@ -152,6 +152,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <key>NSCalendarsFullAccessUsageDescription</key><string>desnotch shows your next meeting in the notch pill.</string>
     <key>NSRemindersUsageDescription</key><string>desnotch shows and completes your next due reminder.</string>
     <key>NSRemindersFullAccessUsageDescription</key><string>desnotch shows, creates, and completes reminders you choose to manage.</string>
+    <key>NSMicrophoneUsageDescription</key><string>desnotch listens while you hold the voice shortcut and turns what you say into a command on this Mac. Audio is never saved or sent anywhere.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>desnotch uses on-device speech recognition to turn what you say into text. Nothing is sent to Apple.</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
@@ -199,6 +201,8 @@ if [[ "$HARDENED_RUNTIME" == 1 ]]; then
   signed_entitlements="$(codesign -d --entitlements - --xml "$APP_BUNDLE" 2>/dev/null || true)"
   [[ "$signed_entitlements" == *com.apple.security.personal-information.calendars* ]] \
     || fail "calendars entitlement missing from the hardened app (EventKit would be denied)"
+  [[ "$signed_entitlements" == *com.apple.security.device.audio-input* ]] \
+    || fail "audio-input entitlement missing from the hardened app (microphone would be denied)"
 fi
 
 if [[ "$NOTARIZE" == 1 ]]; then

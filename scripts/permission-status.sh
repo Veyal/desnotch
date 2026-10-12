@@ -29,8 +29,12 @@ snapshot="$(DESNOTCH_PERMISSION_PROBE=1 "$EXECUTABLE")"
 accessibility="$(plutil -extract accessibility raw -o - - <<<"$snapshot")"
 calendar="$(plutil -extract calendar raw -o - - <<<"$snapshot")"
 reminders="$(plutil -extract reminders raw -o - - <<<"$snapshot")"
+microphone="$(plutil -extract microphone raw -o - - <<<"$snapshot")"
+speech="$(plutil -extract speech raw -o - - <<<"$snapshot")"
 
 echo "$snapshot"
+echo "microphone: $microphone"
+echo "speech: $speech"
 
 if [[ "$REQUIRE_GRANTED" == 1 ]]; then
   [[ "$accessibility" == trusted ]] || {

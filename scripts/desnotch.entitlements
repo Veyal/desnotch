@@ -7,5 +7,9 @@
          executable and the app bundle, and only when HARDENED_RUNTIME=1. -->
     <key>com.apple.security.personal-information.calendars</key>
     <true/>
+    <!-- Hardened runtime denies microphone access unless this is present.
+         Applied only to the main executable and the app bundle, and only when HARDENED_RUNTIME=1. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
 </dict>
 </plist>
