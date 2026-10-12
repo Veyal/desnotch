@@ -88,9 +88,9 @@ final class UnavailablePushToTalk: PushToTalkSource {
     private let continuation: AsyncStream<PushToTalkEvent>.Continuation
 
     init() {
-        var captured: AsyncStream<PushToTalkEvent>.Continuation?
-        events = AsyncStream { captured = $0 }
-        continuation = captured!
+        let (stream, continuation) = AsyncStream<PushToTalkEvent>.makeStream()
+        self.events = stream
+        self.continuation = continuation
     }
 
     func start() -> PushToTalkStatus { .unavailable }

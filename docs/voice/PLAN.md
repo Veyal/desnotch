@@ -5,7 +5,7 @@ prompt per work package (`WP-LOGIC.md`, `WP-UI.md`, `WP-PLATFORM.md`, `WP-HERMES
 compiled code under `Sources/DesnotchCore/Voice/Contracts/`. The research behind the design is not in the repo; every decision
 that matters is restated here.
 
-Status (the commit "feat(voice): plan and contracts" followed by the series of "docs(voice): revise plan round N" commits; the newest, "docs(voice): revise plan round 2" (second series), is the plan of record): the package builds
+Status (the commit "feat(voice): plan and contracts" followed by the series of "docs(voice): revise plan round N" commits; the newest, "docs(voice): revise plan round 4", is the plan of record): the package builds
 warning-free, voice is OFF by default, every seam has a fail-closed stub, and the 20 contract smoke tests plus every existing test pass under the local harness
 (apart from two known baseline failures, section 12). Round 2 also removed the async `NSLock` warnings from the frozen `VoiceTestSupport.swift`, so the only
 remaining harness warning outside `main.swift` is the pre-existing `UpdateCheckerTests.swift:41`.

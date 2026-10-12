@@ -263,7 +263,7 @@ hit returns):
 5. `context.agentBusy` and `tokens` equals one of the **cancel-turn phrases** -> `.cancelTurn`.
 6. Compute the **small-modifier variant**: if `tokens` ends with `["a","bit"]`, `["a","little"]`, `["slightly"]`,
    `["sedikit"]` or `["dikit"]`, let `stripped` be `tokens` without that ending and `small = true`; otherwise `small = false`.
-   (`stripped` is used only in rule 10. Rules 7, 8, 9 and 11 always use the original `tokens`.)
+   (`stripped` is used only in rule 10. Rules 7, 8, 9 and 11 always use the original `tokens`.) `stripped` can be EMPTY (the utterance was just `slightly` or `a bit`): build it with `Array(tokens.dropLast(n))` (never index `[0]` or `.last!` on it) and treat an empty `stripped` as matching no phrase, so rule 10 falls through to the original-token comparison. Likewise `satu puluh` parses as `satu` (1) leaving `puluh` unmatched: that is a miss for the number grammar, not a special case; do not add one.
 7. **Volume set** (see grammar below). Match -> `.local(.volumeSet(percent: n))` if `0...100`, else `.reject(.invalidArgument)`.
 8. **Timer start** (grammar below). Match -> `.local(.timerStart(minutes: n))` if `1...120`, else `.reject(.invalidArgument)`.
 9. **Open app** (grammar below). Match -> `.local(.openApp(bundleID:, name:))` from `AppCatalog`.
@@ -283,6 +283,8 @@ hit returns):
 **Emergency phrases** (token sequences): `abort agent`; `abort the agent`; `abort agents`; `batalkan agent`; `batalkan agen`.
 
 **Cancel-turn phrases** (only when `agentBusy`): `stop`; `cancel`; `stop it`; `cancel that`; `cancel it`; `batal`; `berhenti`; `hentikan`.
+
+**Performance hint for CI's Swift 5.10 type checker.** The phrase tables are about 100 token sequences. Do not write them as one large untyped nested array literal. Either give the literal an explicit type annotation (`let phrases: [[String]] = [...]` or `[(intent: LocalIntent, phrase: [String])]`) or store each phrase as a space-separated string (`"play music"`) and split it once at first use (`phrase.split(separator: " ").map(String.init)`).
 
 **Fixed phrases** (each line is one exact token sequence; `/` separates alternatives):
 
@@ -439,6 +441,8 @@ static func decide(tier: VoiceTier, secondFactorAvailable: Bool) -> PolicyDecisi
 | `.t3` | `false` | `.deny(.secondFactorUnavailable)` |
 | `.t3` | `true` | `.confirm` |
 | `.t4` | any | `.deny(.tierT4)` |
+
+`ConfirmationPolicyTests` (no names are mandated and `check-rule-tests.sh` does not check this class, so the reviewer verifies it by hand): include at least these method groups, one assertion per listed value, with the group name in the method name: `testVolumeSetBoundaries` (`-1` -> `.t4`, `0` -> `.t0`, `70` -> `.t0`, `71` -> `.t2`, `100` -> `.t2`, `101` -> `.t4`), `testTimerStartBoundaries` (`0` -> `.t4`, `1` -> `.t0`, `120` -> `.t0`, `121` -> `.t4`), `testTheOtherIntentsAreT0`, and `testDecideAllTenCombinations` (the 10 rows above, i.e. t0/t1/t2/t4 with both flags plus t3 false/true).
 
 #### 2b. `Logic/ConfirmationPolicy.swift`: `ToolTierTable`
 
@@ -653,7 +657,7 @@ mutating func tryConsume(tier: VoiceTier, now: Date) -> RateVerdict
 - `.t2` and `.t3`: bucket `t2Events` (shared), window **600 s**, limit `VoiceLimits.t2PerTenMinutes` (3).
 - Algorithm: drop events with `now.timeIntervalSince(event) >= window` (an event exactly one window old is dropped).
   If `events.count >= limit`: return `.limited(retryAfter: events.min()!.addingTimeInterval(window).timeIntervalSince(now))`
-  and do NOT record. Otherwise append `now` and return `.allowed`.
+  and do NOT record. Otherwise append `now` and return `.allowed`. Expired events are pruned from the stored array even on a refused call (the prune happens first; L9 passes either way, but this is the intent). **Exclusivity hint:** do not write a mutating instance helper that takes `inout t1Events` or `inout t2Events` of `self` (Swift reports an overlapping-access error). Write `private static func consume(_ events: inout [Date], window: TimeInterval, limit: Int, now: Date) -> RateVerdict` and call it as `Self.consume(&t1Events, window: 60, limit: VoiceLimits.t1PerMinute, now: now)`. `events.min()!` in the formula is safe only because `events.count >= limit >= 1` there; write it as `events.min() ?? now` if you prefer no force unwrap (global rule: no `!` in non-test code).
 
 Each row is its OWN test method named `testL<n>_<slug>` (`testL1_` ... `testL11_`; `check-rule-tests.sh` enforces 1 to 11). Rows L1 to L4 and L5 to L7 describe one continuing sequence each: a method for a later row replays the earlier steps itself (a `private func` helper that builds the state), so every method is independent.
 
@@ -1039,7 +1043,7 @@ R60 has two reachable branches (`.allow` for a `.t0` intent, and `.confirm` whic
 R62 and R64 are unreachable through the real router, but they ARE reachable by building the context directly, so they get tests
 like every other rule: `testR62_...` uses `ctx(.review) { $0.route = .local(.volumeSet(percent: 150)) }` (tier `.t4`, so
 `.deny(.tierT4)`), then `timerElapsed(.review, 1)`; `testR64_...` uses `ctx(.review) { $0.route = .cancelTurn }`. R74 gets a third branch
-`testR74_c_...` where `ctx.rate` is pre-filled with three `.t2` events so the approve takes the `rate_limited` deny path.
+`testR74_c_...` where `ctx.rate` is pre-filled (at `now: t0`, the env default) with three `.t2` events so the approve takes the `rate_limited` deny path.
 `scripts/voice-harness/check-rule-tests.sh` fails if any rule ID of `docs/voice/PLAN.md` has no `testR<ID>_` method.
 
 Include these specific checks (they catch the usual mistakes):
@@ -1050,9 +1054,9 @@ Include these specific checks (they catch the usual mistakes):
 - `testR22`/`testR32`: a tap (held 0.1 s) switches `captureMode` to `.toggle` and does not end the capture.
 - `testR58_cancelTurnIsUnreachableFromHandleFinal` (R58 has no reachable behavior because HANDLE_FINAL always routes with `agentBusy: false`, which never returns `.cancelTurn`, so the test proves that instead). Context `ctx(.transcribing) { $0.captureEndedByUser = true }`, generation 1, default `env()`. (1) `finalTranscript("stop", 1)` -> state `.review`, `route == .local(.mediaPause)`, `lane == .local`. (2) `finalTranscript("cancel", 1)` -> state `.error`, `failure == .rejected(.ambiguous)`. Assert that no effect of either result is `.cancelAgentTurn` (`XCTAssertFalse(t.effects.contains(.cancelAgentTurn))`; `VoiceEffect` is `Equatable`). The reducer MUST still contain a `case .cancelTurn` branch in HANDLE_FINAL that does `TO_IDLE(prefix)`; it is defensive code and has no test of its own.
 - `testR105_a_finishDropsTheInterruptCapture` and `testR105_b_cancelDropsTheInterruptCapture` (R105 has no result row of its own; it is the DROP_INTERRUPT step inside TO_IDLE/TO_ERROR/STOP_ALL/FINISH/R83, observed through two of them). Both start from `ctx(.acting) { $0.lane = .hermes; $0.counter = 2; $0.interrupt = InterruptCapture(generation: 2, endedByUser: false) }` (so `generation == 1`, interrupt generation 2). (a) event `.agent(.finished(summary: "ok"), generation: 1)` (speech not allowed): `interrupt == nil`, state `.speaking`, effects exactly `[.cancelCapture(generation: 2), .startTimer(.replyDisplay, generation: 1, seconds: 6.0), .cue(.done), .audit(AuditDraft(kind: .execute, lane: .hermes, decision: "finished", outcome: "ok"))]`. (b) event `.cancelRequested` (R90): `interrupt == nil`, state `.idle`, effects exactly `[.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "turn")), .cancelCapture(generation: 2)]` (TO_IDLE sets `effects = extra` first and DROP_INTERRUPT appends after it).
-- `testR54`: a cap-ended capture (`END_BY_CAP`) whose final text is not a local command ends in `.error` with
+- `testR54` (use `env(hermes: true)` and a final text such as `"what is the weather"`, exactly like S9: with the default env `hermesLaneReady` is false, the router returns `.reject(.notLocalCommand)` and R53 fires instead of R54; do NOT "fix" the reducer or weaken the test if you see R53): a cap-ended capture (`END_BY_CAP`) whose final text is not a local command ends in `.error` with
   `failure == .rejected(.needsUserRelease)` and no `.submitToAgent` effect.
-- `testR63`: the `.limited` branch with `ctx.rate` pre-filled with ten recent `.t1` events (call `tryConsume` in a loop to build it, and write every call as `_ = rate.tryConsume(...)`: `tryConsume` is not `@discardableResult`, and an ignored result is an "unused result" warning that only the harness warning check would catch).
+- `testR63`: the `.limited` branch with `ctx.rate` pre-filled with ten recent `.t1` events (consumed at `now: t0`, the env default, so they are still inside the 60 s window; call `tryConsume` in a loop to build it, and write every call as `_ = rate.tryConsume(...)`: `tryConsume` is not `@discardableResult`, and an ignored result is an "unused result" warning that only the harness warning check would catch).
 - `testR83`: tripwire for `terminal`, for unknown `zzz`, and for a `t2` tool with `approvedToolStarts == 0`; and NOT for
   `clock` (R82) and NOT for `write_file` with `approvedToolStarts == 1` (R82, which also decrements it to 0).
 - `testR84`: auto-deny for a request whose `risk` contains `.pipeToInterpreter`, one with `tier: .t4`, and one with `tier: .t3`
