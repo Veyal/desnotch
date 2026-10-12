@@ -3,9 +3,105 @@ import Foundation
 // WP-LOGIC owns this file. Base commit: fail-closed stub with the final signature.
 
 enum CommandRiskScanner {
-    /// Scans the literal command text of an approval request.
+    // The dangerous vocabulary lives here as DATA only: one regex constant per line, and one
+    // protected path string per line below. Nothing else in this file names those tokens.
+    private enum Pat {
+        static let pipeToInterpreter = #"\|\s*(sudo\s+)?(env\s+)?((ba|z|da|k|c|tc)?sh|python[0-9.]*|perl|ruby|node|php|osascript|source)\b"#
+        static let base64Flag = #"\bbase64\s+(-d|-D|--decode)\b"#
+        static let b64decode = #"\bb64decode\b"#
+        static let evalUse = #"\beval\b"#
+        static let sudo = #"\b(sudo|doas)\b"#
+        static let singlePipe = #"(?<!\|)\|(?!\|)"#
+        static let urlScheme = #"\b(https?|ftp|sftp)://"#
+        static let networkTool = #"\b(curl|wget|scp|rsync|nc|ncat|netcat|ftp|sftp|telnet|nmap)\b"#
+        static let gitPush = #"\bgit\s+push\b"#
+        static let sshCommand = #"(?:^|[\s;&|])ssh\s"#
+        static let destructive = #"\b(rm|rmdir|mv|kill|killall|pkill|chmod|chown|dd|mkfs|truncate|shred|diskutil)\b"#
+    }
+
+    private static let protectedPaths: [String] = [
+        ".hermes",
+        ".ssh",
+        ".env",
+        "auth.json",
+        "keychain",
+        "id_rsa",
+        "id_ed25519",
+        ".aws/",
+        ".gnupg",
+        "interseptor",
+        "vault",
+        "engagements",
+        "sudoers",
+        "/etc/shadow"
+    ]
+
+    /// Scans the literal command text of an approval request. Detection runs on the whole
+    /// sanitized text before truncation, so a long prefix can never hide a payload.
     static func scan(_ command: String, displayLimit: Int = 2000) -> CommandRisk {
-        // STUB (WP-LOGIC replaces this body): nothing scanned, nothing approvable.
-        CommandRisk(flags: [.unscanned], sanitized: "", wasTruncated: false, tier: .t4)
+        var flags: RiskFlags = []
+        var sanitized = ""
+        for scalar in command.unicodeScalars {
+            switch scalar.value {
+            case 0x09:
+                sanitized.append(contentsOf: " ")
+            case 0x0A, 0x0D:
+                sanitized.append(contentsOf: " \u{23CE} ")
+                flags.insert(.chaining)
+            case 0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F, 0x7F...0x9F:
+                flags.insert(.hiddenCharacters)
+            case 0x00AD, 0x061C, 0x200B...0x200F, 0x202A...0x202E,
+                 0x2060...0x2064, 0x2066...0x2069, 0xFEFF:
+                flags.insert(.hiddenCharacters)
+            default:
+                sanitized.unicodeScalars.append(scalar)
+            }
+        }
+        sanitized = sanitized.trimmingCharacters(in: .whitespaces)
+        guard !sanitized.isEmpty else {
+            return CommandRisk(flags: [.unscanned], sanitized: "", wasTruncated: false, tier: .t4)
+        }
+
+        let lowered = sanitized.lowercased()
+        if matches(Pat.pipeToInterpreter, lowered) { flags.insert(.pipeToInterpreter) }
+        if matches(Pat.base64Flag, lowered) || matches(Pat.b64decode, lowered) {
+            flags.insert(.base64Decode)
+        }
+        if matches(Pat.evalUse, lowered) { flags.insert(.evalUse) }
+        if lowered.contains("$(") || lowered.contains("`") { flags.insert(.commandSubstitution) }
+        if matches(Pat.sudo, lowered) { flags.insert(.sudo) }
+        for path in protectedPaths where lowered.contains(path) { flags.insert(.protectedPath) }
+        if lowered.contains(";") || lowered.contains("&&") || lowered.contains("||") {
+            flags.insert(.chaining)
+        }
+        if matches(Pat.singlePipe, lowered) { flags.insert(.pipe) }
+        if lowered.contains(">") || lowered.contains("<") { flags.insert(.redirect) }
+        if matches(Pat.urlScheme, lowered) || matches(Pat.networkTool, lowered)
+            || matches(Pat.gitPush, lowered) || matches(Pat.sshCommand, lowered) {
+            flags.insert(.url)
+        }
+        if matches(Pat.destructive, lowered) { flags.insert(.destructive) }
+
+        var wasTruncated = false
+        if sanitized.count > displayLimit {
+            sanitized = String(sanitized.prefix(displayLimit)) + "\u{2026}"
+            wasTruncated = true
+        }
+
+        let tier: VoiceTier
+        if flags.contains(.sudo) || flags.contains(.protectedPath) {
+            tier = .t4
+        } else if !flags.intersection(.autoDeny).isEmpty {
+            tier = .t4
+        } else if flags.contains(.url) {
+            tier = .t3
+        } else {
+            tier = .t2
+        }
+        return CommandRisk(flags: flags, sanitized: sanitized, wasTruncated: wasTruncated, tier: tier)
+    }
+
+    private static func matches(_ pattern: String, _ text: String) -> Bool {
+        text.range(of: pattern, options: .regularExpression) != nil
     }
 }
