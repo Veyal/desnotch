@@ -168,6 +168,10 @@ stateDiagram-v2
     thinking --> paused: stopAllRequested (R03b)
     acting --> paused: stopAllRequested while an agent runs (R03b)
     awaitingApproval --> paused: stopAllRequested while an agent runs (R03b)
+    awaitingApproval --> speaking: agent finished (R86)
+    awaitingApproval --> error: agent failed, budget, timeout (R87, R89)
+    awaitingApproval --> idle: cancelRequested on an agent card (R79)
+    listening --> idle: spoken emergency stop in the final transcript (R35, R52)
 ```
 
 Two things the diagram cannot show: (a) `stopAllRequested` from a busy agent phase goes to `paused`, from every other phase to `idle`; (b) while an agent phase is busy,
@@ -215,7 +219,7 @@ Every rule below is built from these. `next` is a copy of the incoming context; 
 | `DROP_INTERRUPT` | If `interrupt != nil`: append `.cancelCapture(generation: interrupt.generation)` and set `interrupt = nil`. |
 | `TO_IDLE(extra)` | `effects = extra`; `DROP_INTERRUPT`; `NEW_ID`; `CLEAR_FLOW`; `state = .idle`. |
 | `TO_ERROR(f, extra)` | `effects = extra`; `DROP_INTERRUPT`; `state = .error`; `failure = f`; `pending = nil`; `pendingIntent = nil`; `partialTranscript = ""`; append `.cue(.error)`, `.startTimer(.errorDisplay, generation: next.generation, seconds: 3.0)`, `.audit(AuditDraft(kind: .error, lane: next.lane, decision: "failure", outcome: f.code))`. Does NOT call `NEW_ID` (the display timer must carry the current generation). `finalTranscript` is kept so the error can say what was heard. |
-| `STOP_ALL(reason)` | `wasBusy = (state.isAgentBusy && lane == .hermes)`. Effects in this order: (1) if state is `armed/listening/transcribing`: `.cancelCapture(generation)`; (2) if `interrupt != nil`: `.cancelCapture(interrupt.generation)`; (3) if state is `speaking`: `.stopSpeaking`; (4) if `wasBusy`: `.stopAgentHard`; (5) `.audit(AuditDraft(kind: .stop, lane: lane, decision: reason.auditName, outcome: wasBusy ? "hard" : "soft"))`. Then `interrupt = nil`; `NEW_ID`; `CLEAR_FLOW`; if `wasBusy`: `state = .paused`, `pauseReason = reason` else `state = .idle`. `reason` is a `PauseReason`; `auditName` is `"user_stop"`, `"spoken_abort"` or `"tripwire"`. |
+| `STOP_ALL(reason)` | `wasBusy = (state.isAgentBusy && lane == .hermes)`. Effects in this order: (1) if state is `armed/listening/transcribing`: `.cancelCapture(generation)`; (2) if `interrupt != nil`: `.cancelCapture(interrupt.generation)`; (3) if state is `speaking`: `.stopSpeaking`; (4) if `wasBusy`: `.stopAgentHard`; (5) `.audit(AuditDraft(kind: .stop, lane: lane, decision: auditName(reason), outcome: wasBusy ? "hard" : "soft"))`. Then `interrupt = nil`; `NEW_ID`; `CLEAR_FLOW`; if `wasBusy`: `state = .paused`, `pauseReason = reason` else `state = .idle`. `reason` is a `PauseReason`. **`PauseReason` has NO `auditName` member and the frozen contract type must not be extended.** In `VoiceReducer.swift` write the mapping yourself as a private helper: `private func auditName(_ r: PauseReason) -> String { switch r { case .userStop: return "user_stop"; case .spokenAbort: return "spoken_abort"; case .tripwire: return "tripwire" } }`. |
 | `CANCEL_CAPTURE(auditDecision)` | `TO_IDLE([.cancelCapture(generation: generation), .audit(AuditDraft(kind: .cancel, lane: lane, decision: auditDecision))])`. (`generation` is the value BEFORE `NEW_ID`.) |
 | `END_BY_USER` | `state = .transcribing`; `captureEndedByUser = true`; append `.endCapture(generation)`, `.cue(.captureEnd)`, `.startTimer(.finalWatchdog, generation: generation, seconds: 5.0)`. |
 | `END_BY_CAP` | Same as `END_BY_USER` but `captureEndedByUser` stays `false`. |
@@ -223,7 +227,6 @@ Every rule below is built from these. `next` is a copy of the incoming context; 
 | `HANDLE_FINAL(text, prefix)` | See "Final transcript handling" below. `prefix` is an effects list that every outcome puts first. |
 | `ENTER_REVIEW(route, lane, prefix)` | `effects = prefix`; `state = .review`; `next.route = route`; `next.lane = lane`; append `.cue(.commit)`, `.startTimer(.review, generation: generation, seconds: 1.5)`, `.audit(AuditDraft(kind: .route, lane: lane, decision: "pending", transcript: finalTranscript))`. |
 | `FINISH(text)` | `reply = String(text.prefix(400))`; `pending = nil`; `pendingIntent = nil`; `DROP_INTERRUPT`; `state = .speaking`; if `env.speechAllowed && !reply.isEmpty` append `.speak(reply, generation: generation)` else append `.startTimer(.replyDisplay, generation: generation, seconds: 6.0)`; then append `.cue(.done)`, `.audit(AuditDraft(kind: .execute, lane: lane, decision: "finished", outcome: "ok"))`. |
-| `DENY_PENDING(decision, soft)` | Used by the approval card rules, see R76-R80. |
 
 `bounded(s)` = `String(s.prefix(500))` for transcripts. Strings are compared and prefixed by `Character`, not bytes.
 
@@ -267,7 +270,7 @@ current state. The first rule whose guard holds wins. IDs are stable: tests are 
 | ID | State | Event [guard] | Result |
 |---|---|---|---|
 | R01 | any | any event with a `generation` that is not current | no-op (exception: `.agent(.usage)`, see R88) |
-| R02 | any | `featureDisabled` | If `state == .idle && interrupt == nil`: no-op. Otherwise `STOP_ALL(.userStop)` but the result state is ALWAYS `.idle` (never `.paused`; keep `pauseReason = nil`); the audit decision is `"disabled"`. |
+| R02 | any | `featureDisabled` | If `state == .idle && interrupt == nil`: no-op. Otherwise `STOP_ALL(.userStop)` with exactly two overrides: the result state is ALWAYS `.idle` (never `.paused`; keep `pauseReason = nil`), and the audit `decision` is `"disabled"` instead of `"user_stop"`. Everything else is STOP_ALL unchanged: the audit `outcome` is still `wasBusy ? "hard" : "soft"`, and `.stopAgentHard` is still emitted when `wasBusy`. |
 | R03 | `paused` | `stopAllRequested` | no-op |
 | R03a | `idle` with `interrupt == nil` | `stopAllRequested` | effects `[.audit(AuditDraft(kind: .stop, decision: "user_stop", outcome: "idle"))]`, context unchanged |
 | R03b | any other | `stopAllRequested` | `STOP_ALL(.userStop)` |
@@ -340,12 +343,14 @@ current state. The first rule whose guard holds wins. IDs are stable: tests are 
 | R71 | `approveRequested(n)` [`pending == nil || n != pending.nonce`] | effects `[.audit(AuditDraft(kind: .approval, decision: "nonce_mismatch"))]`; context unchanged |
 | R72 | `approveRequested(n)` [nonce matches, `!pending.canApprove`] | effects `[.audit(AuditDraft(kind: .approval, tier: pending.tier, decision: "blocked"))]`; context unchanged |
 | R73 | `approveRequested(n)` [nonce matches, `canApprove`, `pendingIntent == i` (local)] | `tier = pending.tier`; `rate.tryConsume(tier:, now:)`: `.limited` -> `TO_ERROR(.rateLimited)`. Else `pending = nil`; `pendingIntent = nil`; `state = .acting`; effects `[.cue(.approved), .execute(i, generation: generation), .audit(AuditDraft(kind: .approval, lane: .local, tier: tier, decision: "approved"))]` |
-| R74 | `approveRequested(n)` [nonce matches, `canApprove`, agent card (`pendingIntent == nil`)] | `if pending.tier >= .t2 { approvedToolStarts += 1 }`; effects `[.respondToApproval(nonce: n, allow: true), .cue(.approved), .audit(AuditDraft(kind: .approval, lane: .hermes, tier: pending.tier, decision: "approved"))]`; `pending = nil`; `state = .acting` |
+| R74 | `approveRequested(n)` [nonce matches, `canApprove`, agent card (`pendingIntent == nil`)] | If `pending.tier >= .t2`, first `rate.tryConsume(tier: pending.tier, now: env.now)`; on `.limited` take the R77 deny path with decision `"rate_limited"`: effects `[.respondToApproval(nonce: n, allow: false), .audit(AuditDraft(kind: .denial, lane: .hermes, tier: pending.tier, decision: "rate_limited"))]`; `pending = nil`; `state = .acting`; `approvedToolStarts` unchanged (the turn stays alive and the agent finishes or fails on its own). Otherwise (tier below `.t2`, or `.allowed`): `if pending.tier >= .t2 { approvedToolStarts += 1 }`; effects `[.respondToApproval(nonce: n, allow: true), .cue(.approved), .audit(AuditDraft(kind: .approval, lane: .hermes, tier: pending.tier, decision: "approved"))]`; `pending = nil`; `state = .acting` |
 | R75 | `denyRequested(n)` [`pending == nil || n != pending.nonce`] | same as R71 (audit `nonce_mismatch`, no change) |
 | R76 | `denyRequested(n)` [nonce matches, local card] | `TO_IDLE([.audit(AuditDraft(kind: .denial, lane: .local, tier: pending.tier, decision: "denied"))])` |
 | R77 | `denyRequested(n)` [nonce matches, agent card] | effects `[.respondToApproval(nonce: n, allow: false), .audit(AuditDraft(kind: .denial, lane: .hermes, tier: pending.tier, decision: "denied"))]`; `pending = nil`; `state = .acting` (the agent will finish or fail on its own) |
 | R78 | `timerElapsed(.approval)`, `screenLocked` | Like R76 (local) or R77 (agent) with no nonce check; audit decision `"expired"` for the timer and `"locked"` for the lock |
 | R79 | `cancelRequested` | Local card: like R76 with decision `"cancel"`. Agent card: effects `[.respondToApproval(nonce: pending.nonce, allow: false), .cancelAgentTurn]` then `TO_IDLE` with those as `extra` plus `.audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "approval"))` |
+
+(Totality) `awaitingApproval` with `pending == nil` cannot arise, but the reducer must never trap: `approveRequested`/`denyRequested` follow R71/R75 (`nonce_mismatch`), and `timerElapsed(.approval)`, `screenLocked` and `cancelRequested` do `TO_IDLE([])`.
 
 **thinking / acting (agent lane, `lane == .hermes`)** - `agent(_, generation:)` events. These rules (R80-R92 and `timerElapsed(.turnBudget)`) apply only while `lane == .hermes`; with any other lane an `.agent` event (other than `.usage`, R88) is a no-op.
 
@@ -353,8 +358,8 @@ current state. The first rule whose guard holds wins. IDs are stable: tests are 
 |---|---|---|
 | R80 | `.agent(.partial(s))` | `reply = String(s.prefix(400))` (the backend sends the full text so far) |
 | R81 | `.agent(.status(_))` | no-op |
-| R82 | `.agent(.toolActivity(kind))` [`tier = ToolTierTable.tier(forTool: kind)`; `tier <= .t1`, or `tier == .t2 && approvedToolStarts > 0`] | If `tier == .t2` then `approvedToolStarts -= 1`. `steps.append(VoiceStep(id: stepsStarted, kind: String(kind.prefix(40))))`; `stepsStarted += 1`; `state = .acting`. If `stepsStarted > 12` (`VoiceLimits.maxAgentSteps`) after the increment: `TO_ERROR(.stepBudgetExceeded, [.cancelAgentTurn])` instead. |
-| R83 | `.agent(.toolActivity(kind))` [otherwise: `tier >= .t3`, or `tier == .t2 && approvedToolStarts == 0`] | **Tripwire.** `kind40 = String(kind.prefix(40))`. Effects `[.stopAgentHard, .cue(.error), .audit(AuditDraft(kind: .tripwire, lane: .hermes, tier: tier, decision: "tripwire", outcome: kind40))]`; `DROP_INTERRUPT` first; then `NEW_ID`, `CLEAR_FLOW`, `state = .paused`, `pauseReason = .tripwire(kind40)`, `failure = .tripwire(tool: kind40)`. |
+| R82 | `.agent(.toolActivity(kind))` [`tier = ToolTierTable.tier(forTool: kind)`; `tier <= .t1`, or `tier == .t2 && approvedToolStarts > 0`] | If `tier == .t2` then `approvedToolStarts -= 1`. `steps.append(VoiceStep(id: stepsStarted, kind: String(kind.prefix(40))))`; `stepsStarted += 1`; `state = .acting`. If `stepsStarted > 12` (`VoiceLimits.maxAgentSteps`) after the increment: `TO_ERROR(.stepBudgetExceeded, [.cancelAgentTurn])` instead (the 13th chip WAS appended and `stepsStarted` stays incremented; the `approvedToolStarts` decrement also stays). |
+| R83 | `.agent(.toolActivity(kind))` [otherwise: `tier >= .t3`, or `tier == .t2 && approvedToolStarts == 0`] | **Tripwire.** `kind40 = String(kind.prefix(40))`. Effects `[.stopAgentHard, .cue(.error), .audit(AuditDraft(kind: .tripwire, lane: .hermes, tier: tier, decision: "tripwire", outcome: kind40))]`; then `DROP_INTERRUPT` (its `.cancelCapture(generation: interrupt.generation)` is appended AFTER those three effects, as in `TO_ERROR`); then `NEW_ID`, `CLEAR_FLOW`, `state = .paused`, `pauseReason = .tripwire(kind40)`, `failure = .tripwire(tool: kind40)`. |
 | R84 | `.agent(.approvalNeeded(req))` [`req.risk` has any `autoDeny` flag, or `req.tier >= .t4`, or (`req.tier == .t3 && !env.secondFactorAvailable`)] | Auto-deny, no card: effects `[.respondToApproval(nonce: req.nonce, allow: false), .audit(AuditDraft(kind: .denial, lane: .hermes, tier: req.tier, decision: "auto_deny"))]`; state unchanged |
 | R85 | `.agent(.approvalNeeded(req))` [otherwise] | `pending = req`; `pendingIntent = nil`; `state = .awaitingApproval`; effects `[.cue(.needsConfirmation), .startTimer(.approval, generation: generation, seconds: 60.0), .audit(AuditDraft(kind: .approval, lane: .hermes, tier: req.tier, decision: "requested"))]` |
 | R86 | `.agent(.finished(summary))` (also valid in `awaitingApproval`) | `FINISH(summary)` |
@@ -366,6 +371,20 @@ current state. The first rule whose guard holds wins. IDs are stable: tests are 
 | R92 | `awaitingApproval` + `.agent(.toolActivity(kind))` | Tripwire exactly like R83 (a tool started while a card is open means something ran unapproved). |
 
 An `.agent(...)` event (other than `.usage`) in any state other than `thinking`, `acting`, `awaitingApproval` is a no-op.
+
+**Which agent rules apply in which busy state.** For an `.agent(...)` event with a current generation and `lane == .hermes`, pick the rule from this table. In `awaitingApproval`, R91 and R92 are evaluated BEFORE any other `.agent` rule of that state, and R82-R85 do NOT apply there (so `clock` while a card is open trips the wire, never R82).
+
+| Agent event | `thinking`, `acting` | `awaitingApproval` |
+|---|---|---|
+| `.usage` | R88 | R88 |
+| `.finished` | R86 | R86 |
+| `.failed` | R87 | R87 |
+| `.toolActivity` | R82 or R83 | R92 only |
+| `.approvalNeeded` | R84 or R85 | R91 only |
+| `.partial` | R80 | no-op (nothing changes, no effects) |
+| `.status` | R81 (no-op) | no-op |
+
+Other events in the busy states: `timerElapsed(.turnBudget)` is R89 in all three; `cancelRequested` is R90 in `thinking`/`acting` and R79 in `awaitingApproval`; the interrupt-capture events are R100-R104 in all three and come first. `approveRequested`/`denyRequested` exist only in `awaitingApproval` (R70-R78); in `thinking`/`acting` they are no-ops.
 
 **local execution (`acting` with `lane == .local`)**
 
@@ -385,7 +404,7 @@ Only those phrases are honored; every other transcript is ignored.
 | R100 | `thinking, acting, awaitingApproval` + `talkPressed` [`lane == .hermes && interrupt == nil && env.voiceEnabled && !env.screenLocked`] | `counter += 1`; `interrupt = InterruptCapture(generation: counter, endedByUser: false)`; effects `[.startCapture(generation: counter, mode: .hold)]`. Everything else unchanged. |
 | R101 | any + `captureStarted(g)` [`interrupt != nil && g == interrupt.generation`] | effects `[.cue(.captureStart), .startTimer(.listenCap, generation: g, seconds: 10.0)]` |
 | R102 | any + `talkReleased(h)` [`interrupt != nil`] | `h >= 0.35`: `interrupt.endedByUser = true`; effects `[.endCapture(generation: interrupt.generation), .cue(.captureEnd)]`. `h < 0.35`: effects `[.cancelCapture(generation: interrupt.generation)]`; `interrupt = nil`. |
-| R103 | any + `finalTranscript(s, g)` [`interrupt != nil && g == interrupt.generation`] | `interrupt = nil`. `route = IntentRouter.route(s, context: RouterContext(hermesLaneAvailable: false, agentBusy: true))`. `.emergencyStop` -> `STOP_ALL(.spokenAbort)`. `.cancelTurn` -> `TO_IDLE([.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "spoken"))])`. Anything else -> no further change (the transcript is ignored). |
+| R103 | any + `finalTranscript(s, g)` [`interrupt != nil && g == interrupt.generation`] | `interrupt = nil`. `route = IntentRouter.route(s, context: RouterContext(hermesLaneAvailable: false, agentBusy: true))`. `.emergencyStop` -> `STOP_ALL(.spokenAbort)`. `.cancelTurn` -> `TO_IDLE([.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "spoken"))])`. Anything else -> no effects and no other change except `interrupt = nil` (the transcript is ignored; the recognizer already finished). |
 | R104 | any + `captureFailed(_, g)` or `timerElapsed(.listenCap, g)` [`interrupt != nil && g == interrupt.generation`] | `captureFailed`: `interrupt = nil`, effects `[.cancelCapture(generation: g)]`. `listenCap`: effects `[.endCapture(generation: g)]` (the transcript is still only honored for stop phrases). |
 | R105 | a state change that leaves `{thinking, acting, awaitingApproval}` while `interrupt != nil` | Covered by `DROP_INTERRUPT` inside `TO_IDLE`, `TO_ERROR`, `STOP_ALL`, `FINISH`, R83. |
 
@@ -464,6 +483,9 @@ generated from this table). `Package.swift` is not changed by anyone.
 | `scripts/voice-harness/known-failures.txt` | new | BASE | local test harness and checks, frozen |
 | `scripts/voice-harness/ownership.tsv` | new | BASE | local test harness and checks, frozen |
 | `scripts/voice-harness/stub-xctest/XCTest.swift` | new | BASE | local test harness and checks, frozen |
+| `scripts/voice-harness/import-wp.sh` | new | BASE | copies one package's owned paths from its worktree into feat/voice (section 10) |
+| `scripts/voice-harness/check-rule-tests.sh` | new | BASE | fails when a reducer rule ID has no `testR<ID>_` method |
+| `scripts/voice-harness/verify-audit.py` | new | BASE | independent `python3 -I` verifier of the audit hash chain |
 | `Sources/DesnotchCore/Voice/Logic/UtteranceNormalizer.swift` | changed | WP-LOGIC | base provides a fail-closed stub with the final signature |
 | `Sources/DesnotchCore/Voice/Logic/SpokenNumber.swift` | changed | WP-LOGIC | base provides a fail-closed stub with the final signature |
 | `Sources/DesnotchCore/Voice/Logic/AppCatalog.swift` | changed | WP-LOGIC | base provides a fail-closed stub with the final signature |
@@ -574,26 +596,41 @@ generated from this table). `Package.swift` is not changed by anyone.
 
 ## 10. Integration order and merge procedure
 
-1. **Worktrees** (orchestrator, from the plan commit `C`): `git worktree add ../desnotch-wp-logic -b wp/logic C`, same for `wp/ui` and `wp/platform`. Implementers work only there and never commit.
-2. **Parallel phase P1.** LOGIC, UI and PLATFORM have disjoint file sets and compile against the same frozen contracts and stubs. They can finish in any order.
-3. **Per package gate (orchestrator + a SEPARATE reviewer, never the author):** `scripts/voice-harness/check-ownership.sh WP-<NAME>`; the package's verification commands; the reviewer reads the diff against the package's DO-NOT list and the tables; then the orchestrator commits specific paths on the WP branch.
-4. **Merge** into `feat/voice` in the order LOGIC, PLATFORM, UI (any order works; the files are disjoint). After each merge: `swift build` warning-free and the full harness.
-5. **WP-HERMES** starts from the merged `feat/voice` in a fresh worktree: part A, then gate P2 and a commit; part B, then gate P4 and a commit; part C last.
+**No branch is created, nothing is merged, nothing is pushed, and no other branch or repository is touched.** The work packages
+own disjoint paths (section 9, `scripts/voice-harness/ownership.tsv`), so "merging" a package is the same as copying exactly its
+owned paths into the `feat/voice` worktree. All commits are local, on `feat/voice`, with `git add <specific paths>` (never `-A` or `.`).
+
+1. **Worktrees** (orchestrator): from the tip `C` of `feat/voice`, create DETACHED worktrees, so no branch exists:
+   `git worktree add --detach ../desnotch-wp-logic C`, and the same for `../desnotch-wp-ui` and `../desnotch-wp-platform`.
+   Implementers work only in their worktree and never commit.
+2. **Parallel phase P1.** LOGIC, UI and PLATFORM have disjoint file sets and compile against the same frozen contracts and stubs.
+   They can finish in any order.
+3. **Per package gate (orchestrator + a SEPARATE reviewer, never the author):** in the package worktree run
+   `scripts/voice-harness/check-ownership.sh WP-<NAME>` and the package's verification commands; the reviewer reads the diff
+   against the package's DO-NOT list and the tables. Nothing is committed in the package worktree.
+4. **Import** into the `feat/voice` worktree, in the order LOGIC, PLATFORM, UI (any order works): run, from the root of the
+   `feat/voice` worktree, `scripts/voice-harness/import-wp.sh WP-<NAME> ../desnotch-wp-<name>`. It copies exactly the paths
+   `ownership.tsv` assigns to that package and prints them; then `git add <those paths>` and
+   `git commit -m "feat(voice): <package summary>"`. After each import: `swift build` warning-free and the full harness.
+5. **WP-HERMES** is run as THREE separate invocations (Part A, Part B, Part C). Start Part A from a new detached worktree at the
+   `feat/voice` HEAD after LOGIC, UI and PLATFORM are imported. After each part: the gate (build, harness, lint, ownership check),
+   a separate review, `import-wp.sh WP-HERMES <worktree>`, a local commit on `feat/voice`, then a fresh detached worktree at the new
+   HEAD for the next part. The orchestrator takes the implementer's final report after every part.
 6. Final review pass, manual acceptance by the human (section 15). Nothing is pushed or merged to `main` by agents.
 
 ## 11. Acceptance criteria per phase
 
 **P0 (this commit).** `swift build` prints no warning; `scripts/voice-harness/run.sh` ends with only the two known baseline failures; `VoiceContractSmokeTests` 20/20; settings default off; nothing in the app changes behavior (the model exists but nothing writes it); `scripts/voice-harness/lint-lite.sh` clean.
 
-**P1a WP-LOGIC.** Every table row in `WP-LOGIC.md` is a passing test with the stated names; counts: normalizer 14, spoken number 34, catalog 22, router 70, policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32, scanner 33, rate limiter 11, reducer one test per rule ID, 10 scenarios; no file outside the 18 owned; build clean; lint clean.
+**P1a WP-LOGIC.** Every table row in `WP-LOGIC.md` is a passing test with the stated names; counts: normalizer 14, spoken number 34, catalog at least 22 test methods, router 70, policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32, scanner 33, rate limiter 11, reducer one test per rule ID, 10 scenarios; no file outside the 18 owned; build clean; lint clean.
 
-**P1b WP-UI.** The 11 states render (offscreen render tests) at the fixed pill width; the wing table passes; `wantsHover` has the third input and `PillSourceGuardTests` still passes; privacy mode hides every transcript/reply/literal; Approve is disabled for truncated/auto-deny/T3 cards and hold-to-approve for agent cards; status-menu mirror and Settings section exist; announcements never carry content; existing tests green.
+**P1b WP-UI.** The 11 states render (offscreen render tests) at the fixed pill width; the wing table passes; `wantsHover` has the third input and `PillSourceGuardTests` still passes; privacy mode hides every transcript/reply/literal; Approve is disabled for truncated/auto-deny/T3 cards and for literals over 240 characters or 6 lines, the literal is never clipped (render tests at content widths 268 and 228), and Approve is hold-to-approve for agent cards; status-menu mirror and Settings section exist; announcements never carry content; existing tests green.
 
-**P1c WP-PLATFORM.** All pure parts tested (levels, hotkey map, press tracker, lock flags, executor with fakes, mute memory, ducker, audit chain incl. tamper detection, file logger, disk writer, permission mapping); `VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app` passes in normal and `HARDENED_RUNTIME=1` mode (Info.plist usage strings and the audio-input entitlement present); the S2 result (does the Carbon release event arrive) is reported.
+**P1c WP-PLATFORM.** All pure parts tested (levels, hotkey map, press tracker, lock flags, executor with fakes, mute memory, ducker, audit chain incl. tamper detection, file logger, disk writer, permission mapping); `VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app` passes in normal and `HARDENED_RUNTIME=1` mode (Info.plist usage strings and the audio-input entitlement present); the manual checklist items 1-6 of `WP-PLATFORM.md` section 5 are reported `BLOCKED: human-run` (they need a physical key press, a spoken sentence and TCC grants), and move to the human's section 15 (S2, S3, S5).
 
-**P2 WP-HERMES part A.** Coordinator tests green; with `DESNOTCH_VOICE_DEBUG=1` a typed `volume thirty` flows through review and executes; `volume ninety` shows a card (Deny and Approve both work); Stop and Esc work; the audit file exists (0600, verifiable, no text); with voice off nothing is registered or running.
+**P2 WP-HERMES part A.** Coordinator tests green; with `DESNOTCH_VOICE_DEBUG=1` a typed `volume thirty` flows through review and executes; `volume ninety` shows a card (Deny and Approve both work); Stop and Esc work; the audit file exists (0600, no text) and `python3 -I scripts/voice-harness/verify-audit.py <file>` prints `ok`; with voice off nothing is registered or running.
 
-**P3 (human, Mac mini).** Hold-to-talk end to end with a real microphone for `en-US` (and `id-ID` if on-device is supported); permissions flow (deny, allow, re-allow); orange mic dot goes out after release/cancel; media ducking restores; lock gate refuses while locked; Esc is not stolen at idle.
+**P3 (human, Mac mini).** Hold-to-talk end to end with a real microphone for `en-US` (and `id-ID` if on-device is supported); permissions flow (deny, allow, re-allow); orange mic dot goes out after release/cancel; media ducking restores; lock gate refuses while locked; Esc is not stolen at idle or while paused.
 
 **P4 WP-HERMES part B.** Preflight, ACP client, mapper, supervisor, hard stop and backend tests green with scripted transports and a real throwaway process tree; no stray processes after the suite; the live canary matrix steps are written down (they are the human's, section 15).
 
@@ -627,14 +664,25 @@ How to read the results:
 
 - `swift build`: done means the single line `Build complete!` and nothing matching `warning:` or `error:`.
   Run it after every edit and read the whole output. An incremental build only re-prints warnings for files it recompiled,
-  so if you are unsure, `touch` the files you changed and build again.
+  and SwiftPM hashes file CONTENT, so `touch` does NOT force a rebuild. For the final whole-package warning check build into
+  a fresh scratch directory (about 40-60 s): `swift build --scratch-path "$(mktemp -d)" 2>&1 | grep -E "warning:|error:|Build complete"`.
 - Harness: each test prints `ok   Class.testName` or `FAIL Class.testName` followed by the failing assertion with
   `file:line`. The last lines are `harness: N passed, M failed, K assertions`. **Done** means `M == 0`, or the
   extra line `harness: only known baseline failures remain` (two existing render tests,
   `ArtworkGlowRenderTests.testGlowFollowsTheCurrentAccentNotThePreviousOne` and
   `PillMarqueeRenderTests.testLongTitleScrollsAfterTheStartDelayOnceActive`, always fail under the stub; ignore them, and
-  never edit them). If the harness build prints a `warning:` for one of YOUR test or source files, fix it too.
-- `lint-lite.sh` must print `lint-lite: clean (N files)`.
+  never edit them). If the harness build prints a `warning:` for one of YOUR test or source files, fix it too. The generated
+  `runner/main.swift` prints about 1,700 baseline warnings `no calls to throwing functions occur within 'try' expression`;
+  they are not yours, so ignore every warning whose file is `main.swift`
+  (`scripts/voice-harness/run.sh 2>&1 | grep 'warning:' | grep -v 'main.swift'` must print nothing).
+  The harness finds a test class only when it is declared on ONE line as `class X: XCTestCase` or `final class X: XCTestCase`,
+  and it resets its current class at every column-0 `class`, `struct`, `enum` or `actor`: put helper types and fakes at
+  column 0 AFTER the test class (or indent them inside it), and confirm with `scripts/voice-harness/run.sh --list | grep <Class>`
+  that every test you wrote is listed.
+- `lint-lite.sh` must print `lint-lite: clean (N files)`. Pass your files explicitly
+  (`scripts/voice-harness/lint-lite.sh path/one.swift path/two.swift`). It only checks the whitespace rules; CI's SwiftLint also
+  enforces `duplicate_imports`, `empty_enum_arguments`, `redundant_discardable_let`, `unused_optional_binding` and
+  `void_return`, so check those by eye (only `trailing_whitespace` is an error there).
 - First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); allow 2-4 minutes.
   `--skip-build` re-runs without rebuilding.
 - The harness copies your current `Sources/DesnotchCore` and `Tests/DesnotchCoreTests` on every run, so just save and re-run.
@@ -657,6 +705,19 @@ bash -n scripts/*.sh                                   # shell syntax (CI also r
 VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app            # packaging smoke (dist/ is gitignored)
 HARDENED_RUNTIME=1 VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app
 ```
+
+Final checks (the orchestrator and the reviewer run these after every package import, and at P5):
+
+```sh
+swift build --scratch-path "$(mktemp -d)" 2>&1 | grep -E "warning:|error:|Build complete"     # clean build, ~60 s
+rg -n "print\(|NSLog\(|os_log|Logger\(|\.onHover|repeatForever|serve --stop|pkill|killall|hermes pause|osascript|auth\.json|AXIsProcessTrusted" \
+  Sources/DesnotchCore/Voice Sources/DesnotchCore/UI/Voice*.swift Sources/DesnotchCore/UI/NotchPillView+Voice.swift
+scripts/voice-harness/check-rule-tests.sh                           # after WP-LOGIC: every reducer rule ID has a testR<ID>_ method
+python3 -I scripts/voice-harness/verify-audit.py "$HOME/Library/Application Support/desnotch/voice/voice-audit.jsonl"   # P2 and P5, independent of our code
+```
+
+The `rg` must show nothing that is not a comment explaining a ban. The two packaging runs modify only the gitignored `.build/` and
+`dist/`; each takes about 60 s, do not abort them.
 
 The installed `/Applications/desnotch.app` of the human normally runs on this machine. Its single-instance guard makes `scripts/runtime-smoke-test.sh`, `swift run` and any packaged-app launch exit at once, so those steps are the human's: agents never quit or kill the installed app or its `mediaremote-adapter` perl process.
 
@@ -693,6 +754,7 @@ These apply to every work package. They are not suggestions.
    `Sources/DesnotchCore/Voice/Contracts/*`, `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift`,
    `Tests/DesnotchCoreTests/Voice/VoiceContractSmokeTests.swift`, `Package.swift`, `AGENTS.md`, `CLAUDE.md`, `CHANGELOG.md`,
    `docs/voice/*`, `scripts/voice-harness/*`, `.github/*`, or anything under `Sources/DesnotchCore/MediaRemote/Vendor/`.
+   The one exception: WP-HERMES Part C edits `AGENTS.md`, `CHANGELOG.md` and `README.md` (`CLAUDE.md` is a symlink to `AGENTS.md`).
    If you believe a contract file is wrong or incomplete, do NOT edit it: implement the literal spec, work around it locally
    in your own files, and add an `AMENDMENT REQUEST:` paragraph to your final report.
 8. **Tests are XCTest, deterministic, and fast.** No sleeps (`Thread.sleep`, `Task.sleep`) to wait for results: use the
@@ -701,7 +763,11 @@ These apply to every work package. They are not suggestions.
    it in `tearDown`), no real `UserDefaults.standard` (use `UserDefaults(suiteName:)` and remove the domain in `tearDown`).
    Tests must compile under real XCTest on Xcode 15: only use the assertion functions the existing tests use
    (`XCTAssertEqual/True/False/Nil/NotNil/NotEqual/Greater...`, `XCTUnwrap`, `XCTAssertThrowsError`, `XCTFail`,
-   `expectation`/`wait(for:)`).
+   `expectation`/`wait(for:)`). All test files of all packages share ONE test module: test doubles and helper types you write are
+   `private`/`fileprivate` unless another test file of YOUR package must reuse them (then they are internal and use the name or
+   prefix your package doc prescribes), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
+   on a collision. `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (frozen) already provides `FakeVoiceClock`,
+   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are.
 9. **Style.** Match the surrounding code. No trailing whitespace, exactly one final newline, never two blank lines in a
    row (CI's SwiftLint fails the build on these; run `scripts/voice-harness/lint-lite.sh`). Doc comments explain WHY.
    Names in this plan are exact: do not rename a type, method, case or file that the plan names.
@@ -737,14 +803,15 @@ Needs the human, a microphone, and for items 7-8 a notch MacBook. Report results
 1. **Create the `voice` Hermes profile** (WP-HERMES's final report lists the exact keys it checks): approvals mode `manual` (or `smart`), empty command allowlist, no MCP servers, an explicit and empty ACP toolset list, no cloud STT; then `chflags uchg` its `config.yaml`. desnotch refuses the lane until `hermes -p voice acp --check`-equivalent preflight passes.
 2. **S1 (ACP):** with the lane on, one utterance round trip; note cold and warm latency; confirm the child has its own process group (`ps -o pid,pgid,command`).
 3. **S4 (canary matrix, under the `voice` profile):** make the agent attempt `rm -rf`, `curl | sh`, `python -c`, a write outside the scratch folder, and an MCP call. Each must end in a card (flagged ones refused without a card), a deny, or the tripwire pause. Confirm the profile `config.yaml` cannot be edited by the agent.
-4. **S2 (hotkey release):** WP-PLATFORM reports whether `kEventHotKeyReleased` arrives; if it does not, switch the plan to toggle-only talk (amendment).
+4. **S2 (hotkey release):** the human runs the scratch recipe in `WP-PLATFORM.md` section 3.3 (Spike S2) and reports whether `kEventHotKeyReleased` arrives; if it does not, switch the plan to toggle-only talk (amendment).
 5. **S3 (TCC):** microphone and speech grants under ad-hoc signing and hardened runtime, packaged app vs `swift run`; note whether a rebuild re-prompts.
-6. **S5 (accuracy):** on-device `en-US` and `id-ID` on the jargon words (herdr, Interseptor, desnotch, nmap) and on mixed speech; decide whether whisper is worth P5.
+6. **S5 (accuracy):** on-device `en-US` and `id-ID` on the jargon words (herdr, Interseptor, desnotch, nmap) and on mixed speech; decide whether whisper is worth P5. Known on this Mac: `SFSpeechRecognizer(locale: id-ID).supportsOnDeviceRecognition` is false ("No Assistant asset for language id-ID"), so `id-ID` is selectable but always ends in "Voice isn't available" until the Indonesian dictation asset is installed; `en-US` supports on-device recognition and the Mac has a USB audio input.
 7. **Notch hardware:** wing/cutout alignment, trackpad haptics, ducking with the built-in microphone and speakers.
 8. **Privacy:** screen-share with Privacy mode on while talking: no transcript, reply or command visible; VoiceOver does not read content.
 9. **Stop:** start a long safe task through the agent, press Stop; confirm the survivor list is empty or honest.
 10. **S6 (Swift 5.10):** the first CI run of this branch on macos-14; fix isolation errors the local compiler cannot see.
 11. **Deletion rehearsal:** follow section 17 on a scratch branch and confirm the app still builds.
+12. **Audit anchor (deviation 7):** run `python3 -I scripts/voice-harness/verify-audit.py "$HOME/Library/Application Support/desnotch/voice/voice-audit.jsonl"`, and record the printed head hash outside the file (for example in that day's Notion DailyNotes entry) so a rewritten log is detectable.
 
 ## 16. Risks
 

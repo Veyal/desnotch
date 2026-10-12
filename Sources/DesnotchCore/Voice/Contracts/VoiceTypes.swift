@@ -536,7 +536,7 @@ enum PushToTalkEvent: Equatable, Sendable {
 
 enum PushToTalkStatus: Equatable, Sendable {
     case active
-    /// The combination could not be registered (another app owns it) or the source is a stub.
+    /// The talk key or the Stop chord could not be registered (another app owns it) or the source is a stub.
     case unavailable
 }
 

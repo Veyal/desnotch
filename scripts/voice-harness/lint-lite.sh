@@ -8,7 +8,10 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$repo"
 
-files=("$@")
+files=()
+if [[ $# -gt 0 ]]; then
+  files=("$@")
+fi
 if [[ ${#files[@]} -eq 0 ]]; then
   while IFS= read -r f; do
     [[ "$f" == *.swift ]] && files+=("$f")
@@ -16,7 +19,7 @@ if [[ ${#files[@]} -eq 0 ]]; then
 fi
 
 status=0
-for f in "${files[@]}"; do
+for f in ${files[@]+"${files[@]}"}; do
   [[ -f "$f" ]] || continue
   if grep -nE '[[:space:]]+$' "$f" >/dev/null; then
     echo "trailing whitespace: $f"
