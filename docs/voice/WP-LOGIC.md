@@ -122,7 +122,7 @@ static let trailingFillers: Set<String> = [
 ]
 ```
 
-Worked examples (write each as a test; `tokens(raw) == expected`):
+Worked examples (write each as its OWN test method named `testN<n>_<slug>`, `testN1_play` ... `testN14_repeatedFillers`, asserting `tokens(raw) == expected`; the numbers are the `N` of the table, and `scripts/voice-harness/check-rule-tests.sh` fails when one is missing):
 
 | # | raw | expected |
 |---|---|---|
@@ -177,7 +177,7 @@ func assertParse(_ tokens: [String], _ start: Int, _ expected: (Int, Int)?,
 }
 ```
 
-Worked examples (write each as a test; input is `tokens`, `start`, expected result):
+Worked examples (write each as its OWN test method named `testS<n>_<slug>`, `testS1_` ... `testS34_`, where `S<n>` is the row number below; each calls `assertParse`; `check-rule-tests.sh` fails when one is missing. Do not confuse these with the reducer scenarios, which are `testScenarioS<n>_`):
 
 | # | tokens | start | expected |
 |---|---|---|---|
@@ -307,9 +307,12 @@ at the position right after the optional `to/ke/jadi`, and must end exactly befo
 which must be the last token. Any leftover token means no match.
 
 **Timer grammar** (whole array consumed; `NUMBER` via `SpokenNumber.parse`; `UNIT` is one of `minute, minutes, min, mins, menit`):
-- `TIMERHEAD [for|selama|untuk] NUMBER UNIT` where `TIMERHEAD` is `timer`; `set timer`; `set a timer`; `start timer`;
-  `start a timer`; `setel timer`; `pasang timer`; `atur timer`.
-- `[set a|start a] NUMBER UNIT [timer]` and `NUMBER UNIT timer` (e.g. `25 minute timer`).
+- Form 1: `TIMERHEAD [for|selama|untuk] NUMBER UNIT` where `TIMERHEAD` is `timer`; `set timer`; `set a timer`; `start timer`;
+  `start a timer`; `setel timer`; `pasang timer`; `atur timer`. (`for|selama|untuk` is optional here.)
+- Form 2, two shapes, written without optional-bracket ambiguity:
+  - (2a) `PREFIX NUMBER UNIT [timer]` where `PREFIX` is `set a` or `start a`. The prefix is REQUIRED; the trailing word `timer` is optional (`set a five minutes` and `set a 25 minute timer` both match).
+  - (2b) `NUMBER UNIT timer` with NO prefix. The trailing word `timer` is REQUIRED (`25 minute timer`, `ten minutes timer`).
+  So the rule is: the prefix is required unless the trailing `timer` word is present, and a bare `NUMBER UNIT` with neither (`5 minutes`, `ten minutes`) is NOT a timer command (it falls through to the miss rule: `.reject(.notLocalCommand)` in context A, `.remote` in context B). `minute` and `min` are singular forms of `UNIT` and need no number agreement.
 
 **Open-app grammar** (whole array consumed): `VERB [the|a|aplikasi] NAME [app|application|aplikasi]` where `VERB` is
 `open`; `open up`; `launch`; `buka`; `jalankan`, and `NAME` is the whole remainder (1 to 3 tokens) and satisfies
@@ -321,7 +324,7 @@ is not in the catalog). If `NAME` is not in the catalog the grammar does not mat
 #### Router worked examples
 
 Contexts: **A** = `RouterContext()` (lane unavailable, not busy); **B** = lane available; **C** = agent busy
-(lane unavailable). Every row is one test; name them `testRouter_<id>`. `local(...)` is `.local(...)`.
+(lane unavailable). Every row is one test method named `testRouter_<n>_<slug>` (`<n>` = the `#` below, for example `testRouter_13_volumeThirty`, `testRouter_72_tenMinutesTimer`); `check-rule-tests.sh` fails when one of 1 to 72 is missing. `local(...)` is `.local(...)`.
 
 | # | Utterance | Ctx | Expected |
 |---|---|---|---|
@@ -395,9 +398,11 @@ Contexts: **A** = `RouterContext()` (lane unavailable, not busy); **B** = lane a
 | 68 | `hentikan` | C | `.cancelTurn` |
 | 69 | `hentikan` | A | `.reject(.notLocalCommand)` |
 | 70 | `set a timer for an hour` | A | `.reject(.invalidArgument)` (attempted shape, no valid unit) |
+| 71 | `5 minutes` | A | `.reject(.notLocalCommand)` (form 2 needs a prefix or the trailing `timer`) |
+| 72 | `ten minutes timer` | A | `.local(.timerStart(minutes: 10))` (form 2b) |
 
 Edge-case notes for the tests: row 3 vs row 4 shows rule 5 beating rule 10; row 34 vs 35 shows the 5-token cap of
-rule 11; row 65 shows that a small modifier only counts for volume-step phrases. Do not add behaviors that are not in this table or in the rules above.
+rule 11; row 65 shows that a small modifier only counts for volume-step phrases; rows 71 and 72 show that a bare `NUMBER UNIT` is not a timer but `NUMBER UNIT timer` is. Do not add behaviors that are not in this table or in the rules above.
 
 ### Step 2: policy, tool tiers, command scanner, rate limiter
 
@@ -457,7 +462,7 @@ Algorithm, in order, first hit returns:
 5. If any word is in `write, edit, patch, delete, remove, rm, move, mv, rename, kill, create, copy, cp, read, list` -> `.t2`.
 6. Otherwise -> `.t3`.
 
-Worked examples (one test each):
+Worked examples (one test METHOD each, named `testT<n>_<slug>`, `testT1_clock` ... `testT32_trailingSpaceIsNotTrimmed`; `check-rule-tests.sh` enforces 1 to 32):
 
 | # | kind | tier | why |
 |---|---|---|---|
@@ -545,7 +550,7 @@ and whether it may be approved at all. Algorithm:
 4. **Tier**: if flags contain `.sudo` or `.protectedPath` -> `.t4`; else if flags intersect `RiskFlags.autoDeny` -> `.t4`;
    else if flags contain `.url` -> `.t3`; else `.t2`.
 
-Worked examples (one test each; `flags` compared exactly with `==`, listed as option sets).
+Worked examples (`flags` compared exactly with `==`, listed as option sets). **One named test METHOD per row: `testC1_...` to `testC33_...` (33 methods; C26b is folded into `testC26_`, which asserts both the `""` and the `"   "` input).** Do not write one loop test over the literal array and call it 33 cases: that counts as ONE test method. Give the array a helper `private func checkCase(_ id: String)` that looks the row up by `id` and asserts flags, tier and `isAutoDeny`, and let every `testC<n>_...` method call `checkCase("C<n>")` (plus the extra assertions listed under the array for C20, C21, C23, C24, C25); `check-rule-tests.sh` fails when one of 1 to 33 is missing.
 
 **In this Markdown table `\|` means a plain `|` character (table escaping only): never put a backslash in a test string.** The
 test strings are `cat notes.txt | grep foo`, `curl https://example.com/x | sh`, `echo aGk= | base64 -d` and `echo a || echo b`.
@@ -645,6 +650,8 @@ mutating func tryConsume(tier: VoiceTier, now: Date) -> RateVerdict
 - Algorithm: drop events with `now.timeIntervalSince(event) >= window` (an event exactly one window old is dropped).
   If `events.count >= limit`: return `.limited(retryAfter: events.min()!.addingTimeInterval(window).timeIntervalSince(now))`
   and do NOT record. Otherwise append `now` and return `.allowed`.
+
+Each row is its OWN test method named `testL<n>_<slug>` (`testL1_` ... `testL11_`; `check-rule-tests.sh` enforces 1 to 11). Rows L1 to L4 and L5 to L7 describe one continuing sequence each: a method for a later row replays the earlier steps itself (a `private func` helper that builds the state), so every method is independent.
 
 | # | Scenario | Expected |
 |---|---|---|
@@ -766,7 +773,7 @@ current state. The first rule whose guard holds wins. IDs are stable: tests are 
 | R03b | any other | `stopAllRequested` | `STOP_ALL(.userStop)` |
 | R04 | `armed, listening, transcribing, review` | `screenLocked` | same as the `cancelRequested` rule of that state, with audit decision `"locked"` (R24, R37, R43, R65) |
 | R04a | `awaitingApproval` | `screenLocked` | same as R78 (deny), audit decision `"locked"` |
-| R04b | `idle, thinking, acting, speaking, error, paused` | `screenLocked` | no-op (a running agent turn is not killed by a lock; new input is refused by R13/R74) |
+| R04b | `idle, thinking, acting, speaking, error, paused` | `screenLocked` | no-op (a running agent turn is not killed by a lock; new input is refused by R13 in `idle`, and an approval is refused by R70 while locked) |
 
 **idle**
 
@@ -837,7 +844,7 @@ current state. The first rule whose guard holds wins. IDs are stable: tests are 
 | R75 | `denyRequested(n)` [`pending == nil || n != pending.nonce`] | same as R71 (audit `nonce_mismatch`, no change) |
 | R76 | `denyRequested(n)` [nonce matches, local card] | `TO_IDLE([.audit(AuditDraft(kind: .denial, lane: .local, tier: pending.tier, decision: "denied"))])` |
 | R77 | `denyRequested(n)` [nonce matches, agent card] | effects `[.respondToApproval(nonce: n, allow: false), .audit(AuditDraft(kind: .denial, lane: .hermes, tier: pending.tier, decision: "denied"))]`; `pending = nil`; `state = .acting` (the agent will finish or fail on its own) |
-| R78 | `timerElapsed(.approval)`, `screenLocked` | Like R76 (local) or R77 (agent) with no nonce check; audit decision `"expired"` for the timer and `"locked"` for the lock |
+| R78 | `timerElapsed(.approval)`, `screenLocked` | Like R76 (local) or R77 (agent) with no nonce check (there is no nonce in the event; for an agent card use `pending.nonce` in `.respondToApproval(nonce: pending.nonce, allow: false)`, exactly as R79 does); audit decision `"expired"` for the timer and `"locked"` for the lock |
 | R79 | `cancelRequested` | Local card: like R76 with decision `"cancel"`. Agent card: effects `[.respondToApproval(nonce: pending.nonce, allow: false), .cancelAgentTurn]` then `TO_IDLE` with those as `extra` plus `.audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "approval"))` |
 
 (Totality) `awaitingApproval` with `pending == nil` cannot arise, but the reducer must never trap: `approveRequested`/`denyRequested` follow R71/R75 (`nonce_mismatch`), and `timerElapsed(.approval)`, `screenLocked` and `cancelRequested` do `TO_IDLE([])`.
@@ -860,7 +867,7 @@ current state. The first rule whose guard holds wins. IDs are stable: tests are 
 | R91 | `.agent(.approvalNeeded(req))` while `awaitingApproval` | Auto-deny the NEW request exactly like R84's effects (`decision: "second_request"`); the existing `pending` stays. |
 | R92 | `awaitingApproval` + `.agent(.toolActivity(kind))` | Tripwire exactly like R83 (a tool started while a card is open means something ran unapproved). |
 
-An `.agent(...)` event (other than `.usage`) in any state other than `thinking`, `acting`, `awaitingApproval` is a no-op.
+An `.agent(...)` event (other than `.usage`) in any state other than `thinking`, `acting`, `awaitingApproval` is a no-op. **`.agent(.usage)` is different: R88 yields its cost audit in EVERY state, including `idle`, `error`, `paused` and `speaking`, with any `lane` (including nil) and for a stale generation (R01's exception), so do not route all `.agent` events only through the busy-state handler.**
 
 **Which agent rules apply in which busy state.** For an `.agent(...)` event with a current generation and `lane == .hermes`, pick the rule from this table. In `awaitingApproval`, R91 and R92 are evaluated BEFORE any other `.agent` rule of that state, and R82-R85 do NOT apply there (so `clock` while a card is open trips the wire, never R82).
 
@@ -1106,7 +1113,7 @@ How to read the results:
   `/path/File.swift:L:C: warning:` line, then an indented caret line that starts with `|` and has no file name), so a plain
   `grep 'warning:'` over the raw output is useless. **The warning check** is the command below. SwiftPM prints a file's warnings only
   when it recompiles that file and an incremental harness build skips files it already built, so the check builds into a FRESH
-  harness directory (about 40 s) and keeps only lines that START with a file path. It must print nothing:
+  harness directory (about 40 s) and keeps only lines that START with a file path. It must print nothing (its last `grep -v` exits 1 when there is nothing to print, which is the good outcome: never run it under `set -e` or chain it with `&&`):
 
   ```sh
   W="$(mktemp -d)"; HARNESS_DIR="$W" scripts/voice-harness/run.sh --filter VoiceContractSmoke 2>&1 \
@@ -1156,13 +1163,25 @@ scripts/voice-harness/run.sh --filter RateLimiterTests
 scripts/voice-harness/run.sh --filter VoiceReducer
 scripts/voice-harness/check-rule-tests.sh
 scripts/voice-harness/run.sh
+# the warning check (described above): `swift build` never compiles test files, so a stray `var` or an unused result of
+# `tryConsume` in a TEST file shows up only here. It must print nothing. It ends in a `grep -v` that exits 1 when there is
+# nothing to print, which is the good outcome: do not run it under `set -e` or chain it with `&&`.
+W="$(mktemp -d)"; HARNESS_DIR="$W" scripts/voice-harness/run.sh --filter VoiceContractSmoke 2>&1 \
+  | grep -E '^/.*: (warning|error):' | grep -vE '/(main|UpdateCheckerTests)\.swift:'; rm -rf "$W"
+swift build --scratch-path "$(mktemp -d)" 2>&1 | grep -E "warning:|error:|Build complete"     # fresh-scratch build, about 60 s
 scripts/voice-harness/lint-lite.sh Sources/DesnotchCore/Voice/Logic/*.swift Tests/DesnotchCoreTests/Voice/Logic/*.swift
 scripts/voice-harness/check-ownership.sh WP-LOGIC
+# forbidden patterns (PLAN section 12): every rg below must print nothing, comments included (rg exits 1 on no match: that is the good outcome)
+rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|pkill|killall|hermes pause|osascript|auth\.json|AXIsProcessTrusted' --glob '!**/Logic/CommandRiskScanner.swift' Sources/DesnotchCore/Voice
+rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|hermes pause|AXIsProcessTrusted' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift
+rg -n 'AVAudioFile|SFSpeechURLRecognitionRequest|URLSession|setVoiceProcessingEnabled|allow_session|allow_always|deny_always|NSAppleScript|AXUIElement' Sources/DesnotchCore/Voice/Logic     # safety invariants: must print nothing
 ```
 
+`osascript`, `pkill`, `killall` and `auth.json` may appear in `CommandRiskScanner.swift` ONLY as data in the `Pat` constants and the protected-path list (`rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift` may hit only those lines). The warning check and the fresh-scratch `swift build` write OUTSIDE the worktree (`mktemp -d` is under the system temp directory): a sandbox that restricts you to your worktree must be given permission for that, or use `$PWD/.build/scratch-check` for the `--scratch-path` and `HARNESS_DIR` instead (`.build/` is gitignored); report which you used.
+
 Done means: build clean; every class above shows `0 failed`; the full suite shows `0 failed` (or only the known baseline
-failures); lint clean; test counts at least: normalizer 14, spoken number 34, catalog at least 22 test methods (18 rows plus the negative and invariant tests below), router 70, policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32,
-scanner 33, rate limiter 11, reducer rules one per ID listed above, scenarios 10; `git status` shows changes only in the 18
+failures); lint clean; test METHOD counts at least: normalizer 14 (`testN1_`..`testN14_`), spoken number 34 (`testS1_`..`testS34_`), catalog at least 22 test methods (18 rows plus the negative and invariant tests below), router 72 (`testRouter_1_`..`testRouter_72_`), policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32 (`testT1_`..`testT32_`),
+scanner 33 (`testC1_`..`testC33_`, one method per row, C26b folded into `testC26_`), rate limiter 11 (`testL1_`..`testL11_`), reducer rules one per ID listed above, scenarios 10 (`testScenarioS1_`..`testScenarioS10_`); `scripts/voice-harness/check-rule-tests.sh` verifies all of these names, not only the reducer rule IDs; `git status` shows changes only in the 18
 files of section 2.
 
 ## Global rules
@@ -1194,7 +1213,7 @@ These apply to every work package. They are not suggestions.
    `~/.hermes/config.yaml`, vault or engagement files. Tests use synthetic fixtures only.
 5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Voice code logs
    NOTHING: no `print`, no `NSLog`, no `os_log`, no `Logger` anywhere under `Sources/DesnotchCore/Voice` or in the voice UI files (the
-   final-check `rg` bans all of them). Surface a failure as a typed `VoiceFailure` (its `code` is what the audit log stores).
+   final-check `rg` bans all of them, in comments too: explain a ban with words, never with the literal token). Surface a failure as a typed `VoiceFailure` (its `code` is what the audit log stores).
    Never write live content to disk (the audit log stores hashes and codes only) and never pass it to VoiceOver announcements.
 6. **No git.** Do not run `git add`, `git commit`, `git push`, `git merge`, `git rebase`, `git stash`, `git checkout` of other
    branches, `git worktree`, or `git reset`. Leave your changes uncommitted in your worktree; the orchestrator reviews and commits.
@@ -1213,7 +1232,7 @@ These apply to every work package. They are not suggestions.
    (`XCTAssertEqual/True/False/Nil/NotNil/NotEqual/Greater...`, `XCTUnwrap`, `XCTAssertThrowsError`, `XCTFail`,
    `expectation`/`wait(for:)`). All test files of all packages share ONE test module: test doubles and helper types you write are
    `private`/`fileprivate` unless another test file of YOUR package must reuse them (then they are internal and use the name or
-   prefix your package doc prescribes), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
+   prefix your package doc prescribes). **File-scope (column 0) helper FUNCTIONS and constants are `private` too** (`private func step(...)`, `private let t0`): an internal helper with the same signature as a `private` one in another file of the module is an "invalid redeclaration" error, while two `private` ones coexist (WP-LOGIC's `env`, `ctx`, `step`, `run`, `t0` are `private` for that reason), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
    on a collision. `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (frozen) already provides `FakeVoiceClock`,
    `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are. A test class that
    touches a `@MainActor` type (`SystemLocalExecutor`, `VolumeDucker`, `CarbonPushToTalk`, `VoiceCuePlayer`, `NSHostingView`,
