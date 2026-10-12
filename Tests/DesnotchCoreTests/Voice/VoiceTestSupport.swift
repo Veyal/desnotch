@@ -99,18 +99,26 @@ final class ScriptedBackend: AgentBackend, @unchecked Sendable {
         }
     }
 
-    func respond(nonce: String, allow: Bool) async {
-        lock.lock(); _responses.append((nonce, allow)); lock.unlock()
-    }
+    // `NSLock.lock()`/`unlock()` must not appear in the body of an `async` function (Swift 6.1
+    // warns "unavailable from asynchronous contexts"), so the locked work lives in synchronous helpers.
+    func respond(nonce: String, allow: Bool) async { recordResponse(nonce: nonce, allow: allow) }
 
-    func cancelTurn() async { lock.lock(); _cancelCalls += 1; lock.unlock() }
+    func cancelTurn() async { recordCancel() }
 
     func emergencyStop() async -> EmergencyStopReport {
-        lock.lock(); _emergencyStops += 1; lock.unlock()
+        recordEmergencyStop()
         return EmergencyStopReport()
     }
 
     func shutdown() async {}
+
+    private func recordResponse(nonce: String, allow: Bool) {
+        lock.lock(); _responses.append((nonce, allow)); lock.unlock()
+    }
+
+    private func recordCancel() { lock.lock(); _cancelCalls += 1; lock.unlock() }
+
+    private func recordEmergencyStop() { lock.lock(); _emergencyStops += 1; lock.unlock() }
 }
 
 /// An in-memory `FileWriting` keyed by path.

@@ -47,8 +47,12 @@ You own exactly these files.
 
 **New tests** (`Tests/DesnotchCoreTests/Voice/Platform/`): `LevelMeterTests.swift`, `VoiceHotkeyMapTests.swift`,
 `PressTrackerTests.swift`, `LockFlagsTests.swift`, `SystemLocalExecutorTests.swift`, `MuteMemoryTests.swift`, `VolumeDuckerTests.swift`,
-`AuditChainTests.swift`, `FileAuditLoggerTests.swift`, `DiskFileWriterTests.swift`, `SystemVoicePermissionsTests.swift`.
+`AuditChainTests.swift`, `FileAuditLoggerTests.swift`, `DiskFileWriterTests.swift`, `SystemVoicePermissionsTests.swift`,
+`SpeechDecisionTests.swift`.
 **Changed test**: `Tests/DesnotchCoreTests/PermissionSnapshotTests.swift`.
+
+A fresh worktree does not contain the empty `Voice/Platform` directories (git does not track empty directories): start with
+`mkdir -p Sources/DesnotchCore/Voice/Platform Tests/DesnotchCoreTests/Voice/Platform`.
 
 ## 3. Components
 
@@ -61,13 +65,13 @@ the hardware glue around it is verified by the manual checklist in section 5.
 |---|---|---|
 | `AppleSpeechRecognizer` | `init()` | creates the `AVAudioEngine` inside `start(...)`, never here |
 | `AppleSpeechSynthesizer` | `init()` | creates the `AVSpeechSynthesizer` lazily on the first `speak` |
-| `CarbonPushToTalk` | `init(choice: VoiceHotkeyChoice, uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime })` | `PressTracker` lives in `CarbonPushToTalk.swift` |
-| `ScreenLockMonitor` | `init()` | observers are added lazily (3.4) |
+| `CarbonPushToTalk` | `init(choice: VoiceHotkeyChoice, uptime: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime })` | `PressTracker` lives in `CarbonPushToTalk.swift`; the closure is `@Sendable` because the C callback reads it off the main actor (3.3) |
+| `ScreenLockMonitor` | `init(sessionDictionary: @escaping @MainActor () -> [String: Any]? = { CGSessionCopyCurrentDictionary() as? [String: Any] }, screensaverRunning: @escaping @MainActor () -> Bool = { NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.ScreenSaver.Engine" } })` | `ScreenLockMonitor()` works through the defaults; observers are added lazily (3.4); the two closures are the test seams |
 | `SystemLocalExecutor` | designated `init(volume: VolumeControlling, media: MediaTransporting, timer: TimerControlling, apps: AppLaunching)`; `convenience init(nowPlaying: NowPlayingController, focusTimer: FocusTimerController)` building the real adapters below | |
 | `SystemVolumeControl` | `init()` | `: VolumeControlling`; wraps the `SystemVolume` static functions (`SystemVolume` is an enum of static functions and cannot conform to a protocol itself) |
 | `NowPlayingTransport` | `init(controller: NowPlayingController)` | `: MediaTransporting`; in `SystemLocalExecutor.swift` |
 | `WorkspaceAppLauncher` | `init()` | `: AppLaunching`; in `SystemLocalExecutor.swift` |
-| `FocusTimerController` | `extension FocusTimerController: TimerControlling` in `SystemLocalExecutor.swift` | `isActive` is true when `state` is `.running` or `.paused`; `start(minutes:)` = `start(duration: TimeInterval(minutes * 60))`; `cancel()` is the existing method |
+| `FocusTimerController` | `extension FocusTimerController: TimerControlling` in `SystemLocalExecutor.swift` | `FocusTimerController` ALREADY has `public var isActive: Bool` (`state == .running \|\| .paused`) and `cancel()`: do NOT redeclare either (an invalid-redeclaration build error). The extension adds exactly one member, `func start(minutes: Int) -> Bool { start(duration: TimeInterval(minutes * 60)) }` |
 | `VolumeDucker` | `init(volume: VolumeControlling = SystemVolumeControl())` | |
 | `SystemVoicePermissions` | `init()` | |
 | `DiskFileWriter` | `init()` | |
@@ -86,14 +90,30 @@ Class `AppleSpeechRecognizer: SpeechRecognizing, @unchecked Sendable` guarding A
 
 1. Check permissions WITHOUT prompting: `AVCaptureDevice.authorizationStatus(for: .audio)` and `SFSpeechRecognizer.authorizationStatus()`. Not `.authorized` -> yield `.failed(.permissionDenied(.microphone))` or `.permissionDenied(.speech)` and finish.
 2. `SFSpeechRecognizer(locale: Locale(identifier:))`; nil or `!isAvailable` -> `.failed(.unavailable(.recognizer))`. **`supportsOnDeviceRecognition == false` -> `.failed(.unavailable(.recognizer))`** (never use server recognition). (On this Mac `id-ID` has no on-device asset, so it always fails here; that is correct.)
+   Keep the `SFSpeechRecognizer` instance in the capture state (strongly referenced) until the capture ends: a recognizer that is deallocated while its task runs silently produces no results at all.
 3. `SFSpeechAudioBufferRecognitionRequest`: `requiresOnDeviceRecognition = true`, `shouldReportPartialResults = true`, `taskHint = .dictation`, `contextualStrings = contextualStrings`, `addsPunctuation = false` (macOS 13+).
-4. `AVAudioEngine` (created here): `let format = engine.inputNode.outputFormat(forBus: 0)`. **If `format.sampleRate > 0 && format.channelCount > 0` does not hold (no input device), yield `.failed(.unavailable(.recognizer))` and finish BEFORE `installTap`: `installTap` with a zero-rate format raises an `NSException` that kills the process.** Then install the tap (`bufferSize: 1024`, that format) and `engine.start()`; if `engine.start()` throws, remove the tap, yield `.failed(.unavailable(.recognizer))` and finish. In the tap, under the lock, check the token and call `request.append(buffer)` right there (do not hop asynchronously with the buffer, the engine may reuse it). On the FIRST buffer yield `.captureStarted` (this is when the "listening" earcon plays). Compute `rms` per buffer, feed `LevelMeter`, and yield `.level(x)` at most `VoiceLimits.meterMaxHz` (15) times per second (`EmitThrottle`). Audio buffers are only handed to the request; never write them anywhere.
+4. `AVAudioEngine` (created here): `let format = engine.inputNode.outputFormat(forBus: 0)`. **If `format.sampleRate > 0 && format.channelCount > 0` does not hold (no input device), yield `.failed(.unavailable(.recognizer))` and finish BEFORE `installTap`: `installTap` with a zero-rate format raises an `NSException` that kills the process.** Then install the tap (`bufferSize: 1024`, that format) and `engine.start()`; if `engine.start()` throws, remove the tap, yield `.failed(.unavailable(.recognizer))` and finish. In the tap, under the lock, check the token and call `request.append(buffer)` right there (do not hop asynchronously with the buffer, the engine may reuse it). On the FIRST buffer yield `.captureStarted` (this is when the "listening" earcon plays). Compute `rms` per buffer over channel 0 (`guard let channel = buffer.floatChannelData?[0] else { skip the level for this buffer }`: `floatChannelData` is nil for non-float formats, and the buffer must still be appended), and yield `.level(LevelMeter.level(fromRMS: rms))` (the 0...1 value; the coordinator, not this class, turns the history into bars with `LevelMeter.bars(from:)`) at most `VoiceLimits.meterMaxHz` (15) times per second (`EmitThrottle`). Audio buffers are only handed to the request; never write them anywhere.
 5. Set `continuation.onTermination = { [weak self] _ in self?.cancel(token: token) }`: a consumer that drops the stream (for example a cancelled `Task`) must stop the engine and clear the tap, and it must cancel only ITS capture, not a newer one.
-6. Recognition results (token-checked):
-   - non-final -> remember the text as `lastPartial` and yield `.partial(text)`;
-   - final (`result.isFinal`) -> yield `.final(text)`, tear down (stop engine, remove tap), finish;
-   - an error AFTER `endAudio()` was called (the user ended the capture): with a non-empty `lastPartial` yield `.final(lastPartial)`; with an empty `lastPartial` yield `.final("")` (a normal "the user said nothing" ends in an error; the reducer turns the empty final into the "no speech" message, R50, not into "Voice isn't available"); then tear down and finish;
-   - an error BEFORE `endAudio()` was called -> `.failed(.unavailable(.recognizer))`, tear down, finish.
+6. Recognition results (token-checked). The decision is a PURE function so it can be unit-tested (this is the riskiest logic in the file), in `AppleSpeechRecognizer.swift`:
+
+   ```swift
+   enum SpeechDecision {
+       /// nil = nothing to emit. `text` is `result?.bestTranscription.formattedString`, nil when the handler got an error and no result.
+       static func event(text: String?, isFinal: Bool, errorPresent: Bool, endAudioCalled: Bool, lastPartial: String) -> SpeechEvent?
+       /// true for `.final` and `.failed`: the capture is over, tear down and finish the stream.
+       static func isTerminal(_ event: SpeechEvent) -> Bool
+   }
+   ```
+
+   | `text` | `isFinal` | `errorPresent` | `endAudioCalled` | result |
+   |---|---|---|---|---|
+   | non-nil | false | false | any | `.partial(text)` (the caller also stores `lastPartial = text`) |
+   | non-nil | true | false | any | `.final(text)` |
+   | any | any | true | true | `.final(lastPartial)` (an empty `lastPartial` gives `.final("")`: a normal "the user said nothing" ends in an error, and the reducer turns the empty final into the "no speech" message, R50, not into "Voice isn't available") |
+   | any | any | true | false | `.failed(.unavailable(.recognizer))` |
+   | nil | any | false | any | `nil` |
+
+   An error wins over a result in the same callback (rows 3 and 4 are evaluated first). `SpeechDecisionTests` (class `SpeechDecisionTests`, a new file) has one test per row plus `isTerminal` for all five `SpeechEvent` cases.
 7. `endAudio()`: record that the user ended the capture, `request.endAudio()`, stop the engine, remove the tap. The final result (or the error handled above) then arrives. `cancel()`: clear the token, cancel the task, stop the engine, remove the tap, finish the stream with NO final and NO failure. Both are idempotent and safe to call when nothing is active. Never leave the engine running or the tap installed after the stream finished.
 
 `LevelMeter.swift` (pure, tested):
@@ -115,9 +135,16 @@ Tests (`LevelMeterTests`): `level(fromRMS: 0) == 0`; `1.0 -> 1.0`; `0.00316 (-50
 
 ### 3.2 `AppleSpeechSynthesizer`: `SpeechSynthesizing`
 
-`AVSpeechSynthesizer`. `speak(_:localeIdentifier:)` creates an `AVSpeechUtterance` with `AVSpeechSynthesisVoice(language: localeIdentifier)` (nil voice -> default), speaks, and returns when the delegate reports `didFinish` (true) or `didCancel` (false). `stop()` calls `stopSpeaking(at: .immediate)`. Only one synthesizer instance, created lazily on first use (not at init). The delegate bridging is guarded by one lock; call into AVSpeechSynthesizer on the main thread (hop with `Task { @MainActor }`).
+`AVSpeechSynthesizer`. `speak(_:localeIdentifier:)` creates an `AVSpeechUtterance` with `AVSpeechSynthesisVoice(language: localeIdentifier)` (nil voice -> default), speaks, and returns when the delegate reports `didFinish` (true) or `didCancel` (false). Only one synthesizer instance, created lazily on first use (not at init). `final class AppleSpeechSynthesizer: NSObject, SpeechSynthesizing, AVSpeechSynthesizerDelegate, @unchecked Sendable`, with ONE `NSLock` guarding the dictionary of pending continuations.
+**Locking and isolation (exact).** `speak` is `async`, so it must not call `lock()`/`unlock()` itself (global rule 2). Structure it as:
+
+- `private func register(_ utterance: AVSpeechUtterance, _ continuation: CheckedContinuation<Bool, Never>) -> [CheckedContinuation<Bool, Never>]` (SYNCHRONOUS, takes the lock): stores the new continuation under `ObjectIdentifier(utterance)` and returns every previously pending continuation (removed from the dictionary); `private func take(_ utterance: AVSpeechUtterance) -> CheckedContinuation<Bool, Never>?` (synchronous, locked): removes and returns one entry. The caller resumes returned continuations OUTSIDE the lock.
+- `func speak(...) async -> Bool`: if the trimmed text is empty return `false` immediately (no continuation). Otherwise cut the text to `VoiceLimits.maxReplyCharacters` and `return await withCheckedContinuation { continuation in DispatchQueue.main.async { [weak self] in ... } }`; inside the block, if `self` is gone `continuation.resume(returning: false)`; else create the utterance, `let superseded = register(utterance, continuation)`, `superseded.forEach { $0.resume(returning: false) }`, `synthesizer.stopSpeaking(at: .immediate)` (only when something was superseded), then `synthesizer.speak(utterance)`. Every path resumes its continuation exactly once; a `speak` that cannot start resolves `false`, never leaks a continuation.
+- `func stop()` is synchronous but must stay ordered with `speak`: use `DispatchQueue.main.async { [weak self] in self?.synthesizer?.stopSpeaking(at: .immediate) }` (FIFO with the `speak` block above). `Task { @MainActor }` is NOT used anywhere in this class (task ordering is not guaranteed).
+- The delegate callbacks `didFinish` / `didCancel` run on the main thread: `take(utterance)?.resume(returning: true / false)`.
+
 **Continuations are keyed by utterance identity** (`ObjectIdentifier(utterance)`), not held in a single slot: a second `speak` while speaking stops the first, resumes the superseded caller with `false` IMMEDIATELY, and the old utterance's asynchronous `didCancel` then finds no entry and does nothing (a single slot would resolve the wrong caller).
-Text longer than `VoiceLimits.maxReplyCharacters` is cut to that length. No tests (hardware); covered by the manual checklist.
+No tests (hardware); covered by the manual checklist.
 
 ### 3.3 `CarbonPushToTalk` (+ `VoiceHotkeyMap`, `PressTracker`): `PushToTalkSource`
 
@@ -125,13 +152,14 @@ Follow `CarbonHotKeyRegistrar` in `App/GlobalHotKey.swift` (do NOT edit that fil
 
 - Registers three Carbon hot keys with signature `'DSVC'` (0x44535643): id 1 = the talk key (from `VoiceHotkeyMap`), id 2 = the stop chord **⌥⌘.** (`kVK_ANSI_Period`, `cmdKey | optionKey`), id 3 = **Esc** (`kVK_Escape`, no modifiers), registered ONLY while `setCancelKeyArmed(true)`; `setCancelKeyArmed(false)` unregisters it.
 - Installs ONE event handler for BOTH `kEventHotKeyPressed` and `kEventHotKeyReleased` (two `EventTypeSpec`s). This is the key difference from the existing registrar, which only handles presses.
-- **Swift 5.10 pattern (follow `GlobalHotKey.swift`):** the C callback does its work in a non-isolated helper; it captures the timestamp (`uptime()`) INSIDE the callback, before any hop; it hops with `DispatchQueue.main.async` (FIFO, so a press and its release stay ordered) and re-enters with `MainActor.assumeIsolated`. Do NOT use `Task { @MainActor }` for press/release: task ordering is not guaranteed. Do not call the `@MainActor` `stop()` from `deinit`: `deinit` releases the Carbon refs through non-isolated stored properties only.
+- **Swift 5.10 pattern (follow `GlobalHotKey.swift`), with an explicit non-isolated box.** The C callback runs off the main actor and must read the `uptime` closure there, but a `nonisolated let` of a NON-Sendable closure is an error on Swift 5.10 (the local 6.1 compiler does not show it). So: a non-isolated `final class CarbonHotKeyBox: @unchecked Sendable` (in `CarbonPushToTalk.swift`, guarded by one `NSLock`) owns everything the callback and `deinit` touch: `handlerRef`, `hotKeyRefs` (talk, stop, Esc), the `uptime: @Sendable () -> TimeInterval` closure, the `@Sendable (HotKeyOutcome, TimeInterval) -> Void` main-queue sink, and the C callback itself (a `static let callback: EventHandlerUPP` that reads the box from `userData`). The `@MainActor final class CarbonPushToTalk` owns the box (a `let box: CarbonHotKeyBox`) and its `PressTracker`. The callback captures the timestamp (`box.uptime()`) INSIDE the callback, before any hop; it hops with `DispatchQueue.main.async` (FIFO, so a press and its release stay ordered) and the sink re-enters with `MainActor.assumeIsolated`. Do NOT use `Task { @MainActor }` for press/release: task ordering is not guaranteed. Do not call the `@MainActor` `stop()` from `deinit`: `deinit` releases the Carbon refs through the box only (`box.teardown()`, non-isolated).
+- The signature here is `'DSVC'` (0x44535643); the S2 spike below uses a different one (0x44535632). That is harmless: the spike is a separate process.
 - The handler feeds a `PressTracker` (pure) to produce events: talk key press -> `.pressed`; release -> `.released(heldSeconds:)`; stop chord press -> `.stopKey`; Esc press -> `.cancelKey`.
 - **Lifecycle, one rule: the instance is single-use.** `events` is an `AsyncStream<PushToTalkEvent>` created once in `init`. `start()` registers and returns `.active`; **`start()` while already started is idempotent and returns `.active`**; `stop()` unregisters everything, removes the handler, finishes the stream, and **`start()` after `stop()` returns `.unavailable` and registers nothing** (the finished stream cannot be reused). The coordinator therefore creates a NEW instance whenever `voiceHotkey` changes (`keys.stop(); keys = makeKeys(newChoice)`).
 - **Registration failures.** `start()` returns `.unavailable` if the talk key OR the stop chord cannot be registered, after unregistering whatever it did register: voice must never run without its global kill-switch layer (the pill Stop button and the status menu remain either way). Failing to register Esc (id 3) is silent and best-effort (it never changes the returned status).
 - `VoiceHotkeyMap.swift` (pure): `VoiceHotkeyMap.binding(for: VoiceHotkeyChoice) -> HotKeyBinding` using the existing `HotKeyBinding` type (`keyCode`, `carbonModifiers`, `keyLabel`): `optionCommandV` -> `kVK_ANSI_V`, `cmdKey|optionKey`, "V"; `shiftOptionCommandV` -> `kVK_ANSI_V`, `cmdKey|optionKey|shiftKey`, "V"; `optionCommandJ` -> `kVK_ANSI_J`, `cmdKey|optionKey`, "J". Tests check `displayString` is `⌥⌘V`, `⇧⌥⌘V`, `⌥⌘J`, that none equals `HotKeyBinding.default` (⌥⌘N), none uses `controlKey`, and the three are pairwise distinct.
-- `PressTracker` (pure, tested, in `CarbonPushToTalk.swift`): `struct PressTracker { mutating func press(at: TimeInterval) -> Bool; mutating func release(at: TimeInterval) -> Double? }`. `press` returns true only if no press is currently down (a duplicate press while down returns false and does not reset the start time); `release` returns the held seconds (>= 0, clamped) and clears the state, or nil if no press was down. Tests: normal hold 0.8 s; duplicate press ignored; release without press nil; release before press time (clock went backward) returns 0; two cycles in a row.
-- **Spike S2 (human-run; you do NOT run it).** It asks one OS question: does `kEventHotKeyReleased` arrive for an Option-Command hot key? It needs a physical key press and a running application event loop, and a scratch executable cannot import our internal types (and cannot live in the tree), so the recipe is a standalone program independent of our code. Do this: (1) write it to a scratch directory OUTSIDE the repository (for example under your scratchpad), (2) compile it with `swiftc s2.swift -o s2` (it must compile with no error; this is the only part you run), (3) in your report list it as `BLOCKED: human-run` and give the path; the human runs `./s2` and presses and releases Option-Command-V a few times. Expected output has a `pressed` and a `RELEASED` line per cycle. The program:
+- `PressTracker` (pure, tested, in `CarbonPushToTalk.swift`): `struct PressTracker { static let staleAfter: TimeInterval = 35; mutating func press(at: TimeInterval) -> Bool; mutating func release(at: TimeInterval) -> Double? }`. `press` returns true only if no press is currently down (a duplicate press while down returns false and does not reset the start time) **or the press that is down is older than `staleAfter` (35 s, the 30 s hold cap plus grace), in which case it counts as released: the start time is reset and `press` returns true** (a lost `kEventHotKeyReleased`, for example when the user lifts ⌥ or ⌘ before V, must not leave the talk key dead until restart); `release` returns the held seconds (>= 0, clamped) and clears the state, or nil if no press was down. Tests: normal hold 0.8 s; duplicate press ignored; release without press nil; release before press time (clock went backward) returns 0; two cycles in a row; a duplicate press at 34.9 s is still ignored; a press at 35.1 s after an unreleased press returns true and the following release reports the seconds since the NEW press.
+- **Spike S2 (human-run; you do NOT run it).** It asks one OS question: does `kEventHotKeyReleased` arrive for an Option-Command hot key? It needs a physical key press and a running application event loop, and a scratch executable cannot import our internal types (and cannot live in the tree), so the recipe is a standalone program independent of our code. Do this: (1) write it to a scratch directory OUTSIDE the repository: `S2DIR="$(mktemp -d)"` and `$S2DIR/s2.swift` (do not assume a scratchpad directory exists), (2) compile it with `swiftc "$S2DIR/s2.swift" -o "$S2DIR/s2"` (it must compile with no error; this is the only part you run), (3) in your report list it as `BLOCKED: human-run` and give the path; the human runs `./s2` and presses and releases Option-Command-V a few times. Expected output has a `pressed` and a `RELEASED` line per cycle. The program:
 
   ```swift
   import AppKit
@@ -181,16 +209,19 @@ struct LockFlags: Equatable {
 }
 ```
 
-**Merge rule (safety-relevant, exact; it must never fail open).** There are two sources and the screen counts as locked if EITHER says so:
+**Merge rule (safety-relevant, exact; it must never fail open and never fail permanently closed).** There are two sources and the screen counts as locked if EITHER says so:
 
-- `dictionaryLocked`: from `CGSessionCopyCurrentDictionary()` (key `"CGSSessionScreenIsLocked"` present and true = locked); `onConsole` comes ONLY from the dictionary (`kCGSSessionOnConsoleKey` = `"kCGSSessionOnConsoleKey"`, must be present and true; a dictionary without it is "not on console", i.e. locked). If the dictionary is nil -> `LockFlags.unknown`.
-- `notificationLocked` and `screensaverActive`: stored booleans set by `DistributedNotificationCenter` notifications `com.apple.screenIsLocked` (set), `com.apple.screenIsUnlocked` (clear), `com.apple.screensaver.didstart` (`screensaverActive = true`) and `com.apple.screensaver.didstop` (clear).
+- `dictionaryLocked`: from the injected `sessionDictionary()` (default `CGSessionCopyCurrentDictionary()`; key `"CGSSessionScreenIsLocked"` present and true = locked); `onConsole` comes ONLY from the dictionary (`kCGSSessionOnConsoleKey` = `"kCGSSessionOnConsoleKey"`, must be present and true; a dictionary without it is "not on console", i.e. locked). If the dictionary is nil -> `LockFlags.unknown` (locked).
+- `notificationLocked` and `screensaverActive`: stored booleans set by `DistributedNotificationCenter` notifications `com.apple.screenIsLocked` (set), `com.apple.screenIsUnlocked` (clear), `com.apple.screensaver.didstart` (`screensaverActive = true`) and `com.apple.screensaver.didstop` (clear). They are `false` at `init` and whenever no observers are installed.
 - `screenLocked = dictionaryLocked || notificationLocked`. Re-read the dictionary on every notification, but never let a not-yet-flipped dictionary override a lock notification (the pure re-read would fail open when `screenIsLocked` arrives before the dictionary flips). Because the dictionary can also lag behind `screenIsUnlocked`, re-read it once more 0.5 s after that notification (one `DispatchQueue.main.asyncAfter`, not a repeating timer).
-- `isLocked` returns the current merged flags' `isLocked`.
 
-**Observation is lazy.** `init()` adds no observer (the monitor is built at launch even with voice off). `changes` returns a NEW `AsyncStream<Bool>` per access (AsyncStream is single-consumer, and the coordinator and the UI may both want it); the monitor keeps the continuations in an array, adds its notification observers when the first one is created and removes them when the last one terminates (`onTermination`). A stream yields the new merged `isLocked` Bool only when it changes (not on every notification). No timers other than the one-shot above.
+**`isLocked` is a pure recomputation on EVERY call, with no cached result and no side effect:**
+`LockFlags.merged(dictionary: LockFlags.from(sessionDictionary: sessionDictionary()), notificationLocked: notificationLocked, screensaverActive: screensaverActive || screensaverRunning()).isLocked`.
+Consequences that the tests pin down: (1) before any notification has ever arrived, and with no observers installed, `isLocked` is decided by the dictionary alone: an unlocked console dictionary gives `false` (it must NOT be seeded with `LockFlags.unknown`, which would make every talk press end in "Screen is locked" until some notification fired), a nil dictionary gives `true`, a locked dictionary gives `true`; (2) the `screensaverRunning()` seam (default: `NSWorkspace.shared.runningApplications` contains bundle id `com.apple.ScreenSaver.Engine`, public API) is consulted live, so a screensaver that was already running when voice was enabled is seen even though no `didstart` notification was observed; (3) a getter has no side effects: reading `isLocked` never installs observers (otherwise the coordinator's last read after it dropped its stream would re-install them and nothing would ever remove them).
 
-Tests (`LockFlagsTests`): all 8 combinations of the three flags -> `isLocked`; `.unknown.isLocked == true` and `.unknown == LockFlags(screenLocked: true, screensaverActive: false, onConsole: false)`; the pure helper `LockFlags.from(sessionDictionary:)`: nil -> unknown; `["kCGSSessionOnConsoleKey": true]` -> unlocked console; with `"CGSSessionScreenIsLocked": true` -> locked; `onConsole == false` -> locked; a dictionary missing the console key -> locked (fail closed). Put the merge in a pure function too (`LockFlags.merged(dictionary: LockFlags, notificationLocked: Bool, screensaverActive: Bool) -> LockFlags`) and test: a lock notification wins over an unlocked dictionary; an unlock notification does not clear a locked dictionary.
+**Observation is lazy and tied to streams.** `init` adds no observer (the monitor is built at launch even with voice off). `changes` is a COMPUTED property returning a NEW `AsyncStream<Bool>` on every access (AsyncStream is single-consumer, and the coordinator and the UI may both want it, and the coordinator accesses it again each time voice is re-enabled); the monitor keeps the continuations in an array. The first stream installs the observers (idempotent), seeds `screensaverActive = screensaverRunning()` and seeds its last-emitted value from the SAME `isLocked` computation (so an unchanged state is not re-emitted and a new stream does not replay the current value). When the LAST stream terminates (`onTermination`) the observers are removed AND `notificationLocked = false` and `screensaverActive = false` are reset, so a later re-add starts from the dictionary and the live screensaver check, never from stale flags. A stream yields the new merged `isLocked` Bool only when it changes (not on every notification). No timers other than the one-shot above. The coordinator (WP-HERMES) must hold exactly one `changes` stream for as long as voice is enabled (A.5).
+
+Tests (`LockFlagsTests`): all 8 combinations of the three flags -> `isLocked`; `.unknown.isLocked == true` and `.unknown == LockFlags(screenLocked: true, screensaverActive: false, onConsole: false)`; the pure helper `LockFlags.from(sessionDictionary:)`: nil -> unknown; `["kCGSSessionOnConsoleKey": true]` -> unlocked console; with `"CGSSessionScreenIsLocked": true` -> locked; `onConsole == false` -> locked; a dictionary missing the console key -> locked (fail closed). Put the merge in a pure function too (`LockFlags.merged(dictionary: LockFlags, notificationLocked: Bool, screensaverActive: Bool) -> LockFlags`) and test: a lock notification wins over an unlocked dictionary; an unlock notification does not clear a locked dictionary. The class is `@MainActor`, so the test class is `@MainActor final class ScreenLockMonitorTests: XCTestCase` (declare it in `LockFlagsTests.swift` next to `LockFlagsTests`, one class per declaration line) and builds `ScreenLockMonitor(sessionDictionary: { dict }, screensaverRunning: { running })` with a captured `var`: with NO observers, an unlocked console dictionary gives `isLocked == false`; a nil dictionary gives `true`; `["kCGSSessionOnConsoleKey": true, "CGSSessionScreenIsLocked": true]` gives `true`; a console dictionary plus `screensaverRunning` returning true gives `true`; changing the captured dictionary between two reads changes the answer (the dictionary is re-read on every call); creating and dropping a `changes` stream leaves `isLocked` dictionary-driven (flags reset). Pure and monitor tests together: at least 14 test methods in the file.
 
 ### 3.5 `SystemLocalExecutor`: `LocalExecuting`
 
@@ -233,7 +264,7 @@ Tests (`SystemLocalExecutorTests`, which also DEFINES the shared fakes `FakeVolu
 
 - `hash = lowercase hex SHA-256 (CryptoKit) of the UTF-8 bytes of: prevHash + "\n" + canonicalJSON`, where `canonicalJSON` is the record encoded with `hash` set to the empty string `""`. The very first record has `prevHash == ""`.
 - `seq` starts at 1 and increments by 1. `timestamp` is `ISO8601DateFormatter` with `[.withInternetDateTime]`, UTC, from the injected `VoiceClock`.
-- `transcriptHash` = SHA-256 hex of `draft.transcript` after `trimmingCharacters(in: .whitespacesAndNewlines).lowercased()`, or nil when `draft.transcript` is nil or empty. The transcript text itself is NEVER stored. `counters` are copied as-is (only keys given by the caller; the logger never invents text). `decision`/`outcome` strings are truncated to 64 characters. `tier` is an `Int?`: `record.tier = draft.tier?.rawValue` (never a string).
+- `transcriptHash` = SHA-256 hex of `draft.transcript` after `trimmingCharacters(in: .whitespacesAndNewlines).lowercased()`, or nil when `draft.transcript` is nil or empty. The transcript text itself is NEVER stored. `counters` are copied as-is (only keys given by the caller; the logger never invents text). `decision`/`outcome` strings are first reduced to the characters `[A-Za-z0-9_.:-]` (every other character becomes `_`, so no control character, `/` or non-ASCII ever reaches the JSON and the Swift encoder and `verify-audit.py` agree byte for byte on the canonical form) and then truncated to 64 characters. Counter keys are caller-controlled constants (`input_tokens`, ...) and are not user text. `tier` is an `Int?`: `record.tier = draft.tier?.rawValue` (never a string).
 
 `AuditChain.swift` (pure, tested in `AuditChainTests`):
 
@@ -250,10 +281,10 @@ enum AuditChain {
 
 `makeRecord` builds the record with `hash == ""`, calls `hash(for:)`, and returns the record with the hash set. In `FileAuditLogger`, any throw from `makeRecord`/`line` makes `append` return `false`; an empty hash is never written.
 
-`verify`: decode each line (a line that does not decode, or whose `seq` is not previous+1, or whose `prevHash` is not the previous record's `hash`, or whose recomputed hash differs, breaks the chain: `isValid == false`, `firstBrokenSeq` = that record's `seq` if decodable else the 1-based line number; `headHash` = hash of the last GOOD record). **The first record may have ANY `seq` and ANY `prevHash`** (a log continues across rotation and restarts; only the links between consecutive records are checked). Empty input -> `AuditVerification.empty`.
+`verify`: decode each line (a line that does not decode, or whose `seq` is not previous+1, or whose `prevHash` is not the previous record's `hash`, or whose recomputed hash differs, breaks the chain: `isValid == false`, `firstBrokenSeq` = that record's `seq` if decodable else the 1-based line number; `recordCount` = the number of consecutive GOOD records before the break (all records when valid); `headHash` = hash of the last GOOD record, `""` when there is none). Exact results: for a 5-record chain, altering record 3's `decision` gives `(isValid false, recordCount 2, firstBrokenSeq 3, headHash r2.hash)`; deleting record 2 gives lines `[r1, r3, r4, r5]`, so line 2 has `seq 3 != 2`: `(false, 1, 3, r1.hash)`; swapping records 2 and 3 gives `[r1, r3, r2, r4, r5]`: `(false, 1, 3, r1.hash)`; a garbage line at line 4 gives `(false, 3, 4, r3.hash)`. **The first record may have ANY `seq` and ANY `prevHash`** (a log continues across rotation and restarts; only the links between consecutive records are checked). Empty input -> `AuditVerification.empty`.
 Tests: building 5 records verifies valid with `recordCount == 5` and `headHash == last.hash`; changing one byte of record 3's `decision` -> `firstBrokenSeq == 3`; deleting record 2 -> broken at 3 (seq gap); swapping records -> broken; garbage line -> broken at that line; first record with non-empty `prevHash` and `seq == 7` is accepted (rotation continuity); the encoded line never contains the transcript text, a path, or the word you passed as `draft.transcript` (assert with a distinctive string); `transcriptHash` equals a known SHA-256 vector (`"hello"` -> `2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824`) for transcript `"  Hello \n"`; `record.tier` is the integer 2 for a `.t2` draft.
 
-`FileAuditLogger: AuditLogging, @unchecked Sendable` (lock-guarded; constructor in the table at the top of this section). **Lazy start:** nothing touches the disk until the first `append`: then `ensureDirectory` + `restrictToOwner` (0700 dir), and load the last record of the live file (to continue `seq` and `prevHash`; if the live file is absent or empty, load the last record of the newest rotated file `<name>.1.<ext>` instead; if the existing file does not verify, continue anyway from its last decodable record but make `verify()` report the break). Keep `seq` and `lastHash` in memory afterwards.
+`FileAuditLogger: AuditLogging, @unchecked Sendable` (lock-guarded; constructor in the table at the top of this section). **`append` and `verify` are `async` protocol methods, so they must not call `lock()`/`unlock()` themselves (global rule 2).** Put ALL locked work in private SYNCHRONOUS helpers, `private func appendLocked(_ draft: AuditDraft) -> Bool` (lazy start, `makeRecord`, rotation, `appendLine`, `restrictToOwner`, state update; it takes and releases the lock) and `private func verifyLocked() -> AuditVerification`, and write `func append(_ draft: AuditDraft) async -> Bool { appendLocked(draft) }` and `func verify() async -> AuditVerification { verifyLocked() }`. **Lazy start:** nothing touches the disk until the first `append`: then `ensureDirectory` + `restrictToOwner` (0700 dir), and load the last record of the live file (to continue `seq` and `prevHash`; if the live file is absent or empty, load the last record of the newest rotated file `<name>.1.<ext>` instead; if the existing file does not verify, continue anyway from its last decodable record but make `verify()` report the break). Keep `seq` and `lastHash` in memory afterwards.
 
 Each append: build the record (`makeRecord`), then if `fileSize(live) >= maxFileBytes` **rotate** (algorithm below), then `appendLine`, then `restrictToOwner` the file (0600). The new live file's first record keeps `prevHash` = the last hash and `seq` continues. Any thrown error -> `append` returns false (and never throws).
 
@@ -323,10 +354,22 @@ How to read the results:
   extra line `harness: only known baseline failures remain` (two existing render tests,
   `ArtworkGlowRenderTests.testGlowFollowsTheCurrentAccentNotThePreviousOne` and
   `PillMarqueeRenderTests.testLongTitleScrollsAfterTheStartDelayOnceActive`, always fail under the stub; ignore them, and
-  never edit them). If the harness build prints a `warning:` for one of YOUR test or source files, fix it too. The generated
-  `runner/main.swift` prints about 1,700 baseline warnings `no calls to throwing functions occur within 'try' expression`;
-  they are not yours, so ignore every warning whose file is `main.swift`
-  (`scripts/voice-harness/run.sh 2>&1 | grep 'warning:' | grep -v 'main.swift'` must print nothing).
+  never edit them). The generated `runner/main.swift` prints about 1,700
+  baseline `no calls to throwing functions occur within 'try' expression` warnings, and SwiftPM prints every diagnostic twice (a
+  `/path/File.swift:L:C: warning:` line, then an indented caret line that starts with `|` and has no file name), so a plain
+  `grep 'warning:'` over the raw output is useless. **The warning check** is the command below. SwiftPM prints a file's warnings only
+  when it recompiles that file and an incremental harness build skips files it already built, so the check builds into a FRESH
+  harness directory (about 40 s) and keeps only lines that START with a file path. It must print nothing:
+
+  ```sh
+  W="$(mktemp -d)"; HARNESS_DIR="$W" scripts/voice-harness/run.sh --filter VoiceContractSmoke 2>&1 \
+    | grep -E '^/.*: (warning|error):' | grep -vE '/(main|UpdateCheckerTests)\.swift:'; rm -rf "$W"
+  ```
+
+  The only known baseline warnings are the `main.swift` `try` warnings and 4 copies of one actor-isolation warning at
+  `Tests/DesnotchCoreTests/UpdateCheckerTests.swift:41`; they are not yours and you must not touch that file. Any other line the check
+  prints is yours: fix it. `swift build` never compiles the test target, so a warning or an error in a TEST file shows up only in
+  the harness run (and in CI).
   The harness finds a test class only when it is declared on ONE line as `class X: XCTestCase` or `final class X: XCTestCase`,
   and it resets its current class at every column-0 `class`, `struct`, `enum` or `actor`: put helper types and fakes at
   column 0 AFTER the test class (or indent them inside it), and confirm with `scripts/voice-harness/run.sh --list | grep <Class>`
@@ -334,9 +377,12 @@ How to read the results:
 - `lint-lite.sh` must print `lint-lite: clean (N files)`. Pass your files explicitly
   (`scripts/voice-harness/lint-lite.sh path/one.swift path/two.swift`). It only checks the whitespace rules; CI's SwiftLint also
   enforces `duplicate_imports`, `empty_enum_arguments`, `redundant_discardable_let`, `unused_optional_binding` and
-  `void_return`, so check those by eye (only `trailing_whitespace` is an error there).
-- First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); allow 2-4 minutes.
-  `--skip-build` re-runs without rebuilding.
+  `void_return`, so check those by eye (only `trailing_whitespace` is an error there): write `case .foo`, not `case .foo(_)`;
+  never `if let _ = x` (use `x != nil`) or `let _ = f()` (use `_ = f()`).
+- First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); it takes about 1 minute
+  (about 40 s on the Mac mini). If your shell tool times out after 2 minutes, raise the timeout, or run
+  `scripts/voice-harness/run.sh --filter VoiceContractSmoke` once up front so later runs are incremental. `--skip-build` re-runs
+  without rebuilding.
 - The harness copies your current `Sources/DesnotchCore` and `Tests/DesnotchCoreTests` on every run, so just save and re-run.
 - Tests only ever run for real on GitHub Actions (`swift test` on macos-14 with Swift 5.10, and macos-15). The harness uses
   your local Swift 6.1 compiler in Swift 5 language mode, so it can NOT catch every Swift 5.10 actor-isolation error. Follow
@@ -363,6 +409,8 @@ scripts/voice-harness/run.sh --filter AuditChainTests
 scripts/voice-harness/run.sh --filter FileAuditLoggerTests
 scripts/voice-harness/run.sh --filter DiskFileWriterTests
 scripts/voice-harness/run.sh --filter SystemVoicePermissionsTests
+scripts/voice-harness/run.sh --filter SpeechDecisionTests
+scripts/voice-harness/run.sh --filter ScreenLockMonitorTests
 scripts/voice-harness/run.sh --filter PermissionSnapshotTests
 scripts/voice-harness/run.sh
 scripts/voice-harness/lint-lite.sh Sources/DesnotchCore/Voice/Platform/*.swift Tests/DesnotchCoreTests/Voice/Platform/*.swift Sources/DesnotchCore/App/PermissionSnapshot.swift Tests/DesnotchCoreTests/PermissionSnapshotTests.swift
@@ -375,7 +423,7 @@ HARDENED_RUNTIME=1 VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh d
 
 (`dist/` and `.build/` are gitignored. The two packaging runs prove the Info.plist keys and the hardened entitlement; each `build-app.sh` run takes about 60 s, do not abort it. If `scripts/smoke-test.sh` needs variables, read its header and use them. `shellcheck` is not installed on this Mac but CI runs it on `scripts/*.sh`: keep every variable used and every expansion quoted.)
 
-Done means: build clean; every class above `0 failed`; full suite no failures beyond the two baseline ones; lint clean; the packaged app passes `smoke-test.sh` in both modes; `git status` shows only the files of section 2.
+Done means: build clean; the warning check of section 4 prints nothing; every class above `0 failed`; full suite no failures beyond the two baseline ones; lint clean; the packaged app passes `smoke-test.sh` in both modes; `git status` shows only the files of section 2.
 
 ## 5. Manual checklist (report each as DONE / NOT DONE / BLOCKED and what you saw; none can be automated by an agent)
 
@@ -409,14 +457,19 @@ These apply to every work package. They are not suggestions.
      (`import Testing`, `#expect`), macros, `nonisolated(unsafe)` (outside tests it hides bugs), `@preconcurrency` imports as a
      way to silence a warning, or any API newer than macOS 13.
    - Do not put `await` inside an `XCTAssert...(...)` argument; assign to a `let` first.
+   - Never call `NSLock.lock()` / `unlock()` inside the body of an `async` function or closure: the Swift 6.1 compiler warns
+     "unavailable from asynchronous contexts" (breaking rule 3). Put every locked access in a private SYNCHRONOUS helper
+     (`private func appendLocked(...) -> Bool`) and call the helper from the async body. The frozen
+     `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (`ScriptedBackend.recordResponse`) shows the pattern.
 3. **No warnings.** `swift build` must be warning-free for the whole package, and the harness build must show no warnings
    from your files. No `// swiftlint:disable`. No `try!` / `as!` / `!` force unwraps in non-test code unless the
    spec above shows one.
 4. **No secrets, no real user data.** Never read, print, log or commit `auth.json`, `.env`, keychain items, `~/.ssh`,
    `~/.hermes/config.yaml`, vault or engagement files. Tests use synthetic fixtures only.
-5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Never `print`,
-   never `NSLog`, never put it in an `os.Logger` string unless the interpolation is `privacy: .private`, never write it to disk
-   (the audit log stores hashes and codes only), never pass it to VoiceOver announcements. Log `VoiceFailure.code` instead.
+5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Voice code logs
+   NOTHING: no `print`, no `NSLog`, no `os_log`, no `Logger` anywhere under `Sources/DesnotchCore/Voice` or in the voice UI files (the
+   final-check `rg` bans all of them). Surface a failure as a typed `VoiceFailure` (its `code` is what the audit log stores).
+   Never write live content to disk (the audit log stores hashes and codes only) and never pass it to VoiceOver announcements.
 6. **No git.** Do not run `git add`, `git commit`, `git push`, `git merge`, `git rebase`, `git stash`, `git checkout` of other
    branches, `git worktree`, or `git reset`. Leave your changes uncommitted in your worktree; the orchestrator reviews and commits.
    Reading (`git status`, `git diff`, `git log`) is fine.
@@ -436,7 +489,11 @@ These apply to every work package. They are not suggestions.
    `private`/`fileprivate` unless another test file of YOUR package must reuse them (then they are internal and use the name or
    prefix your package doc prescribes), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
    on a collision. `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (frozen) already provides `FakeVoiceClock`,
-   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are.
+   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are. A test class that
+   touches a `@MainActor` type (`SystemLocalExecutor`, `VolumeDucker`, `CarbonPushToTalk`, `VoiceCuePlayer`, `NSHostingView`,
+   `VoiceSessionModel`, `SettingsStore`, or a double that conforms to a `@MainActor` protocol) is declared
+   `@MainActor final class XTests: XCTestCase {` (the harness accepts the attribute on the same line or on the line before).
+   Doubles that conform to a `@MainActor` protocol are themselves `@MainActor` and can only be created from `@MainActor` code.
 9. **Style.** Match the surrounding code. No trailing whitespace, exactly one final newline, never two blank lines in a
    row (CI's SwiftLint fails the build on these; run `scripts/voice-harness/lint-lite.sh`). Doc comments explain WHY.
    Names in this plan are exact: do not rename a type, method, case or file that the plan names.

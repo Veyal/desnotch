@@ -100,6 +100,7 @@ Tests/DesnotchCoreTests/Voice/Platform/AuditChainTests.swift	WP-PLATFORM
 Tests/DesnotchCoreTests/Voice/Platform/FileAuditLoggerTests.swift	WP-PLATFORM
 Tests/DesnotchCoreTests/Voice/Platform/DiskFileWriterTests.swift	WP-PLATFORM
 Tests/DesnotchCoreTests/Voice/Platform/SystemVoicePermissionsTests.swift	WP-PLATFORM
+Tests/DesnotchCoreTests/Voice/Platform/SpeechDecisionTests.swift	WP-PLATFORM
 Tests/DesnotchCoreTests/PermissionSnapshotTests.swift	WP-PLATFORM
 Sources/DesnotchCore/Voice/Coordinator/VoiceCoordinator.swift	WP-HERMES
 Sources/DesnotchCore/Voice/Coordinator/VoiceTimers.swift	WP-HERMES

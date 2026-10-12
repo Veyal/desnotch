@@ -58,7 +58,9 @@ protocol AgentBackend: Sendable {
     func submit(_ utterance: String) -> AsyncStream<AgentEvent>
     /// Answer an approval request. `allow == true` is sent as `once`; `false` as `deny`.
     func respond(nonce: String, allow: Bool) async
-    /// Soft cancel of the current turn.
+    /// Soft cancel of the current turn (`session/cancel`). An agent that ignores it is killed
+    /// after `VoiceTiming.hardStopGrace` by the backend itself, and a later submit first
+    /// completes that kill (WP-HERMES B.7).
     func cancelTurn() async
     /// Interrupt, wait `VoiceTiming.hardStopGrace`, SIGTERM then SIGKILL the process group.
     func emergencyStop() async -> EmergencyStopReport
@@ -92,6 +94,8 @@ protocol FileWriting: Sendable {
 /// Global push-to-talk and key commands. Implemented by `CarbonPushToTalk` (WP-PLATFORM).
 /// The stream yields `.pressed` / `.released(heldSeconds:)` for the talk key, `.stopKey` for
 /// the always-registered stop chord, and `.cancelKey` (Esc) only while armed.
+/// A source may be SINGLE-USE (`CarbonPushToTalk` is): `start()` after `stop()` can return
+/// `.unavailable`, so the coordinator builds a new source on every enable.
 @MainActor
 protocol PushToTalkSource: AnyObject {
     var events: AsyncStream<PushToTalkEvent> { get }
@@ -105,8 +109,11 @@ protocol PushToTalkSource: AnyObject {
 /// Screen lock / console-session gate. Unknown state counts as locked (fail closed).
 @MainActor
 protocol LockStateProviding: AnyObject {
+    /// Recomputed from the system on every read (no cached answer), so it is correct even when
+    /// no `changes` stream exists.
     var isLocked: Bool { get }
-    /// Emits the new value on every change.
+    /// Emits the new value on every change. Each access returns a NEW stream; the monitor
+    /// listens for notifications only while at least one stream is alive.
     var changes: AsyncStream<Bool> { get }
 }
 

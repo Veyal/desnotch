@@ -162,6 +162,21 @@ Rules:
    - `<unit 2-9> puluh` = 10 * unit (20-90), length 2; optionally followed by a unit `satu`...`sembilan` (length 3). Example `dua puluh lima` = 25.
 4. Always prefer the longest valid match at `start`.
 
+`XCTAssertEqual` cannot compare a labelled-tuple optional, so every S-row goes through this helper (copy it to the bottom of
+`SpokenNumberTests.swift`, at column 0 after the class; `expected == nil` means "must be nil"):
+
+```swift
+func assertParse(_ tokens: [String], _ start: Int, _ expected: (Int, Int)?,
+                 file: StaticString = #filePath, line: UInt = #line) {
+    let result = SpokenNumber.parse(tokens, at: start)
+    XCTAssertEqual(result == nil, expected == nil, "nil-ness of \(tokens) at \(start)", file: file, line: line)
+    if let result, let expected {
+        XCTAssertEqual(result.value, expected.0, file: file, line: line)
+        XCTAssertEqual(result.length, expected.1, file: file, line: line)
+    }
+}
+```
+
 Worked examples (write each as a test; input is `tokens`, `start`, expected result):
 
 | # | tokens | start | expected |
@@ -297,8 +312,9 @@ which must be the last token. Any leftover token means no match.
 - `[set a|start a] NUMBER UNIT [timer]` and `NUMBER UNIT timer` (e.g. `25 minute timer`).
 
 **Open-app grammar** (whole array consumed): `VERB [the|a|aplikasi] NAME [app|application|aplikasi]` where `VERB` is
-`open`; `open up`; `launch`; `buka`; `jalankan`, and `NAME` (1 to 3 tokens) satisfies `AppCatalog.lookup(NAME) != nil`.
-Try the longest `NAME` first. Strip at most ONE leading article (`the`, `a`, `aplikasi`) and at most ONE trailing suffix
+`open`; `open up`; `launch`; `buka`; `jalankan`, and `NAME` is the whole remainder (1 to 3 tokens) and satisfies
+`AppCatalog.lookup(NAME) != nil`. There is no search over sub-ranges: `NAME` is what is left after the verb and the stripping below.
+Strip at most ONE leading article (`the`, `a`, `aplikasi`) and at most ONE trailing suffix
 (`app`, `application`, `aplikasi`), and strip the suffix only when the remainder is non-empty (so `open the app` has `NAME = ["app"]`, which
 is not in the catalog). If `NAME` is not in the catalog the grammar does not match (rule 11 then gives `.unknownApp`).
 
@@ -646,7 +662,7 @@ mutating func tryConsume(tier: VoiceTier, now: Date) -> RateVerdict
 
 ## Step 3 and 4: the reducer
 
-`Logic/VoiceReducer.swift`. This is the session state machine. Read `VoiceContext`, `VoiceEvent`, `VoiceEffect` in the contract
+`Logic/VoiceReducer.swift`. This is the session state machine. (CI's SwiftLint is stricter than `lint-lite.sh`: in the big `switch` write `case .foo`, never `case .foo(_)`, and bind with `if case .foo = x`, never `if let _ = x`.) Read `VoiceContext`, `VoiceEvent`, `VoiceEffect` in the contract
 first. Do Step 3 (everything up to and including R79, plus R95-R97, R110-R132 and the global rules) and run its tests; then
 Step 4 (R80-R92 and R100-R105) and run all reducer tests.
 
@@ -660,7 +676,10 @@ enum VoiceReducer {
 ```
 
 `reduce` is a pure function: no clock (`env.now`), no randomness (`env.freshNonce`), no I/O, no global
-state. It returns the next `VoiceContext` and the ordered list of `VoiceEffect`s. Anything not
+state. The literal seconds in the rules below ARE the contract constants: 0.35 = `VoiceTiming.holdThreshold`, 1.5 = `reviewWindow`,
+5.0 = `finalWatchdog`, 30.0 = `holdListenCap`, 10.0 = `toggleListenCap` (also the interrupt capture's cap), 60.0 = `approvalTimeout`,
+3.0 = `errorDisplay`, 6.0 = `replyDisplay`, 180.0 = `agentTurnBudget`, 12 = `VoiceLimits.maxAgentSteps`; code may use either form (the
+constants are preferred) and a test asserts they agree (WP-LOGIC, "Rule tests"). It returns the next `VoiceContext` and the ordered list of `VoiceEffect`s. Anything not
 listed in the rules below is a **no-op**: return `VoiceTransition(context: context, effects: [])`
 (the unchanged context).
 
@@ -690,7 +709,7 @@ Every rule below is built from these. `next` is a copy of the incoming context; 
 | `DROP_INTERRUPT` | If `interrupt != nil`: append `.cancelCapture(generation: interrupt.generation)` and set `interrupt = nil`. |
 | `TO_IDLE(extra)` | `effects = extra`; `DROP_INTERRUPT`; `NEW_ID`; `CLEAR_FLOW`; `state = .idle`. |
 | `TO_ERROR(f, extra)` | `effects = extra`; `DROP_INTERRUPT`; `state = .error`; `failure = f`; `pending = nil`; `pendingIntent = nil`; `partialTranscript = ""`; append `.cue(.error)`, `.startTimer(.errorDisplay, generation: next.generation, seconds: 3.0)`, `.audit(AuditDraft(kind: .error, lane: next.lane, decision: "failure", outcome: f.code))`. Does NOT call `NEW_ID` (the display timer must carry the current generation). `finalTranscript` is kept so the error can say what was heard. |
-| `STOP_ALL(reason)` | `wasBusy = (state.isAgentBusy && lane == .hermes)`. Effects in this order: (1) if state is `armed/listening/transcribing`: `.cancelCapture(generation)`; (2) if `interrupt != nil`: `.cancelCapture(interrupt.generation)`; (3) if state is `speaking`: `.stopSpeaking`; (4) if `wasBusy`: `.stopAgentHard`; (5) `.audit(AuditDraft(kind: .stop, lane: lane, decision: auditName(reason), outcome: wasBusy ? "hard" : "soft"))`. Then `interrupt = nil`; `NEW_ID`; `CLEAR_FLOW`; if `wasBusy`: `state = .paused`, `pauseReason = reason` else `state = .idle`. `reason` is a `PauseReason`. **`PauseReason` has NO `auditName` member and the frozen contract type must not be extended.** In `VoiceReducer.swift` write the mapping yourself as a private helper: `private func auditName(_ r: PauseReason) -> String { switch r { case .userStop: return "user_stop"; case .spokenAbort: return "spoken_abort"; case .tripwire: return "tripwire" } }`. |
+| `STOP_ALL(reason)` | `wasBusy = (state.isAgentBusy && lane == .hermes)`. Effects, **appended to the current `effects` list** (STOP_ALL never clears it, so whatever the caller already put there stays first), in this order: (1) if state is `armed/listening/transcribing`: `.cancelCapture(generation)`; (2) if `interrupt != nil`: `.cancelCapture(interrupt.generation)`; (3) if state is `speaking`: `.stopSpeaking`; (4) if `wasBusy`: `.stopAgentHard`; (5) `.audit(AuditDraft(kind: .stop, lane: lane, decision: auditName(reason), outcome: wasBusy ? "hard" : "soft"))`. Then `interrupt = nil`; `NEW_ID`; `CLEAR_FLOW`; if `wasBusy`: `state = .paused`, `pauseReason = reason` else `state = .idle`. `reason` is a `PauseReason`. **`PauseReason` has NO `auditName` member and the frozen contract type must not be extended.** In `VoiceReducer.swift` write the mapping yourself as a private helper: `private func auditName(_ r: PauseReason) -> String { switch r { case .userStop: return "user_stop"; case .spokenAbort: return "spoken_abort"; case .tripwire: return "tripwire" } }`. Worked example (R35: state `listening`, generation 1, final text "abort agent", so HANDLE_FINAL's `prefix` is already in `effects`): `[.endCapture(generation: 1), .cue(.captureEnd), .cancelCapture(generation: 1), .audit(AuditDraft(kind: .stop, lane: nil, decision: "spoken_abort", outcome: "soft"))]`, state `.idle`. |
 | `CANCEL_CAPTURE(auditDecision)` | `TO_IDLE([.cancelCapture(generation: generation), .audit(AuditDraft(kind: .cancel, lane: lane, decision: auditDecision))])`. (`generation` is the value BEFORE `NEW_ID`.) |
 | `END_BY_USER` | `state = .transcribing`; `captureEndedByUser = true`; append `.endCapture(generation)`, `.cue(.captureEnd)`, `.startTimer(.finalWatchdog, generation: generation, seconds: 5.0)`. |
 | `END_BY_CAP` | Same as `END_BY_USER` but `captureEndedByUser` stays `false`. |
@@ -859,6 +878,8 @@ Other events in the busy states: `timerElapsed(.turnBudget)` is R89 in all three
 
 **local execution (`acting` with `lane == .local`)**
 
+R95-R97 apply only when `state == .acting && lane == .local`. `localExecutionFinished` in any other state, or with lane `.hermes`, is a no-op (and a late one is also stale by R01 once the flow moved on).
+
 | ID | Event [guard] | Result |
 |---|---|---|
 | R95 | `localExecutionFinished(.success(spoken))` | If `env.speechAllowed` and `spoken` is non-nil and non-empty: `FINISH(spoken)`. Otherwise `TO_IDLE([.cue(.done), .audit(AuditDraft(kind: .execute, lane: .local, decision: "finished", outcome: "ok"))])`. |
@@ -875,7 +896,7 @@ Only those phrases are honored; every other transcript is ignored.
 | R100 | `thinking, acting, awaitingApproval` + `talkPressed` [`lane == .hermes && interrupt == nil && env.voiceEnabled && !env.screenLocked`] | `counter += 1`; `interrupt = InterruptCapture(generation: counter, endedByUser: false)`; effects `[.startCapture(generation: counter, mode: .hold)]`. Everything else unchanged. |
 | R101 | any + `captureStarted(g)` [`interrupt != nil && g == interrupt.generation`] | effects `[.cue(.captureStart), .startTimer(.listenCap, generation: g, seconds: 10.0)]` |
 | R102 | any + `talkReleased(h)` [`interrupt != nil`] | `h >= 0.35`: `interrupt.endedByUser = true`; effects `[.endCapture(generation: interrupt.generation), .cue(.captureEnd)]`. `h < 0.35`: effects `[.cancelCapture(generation: interrupt.generation)]`; `interrupt = nil`. |
-| R103 | any + `finalTranscript(s, g)` [`interrupt != nil && g == interrupt.generation`] | `interrupt = nil`. `route = IntentRouter.route(s, context: RouterContext(hermesLaneAvailable: false, agentBusy: true))`. `.emergencyStop` -> `STOP_ALL(.spokenAbort)`. `.cancelTurn` -> `TO_IDLE([.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "spoken"))])`. Anything else -> no effects and no other change except `interrupt = nil` (the transcript is ignored; the recognizer already finished). |
+| R103 | any + `finalTranscript(s, g)` [`interrupt != nil && g == interrupt.generation`] | `interrupt = nil`. `route = IntentRouter.route(s, context: RouterContext(hermesLaneAvailable: false, agentBusy: true))`. `.emergencyStop` -> `STOP_ALL(.spokenAbort)`, whose exact effects are `[.stopAgentHard, .audit(AuditDraft(kind: .stop, lane: .hermes, decision: "spoken_abort", outcome: "hard"))]` (`interrupt` is already nil, so there is no `.cancelCapture` for it, and the state is a busy agent state, so there is none for the main flow either); the result state is `.paused`. `.cancelTurn` -> `TO_IDLE([.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "spoken"))])`. Anything else -> no effects and no other change except `interrupt = nil` (the transcript is ignored; the recognizer already finished). |
 | R104 | any + `captureFailed(_, g)` or `timerElapsed(.listenCap, g)` [`interrupt != nil && g == interrupt.generation`] | `captureFailed`: `interrupt = nil`, effects `[.cancelCapture(generation: g)]`. `listenCap`: effects `[.endCapture(generation: g)]` (the transcript is still only honored for stop phrases). |
 | R105 | a state change that leaves `{thinking, acting, awaitingApproval}` while `interrupt != nil` | Covered by `DROP_INTERRUPT` inside `TO_IDLE`, `TO_ERROR`, `STOP_ALL`, `FINISH`, R83. |
 
@@ -1020,6 +1041,10 @@ Include these specific checks (they catch the usual mistakes):
 - `testR84`: auto-deny for a request whose `risk` contains `.pipeToInterpreter`, one with `tier: .t4`, and one with `tier: .t3`
   when `secondFactorAvailable == false`.
 - `testR71`: a nonce mismatch changes NOTHING but emits exactly one audit effect.
+- Hold boundary (R21, R22, R31, R32): `heldSeconds` of exactly `0.35` is a HOLD (R31 ends the capture, R21 cancels) and `0.3499` is a TAP (R32, R22 latch toggle). Name them `testR31_boundary_exactThresholdIsAHold` and `testR32_boundary_justUnderThresholdIsATap`.
+- `testTimerSecondsMatchVoiceTimingConstants`: drive the flows that emit `.startTimer` (R20 hold and toggle, R32, R34/END_BY_USER watchdog, R61, R63, R85, R101, FINISH without speech, TO_ERROR) and assert each `seconds` equals the matching `VoiceTiming` constant (`holdListenCap`, `toggleListenCap`, `finalWatchdog`, `approvalTimeout`, `agentTurnBudget`, `reviewWindow`, `errorDisplay`, `replyDisplay`), and that `VoiceTiming.holdThreshold == 0.35`.
+- `testNoSpokenWordApprovesAnything`: in `awaitingApproval` (a local card and an agent card) a `finalTranscript` of "yes", "approve", "approve it" or "ok go ahead" (current generation, no interrupt) changes nothing and emits nothing (the state stays `.awaitingApproval`, `pending` unchanged); and through an interrupt capture (R103) the same words change nothing except `interrupt = nil`.
+- Rule IDs with a letter suffix are matched by prefix and underscore: `testR03_...`, `testR03a_...`, `testR03b_...` are three different methods (`check-rule-tests.sh` greps for `func testR03_`, `func testR03a_`, ...).
 
 ### Scenario tests
 
@@ -1040,7 +1065,7 @@ the test according to the rule tables.
 | S2 | tap-latch: `talkPressed`, `talkReleased(0.1)`, `captureStarted(1)`, `talkPressed`, `finalTranscript("mute", 1)`, `timerElapsed(.review, 1)` | armed, armed (`captureMode == .toggle`), listening (10 s cap timer), transcribing, review, acting (`.execute(.mute, ...)`) |
 | S3 | cloud agent with approval: lane ready (`hermes: true`); `talkPressed`, `captureStarted(1)`, `talkReleased(1.2)`, `finalTranscript("what is the weather in Jakarta", 1)`, `timerElapsed(.review, 1)`, `agent(.toolActivity(kind: "clock"), 1)`, `agent(.approvalNeeded(<T2 card, nonce "c1", risk []>), 1)`, `approveRequested(nonce: "c1")`, `agent(.finished(summary: "It is sunny"), 1)`, `timerElapsed(.replyDisplay, 1)` | armed, listening, transcribing, review (lane `.hermes`), thinking (`.submitToAgent`), acting (1 step chip), awaitingApproval, acting (effects `.respondToApproval(nonce: "c1", allow: true)`), speaking (`.startTimer(.replyDisplay,...)`), idle |
 | S4 | tripwire: from `ctx(.thinking)` with `lane = .hermes`: `agent(.toolActivity(kind: "terminal"), 1)`, then `resumeRequested`, then `talkPressed` | paused (effects `[.stopAgentHard, .cue(.error), .audit(...)]`, failure `.tripwire(tool: "terminal")`), idle, armed |
-| S5 | spoken abort during an agent turn: from `ctx(.acting)` with lane `.hermes`: `talkPressed`, `captureStarted(2)`, `talkReleased(0.8)`, `finalTranscript("abort agent", 2)` | acting (interrupt capture, `.startCapture(generation: 2, mode: .hold)`), acting, acting (`.endCapture(generation: 2)`), paused (`.stopAgentHard`) |
+| S5 | spoken abort during an agent turn: from `ctx(.acting)` with lane `.hermes`: `talkPressed`, `captureStarted(2)`, `talkReleased(0.8)`, `finalTranscript("abort agent", 2)` | acting (interrupt capture, `.startCapture(generation: 2, mode: .hold)`), acting, acting (`.endCapture(generation: 2)`, `.cue(.captureEnd)`), paused (effects exactly `[.stopAgentHard, .audit(AuditDraft(kind: .stop, lane: .hermes, decision: "spoken_abort", outcome: "hard"))]`: no `.cancelCapture`, the interrupt was already cleared by R103) |
 | S6 | stale events: S1 up to `armed`, then `captureStarted(99)`, `finalTranscript("volume 10", 99)`, `timerElapsed(.review, 99)` | armed, armed, armed (all no-ops) |
 | S7 | review cancel: S1 up to `review`, `cancelRequested`, then the old `timerElapsed(.review, 1)` | idle, idle (the old timer is stale) |
 | S8 | lock: `talkPressed`, `captureStarted(1)`, `screenLocked` | armed, listening, idle (effects `[.cancelCapture(generation: 1), audit cancel "locked"]`) |
@@ -1076,10 +1101,22 @@ How to read the results:
   extra line `harness: only known baseline failures remain` (two existing render tests,
   `ArtworkGlowRenderTests.testGlowFollowsTheCurrentAccentNotThePreviousOne` and
   `PillMarqueeRenderTests.testLongTitleScrollsAfterTheStartDelayOnceActive`, always fail under the stub; ignore them, and
-  never edit them). If the harness build prints a `warning:` for one of YOUR test or source files, fix it too. The generated
-  `runner/main.swift` prints about 1,700 baseline warnings `no calls to throwing functions occur within 'try' expression`;
-  they are not yours, so ignore every warning whose file is `main.swift`
-  (`scripts/voice-harness/run.sh 2>&1 | grep 'warning:' | grep -v 'main.swift'` must print nothing).
+  never edit them). The generated `runner/main.swift` prints about 1,700
+  baseline `no calls to throwing functions occur within 'try' expression` warnings, and SwiftPM prints every diagnostic twice (a
+  `/path/File.swift:L:C: warning:` line, then an indented caret line that starts with `|` and has no file name), so a plain
+  `grep 'warning:'` over the raw output is useless. **The warning check** is the command below. SwiftPM prints a file's warnings only
+  when it recompiles that file and an incremental harness build skips files it already built, so the check builds into a FRESH
+  harness directory (about 40 s) and keeps only lines that START with a file path. It must print nothing:
+
+  ```sh
+  W="$(mktemp -d)"; HARNESS_DIR="$W" scripts/voice-harness/run.sh --filter VoiceContractSmoke 2>&1 \
+    | grep -E '^/.*: (warning|error):' | grep -vE '/(main|UpdateCheckerTests)\.swift:'; rm -rf "$W"
+  ```
+
+  The only known baseline warnings are the `main.swift` `try` warnings and 4 copies of one actor-isolation warning at
+  `Tests/DesnotchCoreTests/UpdateCheckerTests.swift:41`; they are not yours and you must not touch that file. Any other line the check
+  prints is yours: fix it. `swift build` never compiles the test target, so a warning or an error in a TEST file shows up only in
+  the harness run (and in CI).
   The harness finds a test class only when it is declared on ONE line as `class X: XCTestCase` or `final class X: XCTestCase`,
   and it resets its current class at every column-0 `class`, `struct`, `enum` or `actor`: put helper types and fakes at
   column 0 AFTER the test class (or indent them inside it), and confirm with `scripts/voice-harness/run.sh --list | grep <Class>`
@@ -1087,9 +1124,12 @@ How to read the results:
 - `lint-lite.sh` must print `lint-lite: clean (N files)`. Pass your files explicitly
   (`scripts/voice-harness/lint-lite.sh path/one.swift path/two.swift`). It only checks the whitespace rules; CI's SwiftLint also
   enforces `duplicate_imports`, `empty_enum_arguments`, `redundant_discardable_let`, `unused_optional_binding` and
-  `void_return`, so check those by eye (only `trailing_whitespace` is an error there).
-- First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); allow 2-4 minutes.
-  `--skip-build` re-runs without rebuilding.
+  `void_return`, so check those by eye (only `trailing_whitespace` is an error there): write `case .foo`, not `case .foo(_)`;
+  never `if let _ = x` (use `x != nil`) or `let _ = f()` (use `_ = f()`).
+- First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); it takes about 1 minute
+  (about 40 s on the Mac mini). If your shell tool times out after 2 minutes, raise the timeout, or run
+  `scripts/voice-harness/run.sh --filter VoiceContractSmoke` once up front so later runs are incremental. `--skip-build` re-runs
+  without rebuilding.
 - The harness copies your current `Sources/DesnotchCore` and `Tests/DesnotchCoreTests` on every run, so just save and re-run.
 - Tests only ever run for real on GitHub Actions (`swift test` on macos-14 with Swift 5.10, and macos-15). The harness uses
   your local Swift 6.1 compiler in Swift 5 language mode, so it can NOT catch every Swift 5.10 actor-isolation error. Follow
@@ -1143,14 +1183,19 @@ These apply to every work package. They are not suggestions.
      (`import Testing`, `#expect`), macros, `nonisolated(unsafe)` (outside tests it hides bugs), `@preconcurrency` imports as a
      way to silence a warning, or any API newer than macOS 13.
    - Do not put `await` inside an `XCTAssert...(...)` argument; assign to a `let` first.
+   - Never call `NSLock.lock()` / `unlock()` inside the body of an `async` function or closure: the Swift 6.1 compiler warns
+     "unavailable from asynchronous contexts" (breaking rule 3). Put every locked access in a private SYNCHRONOUS helper
+     (`private func appendLocked(...) -> Bool`) and call the helper from the async body. The frozen
+     `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (`ScriptedBackend.recordResponse`) shows the pattern.
 3. **No warnings.** `swift build` must be warning-free for the whole package, and the harness build must show no warnings
    from your files. No `// swiftlint:disable`. No `try!` / `as!` / `!` force unwraps in non-test code unless the
    spec above shows one.
 4. **No secrets, no real user data.** Never read, print, log or commit `auth.json`, `.env`, keychain items, `~/.ssh`,
    `~/.hermes/config.yaml`, vault or engagement files. Tests use synthetic fixtures only.
-5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Never `print`,
-   never `NSLog`, never put it in an `os.Logger` string unless the interpolation is `privacy: .private`, never write it to disk
-   (the audit log stores hashes and codes only), never pass it to VoiceOver announcements. Log `VoiceFailure.code` instead.
+5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Voice code logs
+   NOTHING: no `print`, no `NSLog`, no `os_log`, no `Logger` anywhere under `Sources/DesnotchCore/Voice` or in the voice UI files (the
+   final-check `rg` bans all of them). Surface a failure as a typed `VoiceFailure` (its `code` is what the audit log stores).
+   Never write live content to disk (the audit log stores hashes and codes only) and never pass it to VoiceOver announcements.
 6. **No git.** Do not run `git add`, `git commit`, `git push`, `git merge`, `git rebase`, `git stash`, `git checkout` of other
    branches, `git worktree`, or `git reset`. Leave your changes uncommitted in your worktree; the orchestrator reviews and commits.
    Reading (`git status`, `git diff`, `git log`) is fine.
@@ -1170,7 +1215,11 @@ These apply to every work package. They are not suggestions.
    `private`/`fileprivate` unless another test file of YOUR package must reuse them (then they are internal and use the name or
    prefix your package doc prescribes), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
    on a collision. `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (frozen) already provides `FakeVoiceClock`,
-   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are.
+   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are. A test class that
+   touches a `@MainActor` type (`SystemLocalExecutor`, `VolumeDucker`, `CarbonPushToTalk`, `VoiceCuePlayer`, `NSHostingView`,
+   `VoiceSessionModel`, `SettingsStore`, or a double that conforms to a `@MainActor` protocol) is declared
+   `@MainActor final class XTests: XCTestCase {` (the harness accepts the attribute on the same line or on the line before).
+   Doubles that conform to a `@MainActor` protocol are themselves `@MainActor` and can only be created from `@MainActor` code.
 9. **Style.** Match the surrounding code. No trailing whitespace, exactly one final newline, never two blank lines in a
    row (CI's SwiftLint fails the build on these; run `scripts/voice-harness/lint-lite.sh`). Doc comments explain WHY.
    Names in this plan are exact: do not rename a type, method, case or file that the plan names.

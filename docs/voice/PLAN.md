@@ -5,8 +5,10 @@ prompt per work package (`WP-LOGIC.md`, `WP-UI.md`, `WP-PLATFORM.md`, `WP-HERMES
 compiled code under `Sources/DesnotchCore/Voice/Contracts/`. The research behind the design is not in the repo; every decision
 that matters is restated here.
 
-Status of this commit ("feat(voice): plan and contracts"): the package builds warning-free, voice is OFF by default, every
-seam has a fail-closed stub, and the 20 contract smoke tests plus every existing test pass under the local harness (apart from two known baseline failures, section 12).
+Status (commits "feat(voice): plan and contracts", "docs(voice): revise plan round 1", "docs(voice): revise plan round 2"): the package builds
+warning-free, voice is OFF by default, every seam has a fail-closed stub, and the 20 contract smoke tests plus every existing test pass under the local harness
+(apart from two known baseline failures, section 12). Round 2 also removed the async `NSLock` warnings from the frozen `VoiceTestSupport.swift`, so the only
+remaining harness warning outside `main.swift` is the pre-existing `UpdateCheckerTests.swift:41`.
 
 ## 1. Goal
 
@@ -70,6 +72,8 @@ Deviations from the research report (each deliberate):
 5. **Interrupt capture:** pressing the talk key while an agent works starts a second, stop-only capture so "abort agent" works while the agent runs.
 6. **`VoiceClock`** instead of `Clock` (the standard library already has `Clock`).
 7. **Audit anchoring** is a follow-up: the logger returns the chain head hash, but periodically anchoring it outside the file (e.g. a Notion note) is manual for now. `chflags uappend` is skipped on purpose: the file owner can clear it, so it is cosmetic.
+8. **No relabelling of the mic indicator.** The research report asked to relabel `MediaUseMonitor`'s microphone dot when the capture is desnotch's own. Not in this plan (no work package owns it, and `MediaUseMonitor` is outside every voice file list); the pill's own `listening` state already shows the mic. Follow-up, not an MVP item.
+9. **The cloud lane also needs the Stop chord.** `hermesLaneReady` additionally requires `hotkeyStatus == .active` (WP-HERMES A.2), because `CarbonPushToTalk.start()` returns `.unavailable` when the Stop chord could not be registered, and the status-menu Talk path still works then; the local lane may run without the chord, a cloud agent turn may not.
 
 ## 5. Architecture and data flow
 
@@ -118,6 +122,10 @@ Unknown tool names default to T3 (default-deny). A tier decides the gate:
 
 The exact action -> tier tables (local intents, tool names, command patterns) are in `WP-LOGIC.md`, Steps 2a-2c, and are what the
 tests assert. The decision table is `ConfirmationPolicy.decide`: T0/T1 allow, T2 confirm, T3 deny while no second factor, T4 deny.
+
+Accepted MVP gap: `volumeStep(delta)` (repeated "louder") and `unmute` (it restores the remembered level) are T0 with no card, so they can raise the
+volume past 70% without the T2 card; the card guards only the ABSOLUTE `volumeSet`. Each step is at most 10 points, the review window still applies, and the
+ducker/mute memory never exceeds the level the user had.
 
 ## 7. State machine
 
@@ -172,6 +180,10 @@ stateDiagram-v2
     awaitingApproval --> error: agent failed, budget, timeout (R87, R89)
     awaitingApproval --> idle: cancelRequested on an agent card (R79)
     listening --> idle: spoken emergency stop in the final transcript (R35, R52)
+    transcribing --> idle: stopAllRequested (R03b)
+    speaking --> idle: stopAllRequested (R03b)
+    error --> idle: stopAllRequested (R03b)
+    awaitingApproval --> error: rate-limited local approve (R73)
 ```
 
 Two things the diagram cannot show: (a) `stopAllRequested` from a busy agent phase goes to `paused`, from every other phase to `idle`; (b) while an agent phase is busy,
@@ -189,7 +201,10 @@ enum VoiceReducer {
 ```
 
 `reduce` is a pure function: no clock (`env.now`), no randomness (`env.freshNonce`), no I/O, no global
-state. It returns the next `VoiceContext` and the ordered list of `VoiceEffect`s. Anything not
+state. The literal seconds in the rules below ARE the contract constants: 0.35 = `VoiceTiming.holdThreshold`, 1.5 = `reviewWindow`,
+5.0 = `finalWatchdog`, 30.0 = `holdListenCap`, 10.0 = `toggleListenCap` (also the interrupt capture's cap), 60.0 = `approvalTimeout`,
+3.0 = `errorDisplay`, 6.0 = `replyDisplay`, 180.0 = `agentTurnBudget`, 12 = `VoiceLimits.maxAgentSteps`; code may use either form (the
+constants are preferred) and a test asserts they agree (WP-LOGIC, "Rule tests"). It returns the next `VoiceContext` and the ordered list of `VoiceEffect`s. Anything not
 listed in the rules below is a **no-op**: return `VoiceTransition(context: context, effects: [])`
 (the unchanged context).
 
@@ -219,7 +234,7 @@ Every rule below is built from these. `next` is a copy of the incoming context; 
 | `DROP_INTERRUPT` | If `interrupt != nil`: append `.cancelCapture(generation: interrupt.generation)` and set `interrupt = nil`. |
 | `TO_IDLE(extra)` | `effects = extra`; `DROP_INTERRUPT`; `NEW_ID`; `CLEAR_FLOW`; `state = .idle`. |
 | `TO_ERROR(f, extra)` | `effects = extra`; `DROP_INTERRUPT`; `state = .error`; `failure = f`; `pending = nil`; `pendingIntent = nil`; `partialTranscript = ""`; append `.cue(.error)`, `.startTimer(.errorDisplay, generation: next.generation, seconds: 3.0)`, `.audit(AuditDraft(kind: .error, lane: next.lane, decision: "failure", outcome: f.code))`. Does NOT call `NEW_ID` (the display timer must carry the current generation). `finalTranscript` is kept so the error can say what was heard. |
-| `STOP_ALL(reason)` | `wasBusy = (state.isAgentBusy && lane == .hermes)`. Effects in this order: (1) if state is `armed/listening/transcribing`: `.cancelCapture(generation)`; (2) if `interrupt != nil`: `.cancelCapture(interrupt.generation)`; (3) if state is `speaking`: `.stopSpeaking`; (4) if `wasBusy`: `.stopAgentHard`; (5) `.audit(AuditDraft(kind: .stop, lane: lane, decision: auditName(reason), outcome: wasBusy ? "hard" : "soft"))`. Then `interrupt = nil`; `NEW_ID`; `CLEAR_FLOW`; if `wasBusy`: `state = .paused`, `pauseReason = reason` else `state = .idle`. `reason` is a `PauseReason`. **`PauseReason` has NO `auditName` member and the frozen contract type must not be extended.** In `VoiceReducer.swift` write the mapping yourself as a private helper: `private func auditName(_ r: PauseReason) -> String { switch r { case .userStop: return "user_stop"; case .spokenAbort: return "spoken_abort"; case .tripwire: return "tripwire" } }`. |
+| `STOP_ALL(reason)` | `wasBusy = (state.isAgentBusy && lane == .hermes)`. Effects, **appended to the current `effects` list** (STOP_ALL never clears it, so whatever the caller already put there stays first), in this order: (1) if state is `armed/listening/transcribing`: `.cancelCapture(generation)`; (2) if `interrupt != nil`: `.cancelCapture(interrupt.generation)`; (3) if state is `speaking`: `.stopSpeaking`; (4) if `wasBusy`: `.stopAgentHard`; (5) `.audit(AuditDraft(kind: .stop, lane: lane, decision: auditName(reason), outcome: wasBusy ? "hard" : "soft"))`. Then `interrupt = nil`; `NEW_ID`; `CLEAR_FLOW`; if `wasBusy`: `state = .paused`, `pauseReason = reason` else `state = .idle`. `reason` is a `PauseReason`. **`PauseReason` has NO `auditName` member and the frozen contract type must not be extended.** In `VoiceReducer.swift` write the mapping yourself as a private helper: `private func auditName(_ r: PauseReason) -> String { switch r { case .userStop: return "user_stop"; case .spokenAbort: return "spoken_abort"; case .tripwire: return "tripwire" } }`. Worked example (R35: state `listening`, generation 1, final text "abort agent", so HANDLE_FINAL's `prefix` is already in `effects`): `[.endCapture(generation: 1), .cue(.captureEnd), .cancelCapture(generation: 1), .audit(AuditDraft(kind: .stop, lane: nil, decision: "spoken_abort", outcome: "soft"))]`, state `.idle`. |
 | `CANCEL_CAPTURE(auditDecision)` | `TO_IDLE([.cancelCapture(generation: generation), .audit(AuditDraft(kind: .cancel, lane: lane, decision: auditDecision))])`. (`generation` is the value BEFORE `NEW_ID`.) |
 | `END_BY_USER` | `state = .transcribing`; `captureEndedByUser = true`; append `.endCapture(generation)`, `.cue(.captureEnd)`, `.startTimer(.finalWatchdog, generation: generation, seconds: 5.0)`. |
 | `END_BY_CAP` | Same as `END_BY_USER` but `captureEndedByUser` stays `false`. |
@@ -388,6 +403,8 @@ Other events in the busy states: `timerElapsed(.turnBudget)` is R89 in all three
 
 **local execution (`acting` with `lane == .local`)**
 
+R95-R97 apply only when `state == .acting && lane == .local`. `localExecutionFinished` in any other state, or with lane `.hermes`, is a no-op (and a late one is also stale by R01 once the flow moved on).
+
 | ID | Event [guard] | Result |
 |---|---|---|
 | R95 | `localExecutionFinished(.success(spoken))` | If `env.speechAllowed` and `spoken` is non-nil and non-empty: `FINISH(spoken)`. Otherwise `TO_IDLE([.cue(.done), .audit(AuditDraft(kind: .execute, lane: .local, decision: "finished", outcome: "ok"))])`. |
@@ -404,7 +421,7 @@ Only those phrases are honored; every other transcript is ignored.
 | R100 | `thinking, acting, awaitingApproval` + `talkPressed` [`lane == .hermes && interrupt == nil && env.voiceEnabled && !env.screenLocked`] | `counter += 1`; `interrupt = InterruptCapture(generation: counter, endedByUser: false)`; effects `[.startCapture(generation: counter, mode: .hold)]`. Everything else unchanged. |
 | R101 | any + `captureStarted(g)` [`interrupt != nil && g == interrupt.generation`] | effects `[.cue(.captureStart), .startTimer(.listenCap, generation: g, seconds: 10.0)]` |
 | R102 | any + `talkReleased(h)` [`interrupt != nil`] | `h >= 0.35`: `interrupt.endedByUser = true`; effects `[.endCapture(generation: interrupt.generation), .cue(.captureEnd)]`. `h < 0.35`: effects `[.cancelCapture(generation: interrupt.generation)]`; `interrupt = nil`. |
-| R103 | any + `finalTranscript(s, g)` [`interrupt != nil && g == interrupt.generation`] | `interrupt = nil`. `route = IntentRouter.route(s, context: RouterContext(hermesLaneAvailable: false, agentBusy: true))`. `.emergencyStop` -> `STOP_ALL(.spokenAbort)`. `.cancelTurn` -> `TO_IDLE([.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "spoken"))])`. Anything else -> no effects and no other change except `interrupt = nil` (the transcript is ignored; the recognizer already finished). |
+| R103 | any + `finalTranscript(s, g)` [`interrupt != nil && g == interrupt.generation`] | `interrupt = nil`. `route = IntentRouter.route(s, context: RouterContext(hermesLaneAvailable: false, agentBusy: true))`. `.emergencyStop` -> `STOP_ALL(.spokenAbort)`, whose exact effects are `[.stopAgentHard, .audit(AuditDraft(kind: .stop, lane: .hermes, decision: "spoken_abort", outcome: "hard"))]` (`interrupt` is already nil, so there is no `.cancelCapture` for it, and the state is a busy agent state, so there is none for the main flow either); the result state is `.paused`. `.cancelTurn` -> `TO_IDLE([.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "spoken"))])`. Anything else -> no effects and no other change except `interrupt = nil` (the transcript is ignored; the recognizer already finished). |
 | R104 | any + `captureFailed(_, g)` or `timerElapsed(.listenCap, g)` [`interrupt != nil && g == interrupt.generation`] | `captureFailed`: `interrupt = nil`, effects `[.cancelCapture(generation: g)]`. `listenCap`: effects `[.endCapture(generation: g)]` (the transcript is still only honored for stop phrases). |
 | R105 | a state change that leaves `{thinking, acting, awaitingApproval}` while `interrupt != nil` | Covered by `DROP_INTERRUPT` inside `TO_IDLE`, `TO_ERROR`, `STOP_ALL`, `FINISH`, R83. |
 
@@ -565,6 +582,7 @@ generated from this table). `Package.swift` is not changed by anyone.
 | `Tests/DesnotchCoreTests/Voice/Platform/FileAuditLoggerTests.swift` | new | WP-PLATFORM |  |
 | `Tests/DesnotchCoreTests/Voice/Platform/DiskFileWriterTests.swift` | new | WP-PLATFORM |  |
 | `Tests/DesnotchCoreTests/Voice/Platform/SystemVoicePermissionsTests.swift` | new | WP-PLATFORM |  |
+| `Tests/DesnotchCoreTests/Voice/Platform/SpeechDecisionTests.swift` | new | WP-PLATFORM | the pure recognizer decision table |
 | `Tests/DesnotchCoreTests/PermissionSnapshotTests.swift` | changed | WP-PLATFORM |  |
 | `Sources/DesnotchCore/App/AppComposition.swift` | changed | WP-HERMES | base added `voiceModel` and passes it on; HERMES wires the coordinator |
 | `Sources/DesnotchCore/Voice/Coordinator/VoiceCoordinator.swift` | new | WP-HERMES |  |
@@ -613,7 +631,7 @@ owned paths into the `feat/voice` worktree. All commits are local, on `feat/voic
    `ownership.tsv` assigns to that package and prints them; then `git add <those paths>` and
    `git commit -m "feat(voice): <package summary>"`. After each import: `swift build` warning-free and the full harness.
 5. **WP-HERMES** is run as THREE separate invocations (Part A, Part B, Part C). Start Part A from a new detached worktree at the
-   `feat/voice` HEAD after LOGIC, UI and PLATFORM are imported. After each part: the gate (build, harness, lint, ownership check),
+   `feat/voice` HEAD after LOGIC, UI and PLATFORM are imported. After each part: the gate (build, the warning check, harness, lint, ownership check),
    a separate review, `import-wp.sh WP-HERMES <worktree>`, a local commit on `feat/voice`, then a fresh detached worktree at the new
    HEAD for the next part. The orchestrator takes the implementer's final report after every part.
 6. Final review pass, manual acceptance by the human (section 15). Nothing is pushed or merged to `main` by agents.
@@ -624,17 +642,17 @@ owned paths into the `feat/voice` worktree. All commits are local, on `feat/voic
 
 **P1a WP-LOGIC.** Every table row in `WP-LOGIC.md` is a passing test with the stated names; counts: normalizer 14, spoken number 34, catalog at least 22 test methods, router 70, policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32, scanner 33, rate limiter 11, reducer one test per rule ID, 10 scenarios; no file outside the 18 owned; build clean; lint clean.
 
-**P1b WP-UI.** The 11 states render (offscreen render tests) at the fixed pill width; the wing table passes; `wantsHover` has the third input and `PillSourceGuardTests` still passes; privacy mode hides every transcript/reply/literal; Approve is disabled for truncated/auto-deny/T3 cards and for literals over 240 characters or 6 lines, the literal is never clipped (render tests at content widths 268 and 228), and Approve is hold-to-approve for agent cards; status-menu mirror and Settings section exist; announcements never carry content; existing tests green.
+**P1b WP-UI.** The 11 states render (offscreen render tests) at the fixed pill width; the wing table passes; `wantsHover` has the third input and `PillSourceGuardTests` still passes; privacy mode hides every transcript/reply/literal; Approve is disabled for truncated/auto-deny/T3 cards and for literals over 240 characters or 6 lines, the literal is never clipped (render tests at content widths 268 and 228, approval card height at most `approvalHeightBudget` = 300), and Approve is hold-to-approve (`NotchAnimation.Motion.approveHoldDuration` = 0.6 s in every token set) for agent cards with no accessibility shortcut; status-menu mirror and Settings section exist; announcements never carry content; existing tests green.
 
-**P1c WP-PLATFORM.** All pure parts tested (levels, hotkey map, press tracker, lock flags, executor with fakes, mute memory, ducker, audit chain incl. tamper detection, file logger, disk writer, permission mapping); `VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app` passes in normal and `HARDENED_RUNTIME=1` mode (Info.plist usage strings and the audio-input entitlement present); the manual checklist items 1-6 of `WP-PLATFORM.md` section 5 are reported `BLOCKED: human-run` (they need a physical key press, a spoken sentence and TCC grants), and move to the human's section 15 (S2, S3, S5).
+**P1c WP-PLATFORM.** All pure parts tested (levels, hotkey map, press tracker, lock flags, executor with fakes, mute memory, ducker, audit chain incl. tamper detection, file logger, disk writer, permission mapping, the pure speech decision table, the lock-flag merge including `isLocked` with no observers); `VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app` passes in normal and `HARDENED_RUNTIME=1` mode (Info.plist usage strings and the audio-input entitlement present); the manual checklist items 1-6 of `WP-PLATFORM.md` section 5 are reported `BLOCKED: human-run` (they need a physical key press, a spoken sentence and TCC grants), and move to the human's section 15 (S2, S3, S5).
 
-**P2 WP-HERMES part A.** Coordinator tests green; with `DESNOTCH_VOICE_DEBUG=1` a typed `volume thirty` flows through review and executes; `volume ninety` shows a card (Deny and Approve both work); Stop and Esc work; the audit file exists (0600, no text) and `python3 -I scripts/voice-harness/verify-audit.py <file>` prints `ok`; with voice off nothing is registered or running.
+**P2 WP-HERMES part A.** Coordinator tests green; with `DESNOTCH_VOICE_DEBUG=1` a typed `volume thirty` flows through review and executes; `volume ninety` shows a card (Deny and Approve both work); Stop and Esc work; the audit file exists (0600, no text) and `python3 -I scripts/voice-harness/verify-audit.py <file>` prints a line starting `verify-audit: ok`; with voice off nothing is registered or running; turning Voice control off and on again in Settings (same hotkey) gives a working hotkey and `hotkeyStatus == .active` (the hotkey source is single-use, so the coordinator builds a new one on every enable).
 
 **P3 (human, Mac mini).** Hold-to-talk end to end with a real microphone for `en-US` (and `id-ID` if on-device is supported); permissions flow (deny, allow, re-allow); orange mic dot goes out after release/cancel; media ducking restores; lock gate refuses while locked; Esc is not stolen at idle or while paused.
 
 **P4 WP-HERMES part B.** Preflight, ACP client, mapper, supervisor, hard stop and backend tests green with scripted transports and a real throwaway process tree; no stray processes after the suite; the live canary matrix steps are written down (they are the human's, section 15).
 
-**P5.** `AGENTS.md`, `CHANGELOG.md`, `README.md` updated; full harness and clean `swift build`; both packaging smoke runs pass; the forbidden-pattern `rg` is clean; reviewer sign-off.
+**P5.** `AGENTS.md`, `CHANGELOG.md`, `README.md` updated; full harness and clean `swift build` and the warning check of section 12 prints nothing; both packaging smoke runs pass; both passes of the forbidden-pattern `rg` (section 12, "Final checks") are clean, pass 2 showing only the allowlisted `CommandRiskScanner` constants; reviewer sign-off.
 
 ## 12. Build, test and harness commands
 
@@ -671,10 +689,22 @@ How to read the results:
   extra line `harness: only known baseline failures remain` (two existing render tests,
   `ArtworkGlowRenderTests.testGlowFollowsTheCurrentAccentNotThePreviousOne` and
   `PillMarqueeRenderTests.testLongTitleScrollsAfterTheStartDelayOnceActive`, always fail under the stub; ignore them, and
-  never edit them). If the harness build prints a `warning:` for one of YOUR test or source files, fix it too. The generated
-  `runner/main.swift` prints about 1,700 baseline warnings `no calls to throwing functions occur within 'try' expression`;
-  they are not yours, so ignore every warning whose file is `main.swift`
-  (`scripts/voice-harness/run.sh 2>&1 | grep 'warning:' | grep -v 'main.swift'` must print nothing).
+  never edit them). The generated `runner/main.swift` prints about 1,700
+  baseline `no calls to throwing functions occur within 'try' expression` warnings, and SwiftPM prints every diagnostic twice (a
+  `/path/File.swift:L:C: warning:` line, then an indented caret line that starts with `|` and has no file name), so a plain
+  `grep 'warning:'` over the raw output is useless. **The warning check** is the command below. SwiftPM prints a file's warnings only
+  when it recompiles that file and an incremental harness build skips files it already built, so the check builds into a FRESH
+  harness directory (about 40 s) and keeps only lines that START with a file path. It must print nothing:
+
+  ```sh
+  W="$(mktemp -d)"; HARNESS_DIR="$W" scripts/voice-harness/run.sh --filter VoiceContractSmoke 2>&1 \
+    | grep -E '^/.*: (warning|error):' | grep -vE '/(main|UpdateCheckerTests)\.swift:'; rm -rf "$W"
+  ```
+
+  The only known baseline warnings are the `main.swift` `try` warnings and 4 copies of one actor-isolation warning at
+  `Tests/DesnotchCoreTests/UpdateCheckerTests.swift:41`; they are not yours and you must not touch that file. Any other line the check
+  prints is yours: fix it. `swift build` never compiles the test target, so a warning or an error in a TEST file shows up only in
+  the harness run (and in CI).
   The harness finds a test class only when it is declared on ONE line as `class X: XCTestCase` or `final class X: XCTestCase`,
   and it resets its current class at every column-0 `class`, `struct`, `enum` or `actor`: put helper types and fakes at
   column 0 AFTER the test class (or indent them inside it), and confirm with `scripts/voice-harness/run.sh --list | grep <Class>`
@@ -682,9 +712,12 @@ How to read the results:
 - `lint-lite.sh` must print `lint-lite: clean (N files)`. Pass your files explicitly
   (`scripts/voice-harness/lint-lite.sh path/one.swift path/two.swift`). It only checks the whitespace rules; CI's SwiftLint also
   enforces `duplicate_imports`, `empty_enum_arguments`, `redundant_discardable_let`, `unused_optional_binding` and
-  `void_return`, so check those by eye (only `trailing_whitespace` is an error there).
-- First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); allow 2-4 minutes.
-  `--skip-build` re-runs without rebuilding.
+  `void_return`, so check those by eye (only `trailing_whitespace` is an error there): write `case .foo`, not `case .foo(_)`;
+  never `if let _ = x` (use `x != nil`) or `let _ = f()` (use `_ = f()`).
+- First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); it takes about 1 minute
+  (about 40 s on the Mac mini). If your shell tool times out after 2 minutes, raise the timeout, or run
+  `scripts/voice-harness/run.sh --filter VoiceContractSmoke` once up front so later runs are incremental. `--skip-build` re-runs
+  without rebuilding.
 - The harness copies your current `Sources/DesnotchCore` and `Tests/DesnotchCoreTests` on every run, so just save and re-run.
 - Tests only ever run for real on GitHub Actions (`swift test` on macos-14 with Swift 5.10, and macos-15). The harness uses
   your local Swift 6.1 compiler in Swift 5 language mode, so it can NOT catch every Swift 5.10 actor-isolation error. Follow
@@ -710,14 +743,26 @@ Final checks (the orchestrator and the reviewer run these after every package im
 
 ```sh
 swift build --scratch-path "$(mktemp -d)" 2>&1 | grep -E "warning:|error:|Build complete"     # clean build, ~60 s
+# the harness warning check (section 12, "The warning check"): must print nothing
+W="$(mktemp -d)"; HARNESS_DIR="$W" scripts/voice-harness/run.sh --filter VoiceContractSmoke 2>&1 \
+  | grep -E '^/.*: (warning|error):' | grep -vE '/(main|UpdateCheckerTests)\.swift:'; rm -rf "$W"
+# forbidden patterns, pass 1: everything under Voice except the scanner file, then the voice UI files (rg globs, so it also works in zsh before those files exist). Both must print nothing.
 rg -n "print\(|NSLog\(|os_log|Logger\(|\.onHover|repeatForever|serve --stop|pkill|killall|hermes pause|osascript|auth\.json|AXIsProcessTrusted" \
-  Sources/DesnotchCore/Voice Sources/DesnotchCore/UI/Voice*.swift Sources/DesnotchCore/UI/NotchPillView+Voice.swift
+  --glob '!**/Logic/CommandRiskScanner.swift' Sources/DesnotchCore/Voice
+rg -n "print\(|NSLog\(|os_log|Logger\(|\.onHover|repeatForever|serve --stop|pkill|killall|hermes pause|osascript|auth\.json|AXIsProcessTrusted" \
+  -g 'Voice*.swift' -g 'NotchPillView+Voice.swift' Sources/DesnotchCore/UI
+# pass 2a: the scanner may name the dangerous words, but ONLY as data in its `Pat` constants and its protected-path list
+rg -n "osascript|pkill|killall|auth\.json" Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift
+# pass 2b: the scanner must contain none of the other banned patterns. Must print nothing.
+rg -n "print\(|NSLog\(|os_log|Logger\(|\.onHover|repeatForever|serve --stop|hermes pause|AXIsProcessTrusted" Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift
 scripts/voice-harness/check-rule-tests.sh                           # after WP-LOGIC: every reducer rule ID has a testR<ID>_ method
 python3 -I scripts/voice-harness/verify-audit.py "$HOME/Library/Application Support/desnotch/voice/voice-audit.jsonl"   # P2 and P5, independent of our code
 ```
 
-The `rg` must show nothing that is not a comment explaining a ban. The two packaging runs modify only the gitignored `.build/` and
-`dist/`; each takes about 60 s, do not abort them.
+Pass 1 must show nothing that is not a comment explaining a ban. WP-LOGIC's mandated `CommandRiskScanner` constants contain `osascript` (`Pat.pipeToInterpreter`),
+`killall|pkill` (`Pat.destructive`) and `auth.json` (the protected-path list) AS DATA, so that file is excluded from pass 1 and checked by an
+allowlist instead: pass 2a may hit only those lines (the `Pat` constants and the protected-path array, nothing else), and pass 2b must print nothing.
+The two packaging runs modify only the gitignored `.build/` and `dist/`; each takes about 60 s, do not abort them.
 
 The installed `/Applications/desnotch.app` of the human normally runs on this machine. Its single-instance guard makes `scripts/runtime-smoke-test.sh`, `swift run` and any packaged-app launch exit at once, so those steps are the human's: agents never quit or kill the installed app or its `mediaremote-adapter` perl process.
 
@@ -739,14 +784,19 @@ These apply to every work package. They are not suggestions.
      (`import Testing`, `#expect`), macros, `nonisolated(unsafe)` (outside tests it hides bugs), `@preconcurrency` imports as a
      way to silence a warning, or any API newer than macOS 13.
    - Do not put `await` inside an `XCTAssert...(...)` argument; assign to a `let` first.
+   - Never call `NSLock.lock()` / `unlock()` inside the body of an `async` function or closure: the Swift 6.1 compiler warns
+     "unavailable from asynchronous contexts" (breaking rule 3). Put every locked access in a private SYNCHRONOUS helper
+     (`private func appendLocked(...) -> Bool`) and call the helper from the async body. The frozen
+     `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (`ScriptedBackend.recordResponse`) shows the pattern.
 3. **No warnings.** `swift build` must be warning-free for the whole package, and the harness build must show no warnings
    from your files. No `// swiftlint:disable`. No `try!` / `as!` / `!` force unwraps in non-test code unless the
    spec above shows one.
 4. **No secrets, no real user data.** Never read, print, log or commit `auth.json`, `.env`, keychain items, `~/.ssh`,
    `~/.hermes/config.yaml`, vault or engagement files. Tests use synthetic fixtures only.
-5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Never `print`,
-   never `NSLog`, never put it in an `os.Logger` string unless the interpolation is `privacy: .private`, never write it to disk
-   (the audit log stores hashes and codes only), never pass it to VoiceOver announcements. Log `VoiceFailure.code` instead.
+5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Voice code logs
+   NOTHING: no `print`, no `NSLog`, no `os_log`, no `Logger` anywhere under `Sources/DesnotchCore/Voice` or in the voice UI files (the
+   final-check `rg` bans all of them). Surface a failure as a typed `VoiceFailure` (its `code` is what the audit log stores).
+   Never write live content to disk (the audit log stores hashes and codes only) and never pass it to VoiceOver announcements.
 6. **No git.** Do not run `git add`, `git commit`, `git push`, `git merge`, `git rebase`, `git stash`, `git checkout` of other
    branches, `git worktree`, or `git reset`. Leave your changes uncommitted in your worktree; the orchestrator reviews and commits.
    Reading (`git status`, `git diff`, `git log`) is fine.
@@ -767,7 +817,11 @@ These apply to every work package. They are not suggestions.
    `private`/`fileprivate` unless another test file of YOUR package must reuse them (then they are internal and use the name or
    prefix your package doc prescribes), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
    on a collision. `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (frozen) already provides `FakeVoiceClock`,
-   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are.
+   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are. A test class that
+   touches a `@MainActor` type (`SystemLocalExecutor`, `VolumeDucker`, `CarbonPushToTalk`, `VoiceCuePlayer`, `NSHostingView`,
+   `VoiceSessionModel`, `SettingsStore`, or a double that conforms to a `@MainActor` protocol) is declared
+   `@MainActor final class XTests: XCTestCase {` (the harness accepts the attribute on the same line or on the line before).
+   Doubles that conform to a `@MainActor` protocol are themselves `@MainActor` and can only be created from `@MainActor` code.
 9. **Style.** Match the surrounding code. No trailing whitespace, exactly one final newline, never two blank lines in a
    row (CI's SwiftLint fails the build on these; run `scripts/voice-harness/lint-lite.sh`). Doc comments explain WHY.
    Names in this plan are exact: do not rename a type, method, case or file that the plan names.
@@ -790,7 +844,7 @@ Files no implementer may touch (all packages): `Package.swift`, `.github/*`, `So
 5. Permissions: Microphone and Speech Recognition only, requested only after the user enables voice and presses Allow. No Accessibility, Automation, Screen Recording or Full Disk Access for this feature.
 6. No network listener and no token. The only network path is the optional Hermes lane: a child process spoken to over stdio.
 7. Approvals are visual only, bound to a random nonce, answered `once` or `deny` only. No spoken confirmation. T3 is denied in the MVP; T4 never has a voice path.
-8. Voice is OFF by default and inert in smoke-test mode. The cloud lane is a second opt-in that is re-checked (preflight) on every spawn and every session.
+8. Voice is OFF by default and inert in smoke-test mode. The cloud lane is a second opt-in that is re-checked (preflight) on every spawn and every session, and it additionally requires the global Stop chord to be registered (`hotkeyStatus == .active`).
 9. Nothing from a transcript, screen, web page or tool result can raise a tier or satisfy an approval. Unknown tools are T3 and trip the tripwire.
 10. The stop is total: interrupt, then SIGTERM and SIGKILL to the agent's own process group, with a survivor report. desnotch only signals processes it spawned.
 11. Hermes keeps its own transcripts (its `state.db`); the desnotch audit log is not a record of what Hermes stored.
@@ -800,18 +854,18 @@ Files no implementer may touch (all packages): `Package.swift`, `.github/*`, `So
 
 Needs the human, a microphone, and for items 7-8 a notch MacBook. Report results in the PR description.
 
-1. **Create the `voice` Hermes profile** (WP-HERMES's final report lists the exact keys it checks): approvals mode `manual` (or `smart`), empty command allowlist, no MCP servers, an explicit and empty ACP toolset list, no cloud STT; then `chflags uchg` its `config.yaml`. desnotch refuses the lane until `hermes -p voice acp --check`-equivalent preflight passes.
+1. **Create the `voice` Hermes profile** (WP-HERMES's final report lists the exact keys it checks): approvals mode `manual` (or `smart`), empty command allowlist, no MCP servers, an explicit and empty ACP toolset list, no cloud STT; then `chflags uchg` its `config.yaml`. Note for the human: Hermes may still add a toolset the preflight cannot see even with `platform_toolsets.acp: []` (for example `x_search` when xAI credentials exist, `hermes_cli/tools_config.py` `_composite_toolsets`, and platform-native toolsets from `_recover_platform_native_toolsets`); fail-closed still holds because such a tool is not allowlisted, classifies T3 and trips R83, so expect a tripwire pause rather than a silent run, and do not put such credentials in the `voice` profile. desnotch refuses the lane until `hermes -p voice acp --check`-equivalent preflight passes.
 2. **S1 (ACP):** with the lane on, one utterance round trip; note cold and warm latency; confirm the child has its own process group (`ps -o pid,pgid,command`).
-3. **S4 (canary matrix, under the `voice` profile):** make the agent attempt `rm -rf`, `curl | sh`, `python -c`, a write outside the scratch folder, and an MCP call. Each must end in a card (flagged ones refused without a card), a deny, or the tripwire pause. Confirm the profile `config.yaml` cannot be edited by the agent.
+3. **S4 (canary matrix, under the `voice` profile):** make the agent attempt `rm -rf`, `curl | sh`, `python -c`, a write outside the scratch folder, and an MCP call. Each must end in a card (flagged ones refused without a card), a deny, or the tripwire pause. Confirm the profile `config.yaml` cannot be edited by the agent. Record which toolsets the agent session actually has enabled (the tripwire is the backstop, not the premise).
 4. **S2 (hotkey release):** the human runs the scratch recipe in `WP-PLATFORM.md` section 3.3 (Spike S2) and reports whether `kEventHotKeyReleased` arrives; if it does not, switch the plan to toggle-only talk (amendment).
 5. **S3 (TCC):** microphone and speech grants under ad-hoc signing and hardened runtime, packaged app vs `swift run`; note whether a rebuild re-prompts.
-6. **S5 (accuracy):** on-device `en-US` and `id-ID` on the jargon words (herdr, Interseptor, desnotch, nmap) and on mixed speech; decide whether whisper is worth P5. Known on this Mac: `SFSpeechRecognizer(locale: id-ID).supportsOnDeviceRecognition` is false ("No Assistant asset for language id-ID"), so `id-ID` is selectable but always ends in "Voice isn't available" until the Indonesian dictation asset is installed; `en-US` supports on-device recognition and the Mac has a USB audio input.
+6. **S5 (accuracy):** (also expect the R21 edge: a hold of at least 0.35 s that is released before the first audio buffer arrives, for example a short word spoken during a cold microphone start, is cancelled silently; safe, but note how often it happens and consider a "release after the mic is live" hint.) on-device `en-US` and `id-ID` on the jargon words (herdr, Interseptor, desnotch, nmap) and on mixed speech; decide whether whisper is worth P5. Known on this Mac: `SFSpeechRecognizer(locale: id-ID).supportsOnDeviceRecognition` is false ("No Assistant asset for language id-ID"), so `id-ID` is selectable but always ends in "Voice isn't available" until the Indonesian dictation asset is installed; `en-US` supports on-device recognition and the Mac has a USB audio input.
 7. **Notch hardware:** wing/cutout alignment, trackpad haptics, ducking with the built-in microphone and speakers.
 8. **Privacy:** screen-share with Privacy mode on while talking: no transcript, reply or command visible; VoiceOver does not read content.
 9. **Stop:** start a long safe task through the agent, press Stop; confirm the survivor list is empty or honest.
 10. **S6 (Swift 5.10):** the first CI run of this branch on macos-14; fix isolation errors the local compiler cannot see.
 11. **Deletion rehearsal:** follow section 17 on a scratch branch and confirm the app still builds.
-12. **Audit anchor (deviation 7):** run `python3 -I scripts/voice-harness/verify-audit.py "$HOME/Library/Application Support/desnotch/voice/voice-audit.jsonl"`, and record the printed head hash outside the file (for example in that day's Notion DailyNotes entry) so a rewritten log is detectable.
+12. **Audit anchor (deviation 7):** run `python3 -I scripts/voice-harness/verify-audit.py "$HOME/Library/Application Support/desnotch/voice/voice-audit.jsonl"` (it prints `verify-audit: ok (N records, head <hash>)`), and record the printed head hash outside the file (for example in that day's Notion DailyNotes entry) so a rewritten log is detectable.
 
 ## 16. Risks
 
@@ -828,6 +882,8 @@ Needs the human, a microphone, and for items 7-8 a notch MacBook. Report results
 | Swift 5.10 isolation errors invisible locally | explicit `@MainActor`, rules in section 13, early CI run |
 | Scope creep (CHANGELOG 0.9.0 removed an earlier voice feature) | one flag, one folder, review gate, deletion path |
 | Agent edits its own approvals | the human locks the profile config (`uchg`); preflight checks the flag on every spawn |
+| Stop or cancel loses a race with a spawning agent, or the agent ignores `session/cancel` | the backend keeps a turn epoch re-checked before every step of a submit, `cancelTurn` escalates to the process-group kill after `hardStopGrace`, and a tool start after a cancel kills (WP-HERMES B.7) |
+| Short word lost on a cold mic start (R21) | safe by design (the capture is cancelled); expected in P3 testing, a "release after the mic is live" hint is a follow-up |
 
 ## 17. Deletion path
 

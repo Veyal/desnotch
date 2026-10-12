@@ -73,13 +73,13 @@ You own exactly these files. Anything not listed is off limits.
 
 | File | Purpose |
 |---|---|
-| `VoiceSectionPresentation.swift` | pure values: `VoiceSectionSnapshot`, `VoiceSectionPresentation` (title, lines, glyph names, button set, tint, a11y label), `VoiceCardLayout`, `VoiceStateWords`, `VoiceRiskWords`. All copy lives here so it is unit-testable (signatures in 2.3). |
-| `VoiceSectionView.swift` | the SwiftUI section (`@MainActor struct`), renders a `VoiceSectionPresentation`. Includes `VoiceMeter` (5 bars), `VoiceApproveButton` (hold-to-approve) and `VoiceSectionHost` (the only view that observes the model). |
-| `NotchPillView+Voice.swift` | `extension NotchPillView`: `voiceSection`, `hasVoice`, the wing glyph view, `static func voiceCompactLabel(_:)`, and the VoiceOver announcement observers. **No haptics here**: haptics belong to `VoiceCuePlayer`, which the coordinator calls; calling `PillHaptics` from the view would double-fire. |
+| `VoiceSectionPresentation.swift` | pure values (no AppKit): `VoiceSectionSnapshot`, `VoiceSectionPresentation` and the small types it is built from (`VoiceGlyph`, `VoiceTint`, `VoiceWingRight`, `VoiceBodyLine`, `VoiceChipSpec`, `VoiceButtonSpec`, `VoiceCountdown`, `VoiceCardPresentation`), `VoiceCardLayout`, `VoiceStateWords`, `VoiceRiskWords`, `VoiceSettingsWords`, `VoiceAnnouncementPolicy`. All copy lives here so it is unit-testable (signatures and the per-state table in 2.3). |
+| `VoiceSectionView.swift` | the SwiftUI section (`@MainActor struct`), renders a `VoiceSectionPresentation`. Includes `VoiceMeter` (5 bars), `VoiceApproveButton` (hold-to-approve), `VoiceLiteralBlock` (the internal view that draws the approval literal, so a test can size it), `VoiceSectionHost` (the only view that observes the model for the section), and `extension VoiceCardLayout` with the AppKit font (`literalNSFont`). |
+| `NotchPillView+Voice.swift` | `extension NotchPillView`: `voiceSection`, `hasVoice`, the wing glyph view, `VoiceWingMeterHost` (the only view that observes `levels` for the wing), `static func voiceCompactLabel(_:)`, and the VoiceOver announcement modifier `VoiceAnnouncementModifier`. **No haptics here**: haptics belong to `VoiceCuePlayer`, which the coordinator calls; calling `PillHaptics` from the view would double-fire. |
 | `VoiceCuePlayer.swift` | `@MainActor final class VoiceCuePlayer: VoiceCuePlaying` (earcon + haptic per cue). |
 | `VoiceSettingsSection.swift` | `@MainActor struct VoiceSettingsSection: View` used by `SettingsView`. |
 
-**Changed (existing files)**: `UI/PillMotion.swift`, `UI/NotchPillPresentation.swift`, `UI/WingIndicator.swift`,
+**Changed (existing files)**: `UI/PillMotion.swift` (the new `PillSectionKind.voice` AND the new motion token `approveHoldDuration`, 2.3), `UI/NotchPillPresentation.swift`, `UI/WingIndicator.swift`,
 `UI/PillInteractionPolicy.swift`, `UI/NotchPillView.swift`, `UI/NotchPillView+Compact.swift`, `UI/NotchPillView+Shared.swift`,
 `UI/PillStackBudget.swift`, `UI/PillHaptics.swift`, `UI/NotchWindowController.swift`, `Support/AccessibilityAnnouncer.swift`
 (add `PillAnnouncements` strings), `App/StatusMenuBuilder.swift`, `App/StatusMenuBuilder+Actions.swift`,
@@ -110,17 +110,54 @@ In `PillSectionMotionTests.swift` add `testVoiceIsFirstAndEveryOtherKindShiftsBy
 `PillFlashKind` switches (`holdDuration` 3.0, `spotlight` `.voice`, `rim` `(.cyan, 0.5)`); the existing `PillFlashKind` tests tolerate it.
 The section has the pill's fixed width and never scrolls, and is always built from a `VoiceSectionPresentation`.
 
+**Motion token for the safety gesture (PillMotion.swift is yours).** Add `let approveHoldDuration: TimeInterval` to `NotchAnimation.Motion` as its LAST stored property (the memberwise initializer takes arguments in declaration order, so pass `approveHoldDuration: 0.6` as the last argument of all three token sets `.minimal`, `.fluid`, `.lively`). It is `0.6` in EVERY set on purpose: the hold is a safety gesture and must neither shorten nor lengthen under Minimal / Reduce Motion. `motion.direct` is NOT this token (it is a 0.15 s `interactiveSpring` in Fluid/Lively and `nil` in Minimal); no raw duration appears in any view for the hold. Add `testApproveHoldDurationIsTheSameInEveryTokenSet` to `PillSectionMotionTests` (all three equal `0.6`).
+
 **Observation (performance).** `NotchPillView` must NOT observe the whole model: today it has `@ObservedObject public var voice`, and
 every `levels` publish (15 Hz while listening) or partial transcript would re-evaluate the whole 12-section pill body. Change it to
-`public let voice: VoiceSessionModel` plus `@State private var voiceState: VoiceState` (initialised from `voice.state` in `init` via
-`_voiceState = State(initialValue: voice.state)`), updated by `.onReceive(voice.$state.removeDuplicates()) { voiceState = $0 }` on the root view.
+`public let voice: VoiceSessionModel` plus `@State var voiceState: VoiceState`. **`voiceState` is INTERNAL (no `private`)**: `hasVoice`, `voiceSection`, `stackEstimate`, the wing code and the announcement hook live in the extension files `+Voice`, `+Shared` and `+Compact`, and Swift `private` is file-scoped (`isDropTargeted` is declared the same way). Seed it in `init` with
+`_voiceState = State(initialValue: MainActor.assumeIsolated { voice.state })`: `NotchPillView.init` is not `@MainActor` (`NotchWindowController.rebuildHosting` calls it from a non-isolated context) while `VoiceSessionModel.state` is, and `MainActor.assumeIsolated` is the pattern `NotchWindowController` already uses; it is safe whichever isolation the caller has, which the local Swift 6.1 compiler cannot prove for Swift 5.10. Update it with `.onReceive(voice.$state.removeDuplicates()) { voiceState = $0 }` on the root view.
 `hasVoice` is `voiceState != .idle`; the wings and the structural animation use `voiceState`. The section itself is a
-`VoiceSectionHost` (`@MainActor struct`, `@ObservedObject var model: VoiceSessionModel`) that builds the snapshot and renders it; only
-that host re-evaluates at 15 Hz while listening (accepted cost, nothing runs at idle).
+`VoiceSectionHost` (`@MainActor struct`, `@ObservedObject var model: VoiceSessionModel`, plus `let privacyMode: Bool` passed in from `NotchPillView`, which already observes `SettingsStore.shared`, so toggling Privacy mode re-renders the host) that builds the snapshot and renders it; only
+that host re-evaluates at 15 Hz while listening (accepted cost, nothing runs at idle). The right-wing meter has its own host (2.4).
 
-**Presentation API (exact names; all pure, in `VoiceSectionPresentation.swift`):**
+**Presentation API (exact names; all pure, in `VoiceSectionPresentation.swift`, no AppKit import).**
 
 ```swift
+enum VoiceGlyph: String, Equatable {            // raw value = the SF Symbol name
+    case mic = "mic.fill", ellipsis = "ellipsis", checkmark = "checkmark.circle", gear = "gearshape.fill",
+         bolt = "bolt.fill", speaker = "speaker.wave.2.fill", warning = "exclamationmark.triangle.fill",
+         pause = "pause.fill", stop = "stop.fill", cloud = "cloud.fill", cancel = "xmark"
+}
+enum VoiceTint: Equatable { case neutral, calm, amber, red }       // neutral = primary white; calm = PillPalette.mistGray (info, dimmed); amber/red = the pill's existing status swatches in PillPalette, never raw RGB in a view
+enum VoiceWingRight: Equatable { case none, meter, amberDot }
+enum VoiceLineEmphasis: Equatable { case primary, secondary, caption }
+struct VoiceBodyLine: Equatable { var text: String; var lineLimit: Int; var emphasis: VoiceLineEmphasis }
+struct VoiceChipSpec: Equatable { var text: String; var glyph: VoiceGlyph? }
+enum VoiceButtonRole: Equatable { case stop, cancel, resume, deny, approveClick, approveHold }
+struct VoiceButtonSpec: Equatable {
+    var role: VoiceButtonRole
+    var title: String              // "Stop" / "Cancel" / "Resume" / "Deny" / "Approve"; for the icon-only buttons (stop, cancel) it is the VoiceOver label
+    var glyph: VoiceGlyph?         // .stop / .cancel for the icon-only buttons, nil otherwise
+    var isEnabled: Bool
+    var nonce: String?             // deny / approve only: the nonce of the card ON SCREEN when the presentation was built
+}
+struct VoiceCountdown: Equatable {
+    var deadline: Date
+    var total: TimeInterval        // VoiceTiming.reviewWindow
+    func remainingFraction(now: Date) -> Double      // clamped to 0...1
+}
+struct VoiceCardPresentation: Equatable {
+    var tierLabel: String          // request.tier.label, e.g. "T2"
+    var riskWords: [String]        // at most 4, in the order of the risk-word table below
+    var riskOverflow: Int          // the N of "+N", 0 when nothing was cut
+    var summary: String            // for a .hermes card redacted in privacy mode (fallback "Agent action"); a .local card's summary stays
+    var literal: String            // what is DRAWN: the whole literal when reviewable, otherwise its first 240 characters (and at most its first 6 lines) + "…"; redacted in privacy mode (fallback "Command")
+    var isLiteralComplete: Bool    // VoiceCardLayout.isLiteralReviewable(request.literal)
+    var note: String?              // "Too long to review here" when !isLiteralComplete, else nil
+    var hint: String?              // "Hold Approve to confirm" when requiresHold, else nil
+    var requiresHold: Bool         // request.source == .hermes
+    var nonce: String
+}
 struct VoiceSectionSnapshot: Equatable {
     var state: VoiceState
     var partialTranscript: String, finalTranscript: String, reply: String
@@ -136,61 +173,83 @@ struct VoiceSectionSnapshot: Equatable {
 }
 struct VoiceSectionPresentation: Equatable {
     init(_ snapshot: VoiceSectionSnapshot, privacyMode: Bool, now: Date)
-    // title, bodyLines, leftGlyph, rightGlyph, tint, chips, buttons: [VoiceButtonSpec], card: VoiceCardPresentation?, accessibilityLabel
+    var title: String
+    var showsCloudBadge: Bool                      // snapshot.usesCloud
+    var bodyLines: [VoiceBodyLine]
+    var chips: [VoiceChipSpec]                     // agent step chips (at most VoiceLimits.visibleStepChips) plus one "+N" chip
+    var showsMeter: Bool                           // listening, and any busy state while interruptListening
+    var countdown: VoiceCountdown?                 // review only
+    var buttons: [VoiceButtonSpec]                 // leading to trailing; the icon-only Stop is always last when present
+    var card: VoiceCardPresentation?               // awaitingApproval with a pending request
+    var tint: VoiceTint
+    var wingLeft: VoiceGlyph?                      // nil only for idle; the section header shows the same glyph
+    var wingRight: VoiceWingRight
+    var heightBudget: CGFloat                      // VoiceCardLayout.approvalHeightBudget for awaitingApproval, else sectionHeightBudget
+    var accessibilityLabel: String
 }
 enum VoiceCardLayout {
     static let maxVisibleCharacters = 240
     static let maxVisibleLines = 6                 // hard newlines
     static let sectionHeightBudget: CGFloat = 112  // every state except awaitingApproval
-    static let approvalHeightBudget: CGFloat = 260 // awaitingApproval (the literal is never clipped, see below)
+    static let approvalHeightBudget: CGFloat = 300 // awaitingApproval (the literal is never clipped, derivation below)
+    static let literalFontSize: CGFloat = 10       // 10pt monospaced; PillTextStyle has no monospaced role and PillStyle.swift is not yours
     static func isLiteralReviewable(_ literal: String) -> Bool   // count <= 240 && hard-newline lines <= 6
+    static func displayedLiteral(_ literal: String) -> String    // the whole literal if reviewable, else first 240 characters / first 6 lines + "…"
 }
+// in VoiceSectionView.swift (needs AppKit): extension VoiceCardLayout { static var literalNSFont: NSFont { .monospacedSystemFont(ofSize: literalFontSize, weight: .regular) }
+//                                                                         static var literalFont: Font { .system(size: literalFontSize, design: .monospaced) } }
 ```
 
 The views call `VoiceSectionPresentation` only; they never read the model fields directly. `VoiceSectionView(presentation:levels:width:motion:contrast:reduceTransparency:actions:)`
 takes `motion: NotchAnimation.Motion`, `contrast: ColorSchemeContrast`, `reduceTransparency: Bool` (the values `NotchPillView` already has) and an
 `actions: VoiceSectionActions` struct of closures (`stop`, `resume`, `cancel`, `approve(nonce)`, `deny(nonce)`), wired to the model's `stopAll`/`resume`/`cancelReview`/`approve`/`deny` by `VoiceSectionHost`.
+**`width` is the CONTENT width, `expandedContentWidth`** (268 at the default pill width, 228 at the supported minimum), never the pill's outer width; the view lays out at exactly that width and the render tests pass 268 and 228. `levels` is only read by `VoiceMeter` when `presentation.showsMeter`.
 
 Colors and type come from the existing tokens (`PillTextStyle`, `PillSpace`, `PillRowHeight`, `PillRowLeading`, `PillPalette`,
 `PillSurface.highlight`, `PillFocusRing`); nothing under 10pt; all motion from `motion.*` tokens (the only exception is the countdown bar below);
 no `repeatForever`, no `.onHover`, no animation while the state is unchanged. `.onChange(of:)` must use the single-parameter macOS 13 form, like the existing code.
 
-| State | Left wing | Right wing | Body (all text through `privacyRedacted`) |
-|---|---|---|---|
-| `armed` | `mic.fill` glyph, dimmed | - | "Starting…" |
-| `listening` | `mic.fill`, white | 5-bar `VoiceMeter` driven by `model.levels` | partial transcript, max 2 lines (truncate with `…`), or "Listening…" while empty; a caption "Esc cancels". Buttons: Stop only (no Cancel button; Esc cancels) |
-| `transcribing` | `ellipsis` glyph | - | "Transcribing…" |
-| `review` | `checkmark.circle` glyph | - | "Heard: <final transcript, 2 lines max>" and a second line `routeSummary` verbatim (e.g. "Set volume to 30%", "Send to Hermes (cloud)"); a determinate thin countdown bar from `reviewDeadline`; a "Cancel" icon button |
-| `thinking` | `ellipsis` glyph | - | "Thinking…" with the cloud badge |
-| `acting` | `gearshape.fill` | - | local: `routeSummary`; agent: up to 3 chips from `steps` (`VoiceLimits.visibleStepChips`), "+N" when more, using `PillChip` |
-| `awaitingApproval` | amber `bolt.fill` | amber dot | the approval card (below) |
-| `speaking` | `speaker.wave.2.fill` | - | `reply`, max 3 lines; nothing to speak means the reply is just shown |
-| `error` | `exclamationmark.triangle.fill` (amber for `.warning`/`.info`, red for `.alert`) | - | `errorText` (not redacted: it is generic) and, for `.info` severity, calm styling with no rim |
-| `paused` | red `pause.fill` | - | "Agent stopped" + (if `survivors` is not empty) "N still running: name, name" (names are process basenames, redact in privacy mode) + a "Resume" button (no Stop button: `stopAll` is a no-op while paused, R03) |
+**The per-state table** (this IS the specification of `VoiceSectionPresentation.init`; every text goes through the privacy rule below; "fb" = the fallback used in privacy mode; `Stop` = the icon-only button, `stop.fill`, role `.stop`):
 
-Rules for all states:
+| State | `title` | `bodyLines` (text, lineLimit, emphasis) | other fields | `buttons` | `wingLeft` | `wingRight` | `tint` |
+|---|---|---|---|---|---|---|---|
+| `armed` | "Starting…" | - | - | Stop | `.mic` | `.none` | `.calm` |
+| `listening` | the partial transcript (fb "Voice command", 2 lines) while it is non-empty, else "Listening…" | "Esc cancels" (1, caption) | `showsMeter` true | Stop (NO Cancel button; Esc cancels) | `.mic` | `.meter` | `.neutral` |
+| `transcribing` | "Transcribing…" | - | - | Stop | `.ellipsis` | `.none` | `.calm` |
+| `review` | "Heard: " + the final transcript (fb "Voice command", 2 lines) | `routeSummary` verbatim (1, secondary), omitted when nil | `countdown` from `reviewDeadline` (total `VoiceTiming.reviewWindow`) | Cancel (icon `.cancel`), Stop | `.checkmark` | `.none` | `.neutral` |
+| `thinking` | "Thinking…" | - | `showsCloudBadge` | Stop | `.ellipsis` | `.none` | `.neutral` |
+| `acting`, lane `.local` | `routeSummary`, or "Working…" when nil | - | - | Stop | `.gear` | `.none` | `.neutral` |
+| `acting`, lane `.hermes` | "Working…" (also the whole content with ZERO steps) | - | `chips` = the last-started `steps` up to 3 (`PillChip`s showing the step `kind` word) plus a "+N" chip when `stepsStarted` exceeds the chips shown | Stop | `.gear` | `.none` | `.neutral` |
+| `awaitingApproval` | "Needs approval" | - | `card` (below); with `pending == nil` (cannot arise) no card | Deny, Approve (`.approveClick` for a `.local` card, `.approveHold` for a `.hermes` card), Stop | `.bolt` | `.amberDot` | `.amber` |
+| `speaking` | the reply (fb "Reply", 3 lines), or "Done" when the reply is empty | - | - | Stop | `.speaker` | `.none` | `.neutral` |
+| `error` | `errorText`, or "Something went wrong" when nil (NOT redacted: generic and secret-free; 2 lines) | - | - | Stop | `.warning` | `.none` | `.info` -> `.calm`, `.warning` -> `.amber`, `.alert` -> `.red`; for `.info` also no rim glow |
+| `paused` | `errorText` if non-nil (a tripwire: "Agent stopped: unapproved tool"), else "Agent stopped" | the survivors line when `survivors` is non-empty: "N still running: a, b, c" showing at most 3 names then ", +K" (lineLimit 2, caption); names redacted (fb "process") | - | Resume (NO Stop button: `stopAll` is a no-op while paused, R03) | `.pause` | `.none` | `.red` |
 
-- **Stop-only capture**: while `model.interruptListening` is true (an agent is busy and the user is holding the key), add a line "Say “abort agent” to stop" with the `mic.fill` glyph and the meter to the busy state's body. It never replaces the busy content.
-- **Cloud badge**: whenever `model.usesCloud`, show a small "cloud" glyph + "Hermes" next to the title. In `review` with a remote route the second line is `routeSummary` verbatim, "Send to Hermes (cloud)" (no extra word added).
-- **Stop button**: an icon button (`stop.fill`), visible in every state except `idle` and `paused`, calls `model.stopAll()`. The only other affordances are the ones in the table (Cancel in `review`, Deny/Approve in the card, Resume in `paused`); `listening` has no Cancel button. All controls use `PillButtonStyle` and `pillFocusRing`.
-- **Privacy mode** (`SettingsStore.shared.privacyModeEnabled`): partial/final transcript, reply and the approval literal are replaced via
-  `privacyRedacted(_:fallback:)` with fallbacks "Voice command", "Reply", "Command". For a card with `source == .hermes` the `summary` is model-authored, so it is redacted too (fallback "Agent action"); a `.local` card's `summary` is desnotch-authored and stays. The state words ("Listening…") and `routeSummary` stay (generic; a remote `routeSummary` is fixed text). `survivors` names are redacted.
+`idle` is never presented (`hasVoice` is false). The Cancel, Deny and Resume buttons come first, Approve next, Stop last. Common rules:
+
+- **Stop-only capture**: while `interruptListening` is true (an agent is busy and the user is holding the key), append a body line "Say “abort agent” to stop" (1, caption) and set `showsMeter` true. It never replaces the busy content; in `awaitingApproval` the card stays.
+- **Cloud badge**: `showsCloudBadge = snapshot.usesCloud`: a small `.cloud` glyph + "Hermes" next to the title, whenever the lane is `.hermes`. In `review` with a remote route the second line is `routeSummary` verbatim, "Send to Hermes (cloud)" (no extra word added).
+- **Privacy mode** (`privacyMode == true`): partial/final transcript, reply and the approval literal are replaced by their fallbacks "Voice command", "Reply", "Command"; a `.hermes` card's `summary` is model-authored, so it is replaced too (fb "Agent action"); a `.local` card's `summary` is desnotch-authored and stays. The fixed words ("Listening…"), `routeSummary` and the generic `errorText` stay. `survivors` names are replaced.
+- **`accessibilityLabel`** may contain ONLY: "Voice: <word from `VoiceStateWords`>"; ", sent to the Hermes cloud agent" when `showsCloudBadge`; `routeSummary` (desnotch-authored); for an approval, the card's `tierLabel`, its `riskWords`, and "needs approval"; the generic `errorText` for an error or a pause; and "N still running" (a count, never names). It NEVER contains a transcript, a reply, a literal, an agent-authored `summary` or a survivor name, in privacy mode or not (the visible `Text` views carry their own, already redacted, labels like any other row; the label is the container summary). `VoiceAccessibilityTextTests` asserts this with distinctive secret strings.
 - **Reduce Motion / Minimal**: the meter shows a static bar set (no per-bar animation), state changes are opacity-only (existing token behavior).
   The meter updates at most at the rate `levels` arrives (the coordinator throttles to 15 Hz); animate bar height with `motion.direct` only when `motion.allowsGeometry`.
+- **Meter metrics** (`VoiceMeter`, used by the wing and the section): `VoiceMeter.barCount = VoiceLimits.meterBars` (5), `barWidth = 2`, `barSpacing = 1.5`, `minBarHeight = 3`, `maxBarHeight = 12`; total width 5 x 2 + 4 x 1.5 = 16, which fits the 16pt wing slot (`WingMetrics.contentWidth(of: .voice) == 16`); bar height = `3 + level x (12 - 3)`, bars centered vertically. When `!motion.allowsGeometry` it ignores `levels` and draws the fixed pattern `[0.4, 0.7, 1.0, 0.7, 0.4]`.
 - **Countdown bar (review)**: the one place a raw duration is allowed, because the bar is determinate: when `motion.allowsGeometry`, animate its width from the
   current remaining fraction to 0 with `.linear(duration: remaining)` (the pattern `PillMarquee`/`PillControls` use for finite progress); under Reduce Motion / Minimal it is a static bar showing the remaining fraction at render time. No looping.
 - **Risk-flag chip words** (`VoiceRiskWords.word(for:)`, shown on the card in this order, at most 4, then "+N"): `.url` "network", `.pipe` "pipe", `.chaining` "chained", `.redirect` "redirect",
   `.destructive` "destructive", `.sudo` "sudo", `.protectedPath` "protected path", `.pipeToInterpreter` "pipe to shell", `.base64Decode` "base64", `.evalUse` "eval",
   `.commandSubstitution` "substitution", `.hiddenCharacters` "hidden characters", `.unscanned` "unscanned".
-- **The approval card** (`awaitingApproval`, `pendingConfirmation != nil`): tier chip (`request.tier.label` plus the risk-flag words above), the `summary` line, and the `literal` in a monospaced block.
-  **The literal is never clipped**: render it with NO `lineLimit` and `.fixedSize(horizontal: false, vertical: true)` (10pt monospaced at the pill's content width needs 6 lines for 240 characters at the default width, and 7 at the supported minimum
-  width, so a `lineLimit(6)` would silently hide text that Approve covers). Approve is enabled only when the whole literal is on screen and reviewable:
-  `request.canApprove && VoiceCardLayout.isLiteralReviewable(request.literal)` (`literal.count <= 240` and at most 6 hard-newline lines). Otherwise the card shows the first 240 characters (and at most the first 6 lines) + "…", shows the line "Too long to review here", and **Approve is disabled**.
-  Approve is also disabled when `!request.canApprove` (truncated by the scanner, auto-deny flags, tier T3). Buttons: **Deny** (click) and **Approve**. For a card with `source == .hermes`, Approve is
-  **hold-to-approve** (600 ms ring fill on `motion.direct`; releasing early cancels; a plain click does nothing). For `source == .local` (volume above 70%), Approve is a click.
-  Both call `model.approve(nonce: request.nonce)` / `model.deny(nonce: request.nonce)` with the nonce of the card that is on screen, captured at render time.
+- **The approval card** (`awaitingApproval`, `pendingConfirmation != nil`): tier chip (`request.tier.label` plus the risk words above), the `summary` line, and the `literal` in a monospaced block (`VoiceLiteralBlock`).
+  **The literal is never clipped**: `VoiceLiteralBlock(text:)` renders `card.literal` in `VoiceCardLayout.literalFont` (10pt monospaced) with NO `lineLimit` and `.fixedSize(horizontal: false, vertical: true)`, padded by `VoiceLiteralBlock.horizontalPadding = PillSpace.s` and `verticalPadding = PillSpace.xs` (static constants the render test reads). Measured: 240 unbroken characters take 6 lines (78pt) at 252pt wide and 8 lines (104pt) at 212pt wide, and the worst LEGAL literal (6 hard lines of about 36-40 characters, each wrapping to 2) takes about 12 lines (156pt) at the minimum width, so a `lineLimit(6)` would silently hide text that Approve covers. Approve is enabled only when the whole literal is on screen and reviewable:
+  `request.canApprove && VoiceCardLayout.isLiteralReviewable(request.literal)` (`literal.count <= 240` and at most 6 hard-newline lines). Otherwise the card draws the first 240 characters (and at most the first 6 lines) + "…", `note` is "Too long to review here", and **Approve is disabled**.
+  Approve is also disabled when `!request.canApprove` (truncated by the scanner, auto-deny flags, tier T3). Buttons: **Deny** (click) and **Approve**. Both call `model.approve(nonce:)` / `model.deny(nonce:)` with `VoiceButtonSpec.nonce`, which is the nonce of the card that is on screen, captured when the presentation was built.
+  For a `.local` card (volume above 70%), Approve is a click. **For a `.hermes` card, Approve is hold-to-approve** (`VoiceApproveButton`):
+  - Detection: `LongPressGesture(minimumDuration: motion.approveHoldDuration)` with `.updating($isPressing) { value, state, _ in state = value }` for the pressed state and `.onEnded { _ in approve(nonce) }` for the commit. A plain click (press and release before the duration) ends the gesture without `.onEnded` and therefore does nothing; moving away (`maximumDistance` default) cancels the hold. Releasing early cancels. Detect the pressed state change with the single-parameter `.onChange(of: isPressing) { pressing in ... }`.
+  - Ring: a `Circle().trim(from: 0, to: progress)` around the button. When `motion.allowsGeometry`, on `pressing == true` set `progress = 1` inside `withAnimation(.linear(duration: motion.approveHoldDuration))` and on release reset it to 0 with animation `nil`. When `!motion.allowsGeometry` (Minimal / Reduce Motion) the ring is STATIC: a full ring at reduced opacity while pressed, no progress animation. The hold itself still takes `approveHoldDuration`.
+  - Identity: key the button with `.id(request.nonce)` so `@State`/`@GestureState` hold state can never carry from one card to the next (a hold started on card A cannot fire for card B, and the commit always uses the nonce bound at render time).
+  - Accessibility: the label is "Approve, hold to confirm". There is NO `.accessibilityAction` that approves: an agent card can only be DENIED through VoiceOver or the keyboard, on purpose (the hold has no accessible shortcut, and the status menu has no Approve for an agent card either, 2.7). Do not add one.
   The ripple (`PillRipple`) plays `attentionPulseCount` times (0 under Reduce Motion), then the amber tint stays static.
-  Height: the approval state has its own budget, `VoiceCardLayout.approvalHeightBudget = 260`; every other state must fit `sectionHeightBudget = 112`. These two numbers are the ones `PillStackEstimate` uses (2.3.1) and the render tests assert.
+  Height: the approval state has its own budget, `VoiceCardLayout.approvalHeightBudget = 300`; every other state must fit `sectionHeightBudget = 112`. Derivation of 300: the worst legal literal at the minimum width is about 156pt (above) and the card's chrome (header row, tier chip row, summary, hint, button row, paddings) is budgeted at about 124pt, so about 280pt, with margin to 300. These two numbers are the ones `PillStackEstimate` uses (2.3.1) and the render tests assert.
 - **No voice anywhere approves.** There is no "say yes" copy or affordance.
 
 #### 2.3.1 Pill-stack integration (exact)
@@ -208,9 +267,9 @@ if hasVoice {
 }
 ```
 
-`NotchPillView+Shared.swift`: `hasContentBeforePrivacyAction` becomes `hasVoice || hasNotification || hasMiddleSection`. The "previous content" chains of the later sections (`hasMedia || hasTimer || ...`) do not mention the notification today, and must not mention voice either: the voice block and the notification block own their own dividers. Add `let hasVoice: Bool` to `PillStructuralAnimationState` (and set it where the state is built).
+`NotchPillView+Shared.swift`: `hasContentBeforePrivacyAction` becomes `hasVoice || hasNotification || hasMiddleSection`. The "previous content" chains of the later sections (`hasMedia || hasTimer || ...`) do not mention the notification today, and must not mention voice either: the voice block and the notification block own their own dividers. Add `let hasVoice: Bool` AND `let voiceCardShown: Bool` (`voiceState == .awaitingApproval`) to `PillStructuralAnimationState` (and set both where the state is built): the jump between the 112pt section and the 300pt approval card must be animated by the structural spring, not snap.
 
-`PillStackBudget.swift`: `PillStackEstimate` gains, AFTER the existing stored properties and WITH defaults (the budget tests build it with labelled memberwise arguments and must keep compiling): `var hasVoice = false`, `var voiceState: VoiceState? = nil`, `static let voiceHeight = VoiceCardLayout.sectionHeightBudget` (112) and `static let voiceApprovalHeight = VoiceCardLayout.approvalHeightBudget` (260). In `height(caps:)` insert FIRST in `sections`: `if hasVoice { sections.insert(voiceState == .awaitingApproval ? Self.voiceApprovalHeight : Self.voiceHeight, at: 0) }`. `stackEstimate` (in `+Shared`) sets `hasVoice: hasVoice, voiceState: voiceState`. `PillStackBudgetTests` adds "voice height estimate included" (idle estimate unchanged; `hasVoice` adds 112 plus one divider; `.awaitingApproval` adds 260 plus one divider).
+`PillStackBudget.swift`: `PillStackEstimate` gains, AFTER the existing stored properties and WITH defaults (the budget tests build it with labelled memberwise arguments and must keep compiling): `var hasVoice = false`, `var voiceState: VoiceState? = nil`, `static let voiceHeight = VoiceCardLayout.sectionHeightBudget` (112) and `static let voiceApprovalHeight = VoiceCardLayout.approvalHeightBudget` (300). In `height(caps:)` insert FIRST in `sections`: `if hasVoice { sections.insert(voiceState == .awaitingApproval ? Self.voiceApprovalHeight : Self.voiceHeight, at: 0) }`. `stackEstimate` (in `+Shared`) sets `hasVoice: hasVoice, voiceState: voiceState`. `PillStackBudgetTests` adds "voice height estimate included" (idle estimate unchanged; `hasVoice` adds 112 plus one divider; `.awaitingApproval` adds 300 plus one divider).
 
 ### 2.4 Wings
 
@@ -223,11 +282,10 @@ Add `WingIndicator.voice` and `WingInputs.voiceState: VoiceState?` (nil when idl
 | `listening`, `awaitingApproval` | `.voice` | `.voice` |
 
 `.voice` outranks every other left-wing indicator including `.volume`; on the right it outranks `.volume` only in `listening`/`awaitingApproval`. The wing indicator is
-glyph-only: `WingMetrics.contentWidth(of: .voice) == 16`, `inset(of: .voice) == persistentInset`, so `extraWidth` stays 0. Left glyph by state as in the table; right wing shows the
-`VoiceMeter` (listening) or the amber dot (awaitingApproval). Note for reviewers: while voice is active the pill is held open (2.5), so the collapsed wings show only during the exit grace period; the wing code is still specified and tested as a pure function.
+glyph-only: `WingMetrics.contentWidth(of: .voice) == 16`, `inset(of: .voice) == persistentInset`, so `extraWidth` stays 0. Left glyph by state as in the per-state table of 2.3. `wingInputs.voiceState` is `voiceState == .idle ? nil : voiceState` (read from the internal `@State`, never from the model). **The right wing needs live `levels` but the pill observes only `voice.$state`, so the meter has its own host**: `VoiceWingMeterHost` (`@MainActor struct`, `@ObservedObject var model: VoiceSessionModel`, plus `let motion: NotchAnimation.Motion`) in `NotchPillView+Voice.swift` renders `VoiceMeter(levels: model.levels, ...)` with the metrics of 2.3 (5 bars, 2pt wide, 1.5pt gap, heights 3 to 12pt, 16pt wide in total) and is used for the right-wing `.voice` indicator while `voiceState == .listening`; for `.awaitingApproval` the right wing is a plain amber dot (a plain view, nothing observed). Reading `voice.levels` from a non-observing view would freeze the bars, and putting `@ObservedObject` back on the pill would undo the performance goal: use the host. Note for reviewers: while voice is active the pill is held open (2.5), so the collapsed wings show only during the exit grace period; the wing code is still specified and tested as a pure function.
 
 **Accessibility text (pure).** Provide `static func voiceCompactLabel(_ state: VoiceState?) -> String?` (in `NotchPillView+Voice.swift`; returns nil for nil/idle, else "Voice: <word>") and use it in
-`compactAccessibilityLabel`. One word table (`VoiceStateWords` in `VoiceSectionPresentation.swift`) feeds the label, the status menu and the tests; it never contains transcript, reply or literal text:
+`compactAccessibilityLabel` (in `+Compact`, where it is a `private var`): the voice phrase goes FIRST in `parts` (voice outranks every other left-wing indicator), before the media/timer phrases. One word table (`VoiceStateWords` in `VoiceSectionPresentation.swift`) feeds the label, the status menu and the tests; it never contains transcript, reply or literal text:
 
 | State | Wing / accessibility word | Status-menu title |
 |---|---|---|
@@ -297,8 +355,9 @@ convenience init()   // playSound: { NSSound(named: NSSound.Name($0))?.play() ??
 Add `voiceStart`, `voiceCommit`, `voiceNeedsConfirm`, `voiceApproved`, `voiceError` to `PillHaptics.Event` (patterns and `tapCount` as the table says), and update `PillSectionMotionTests.testOnlyTimerCompletionIsADoubleTap` to expect `tapCount == 2` for exactly `{.timerComplete, .voiceError}` and 1 for every other event.
 
 VoiceOver: add `PillAnnouncements.voiceNeedsApproval = "Voice command needs approval"`, `voiceFailed = "Voice command failed"`, `voiceStopped = "Voice agent stopped"`.
-`NotchPillView+Voice.swift` observes `voiceState` and announces ONLY on entering `awaitingApproval` (priority `.high`), `error` with severity `.warning`/`.alert`, and `paused`. Never announce listening,
-transcripts, replies or command text, and never announce on `armed` (the mic would capture it). It makes no `PillHaptics` calls.
+The decision is a pure function in `VoiceSectionPresentation.swift`: `VoiceAnnouncementPolicy.announcement(for state: VoiceState, severity: VoiceFailure.Severity) -> (message: String, isHighPriority: Bool)?`: `awaitingApproval` -> `(voiceNeedsApproval, true)`; `error` with severity `.warning` or `.alert` -> `(voiceFailed, false)`; `paused` -> `(voiceStopped, false)`; everything else (including `error` with `.info`, `armed`, `listening`, `speaking`) -> `nil`. Never announce listening, transcripts, replies or command text, and never announce on `armed` (the mic would capture it).
+
+**Where it runs (the stale-severity trap).** `VoiceSessionModel.apply` assigns `state` BEFORE `errorSeverity`, and a `$state` sink or `.onReceive` fires in `willSet`, before either value is stored. So the decision must NEVER be made inside the `$state` receive closure (it would see the PREVIOUS severity). Announce from `.onChange(of: voiceState) { newState in ... }`, which SwiftUI runs in a later update pass, after `apply` has returned, and read `voice.errorSeverity` THERE. The hook is `VoiceAnnouncementModifier`, a `@MainActor struct ... : ViewModifier` in `NotchPillView+Voice.swift` with `let state: VoiceState` and `let model: VoiceSessionModel` (a plain `let`, NOT observed) whose body is `content.onChange(of: state) { newState in if let a = VoiceAnnouncementPolicy.announcement(for: newState, severity: model.errorSeverity) { AccessibilityAnnouncer.announce(a.message, priority: a.isHighPriority ? .high : .medium) } }`. `NotchPillView.body` applies it ONCE at the root, next to the `.onReceive(voice.$state...)` that feeds `voiceState`: `.modifier(VoiceAnnouncementModifier(state: voiceState, model: voice))`. It makes no `PillHaptics` calls.
 
 ### 2.7 Status menu (the keyboard / VoiceOver path)
 
@@ -312,41 +371,74 @@ static func voiceMenuItems(state: VoiceState, pending: ConfirmationRequest?, deb
 static func voiceStateTitle(_ state: VoiceState) -> String          // the "Status-menu title" column of the word table in 2.4
 ```
 
-The builder maps specs to `NSMenuItem`s; "Show Notch" is the existing item and stays where it is. The items:
+**Placement.** The builder maps the specs to `NSMenuItem`s and inserts the block RIGHT AFTER the existing "Show Notch" item and its separator (`rebuildMenu`, just before the "Update Available" block), followed by its own separator. "Show Notch" is the existing item and stays where it is. Nothing is added while voice is off.
 
-- A disabled info item "Voice: <state title>".
-- "Talk" (toggle) -> `voice.toggleTalk()` while `idle`, `speaking`, `error`, `listening`; title "Stop Listening" while `listening`.
-- While `awaitingApproval`, for a card with `source == .local`: "Approve: <summary>" and "Deny", each bound to the nonce rendered at menu build time via `representedObject` (see AGENTS.md "Notification menu actions bind the app name they rendered"); Approve is disabled when `!canApprove`; the summary is `request.summary` (desnotch-authored: it IS the literal for local cards).
-- While `awaitingApproval`, for a card with `source == .hermes`: ONLY "Deny" and the existing "Show Notch" item (so the card can be pinned open and read). **There is no Approve item for an agent card**: the menu would show a command it cannot show (menus may be screen-shared) and would bypass hold-to-approve. `VoiceStatusMenuTextTests` asserts there is no approve spec for an agent card.
-- While `review` or `listening`: "Cancel" -> `voice.cancelReview()`.
-- While `state != .idle && state != .paused`: "Stop Voice Agent" -> `voice.stopAll()`.
-- While `paused`: "Resume Voice" -> `voice.resume()`.
-- Only when env `DESNOTCH_VOICE_DEBUG == "1"`: "Type a Voice Command…" which opens a small `NSAlert` with a text field and calls `voice.submitTyped(text)` (empty text does nothing). In an accessory app call `NSApp.activate(ignoringOtherApps: true)` before `runModal()` and set `alert.window.initialFirstResponder = field`, or the field is unfocused.
+**The items per state** (this is the specification of `voiceMenuItems`; the first item is always the disabled info line "Voice: <state title>", `action == nil`):
 
-Safety: the handler for Approve/Deny re-checks BOTH that the nonce still equals `voice.pendingConfirmation?.nonce` AND, for Approve, that `canApprove` is true, before calling `approve`/`deny` (`NSMenuItem.isEnabled` alone is not a gate: `NSMenu.autoenablesItems` re-enables items that have a target). Set `menu.autoenablesItems = false` if the builder already sets `isEnabled` explicitly on every item (check `StatusMenuBuilder.swift`); otherwise implement `validateMenuItem(_:)` in the action target and return false for a voice Approve whose nonce is not the current approvable card. The reducer (R72) is the final gate either way.
+| State | Items after the info line |
+|---|---|
+| `idle` | "Talk" (`.talk`) |
+| `armed`, `transcribing`, `thinking`, `acting` | "Stop Voice Agent" (`.stopAgent`) |
+| `listening` | "Stop Listening" (`.stopListening`), "Cancel" (`.cancel`), "Stop Voice Agent" |
+| `review` | "Cancel", "Stop Voice Agent" |
+| `awaitingApproval`, card `source == .local` | "Approve: <summary>" (`.approve`, nonce of the card; disabled when `!canApprove`), "Deny" (`.deny`, nonce), "Stop Voice Agent" |
+| `awaitingApproval`, card `source == .hermes` | "Deny" (`.deny`, nonce), "Stop Voice Agent". **There is NO Approve item for an agent card**: the menu would show a command it cannot show (menus may be screen-shared) and would bypass hold-to-approve. The existing "Show Notch" item stays so the card can be pinned open and read. `VoiceStatusMenuTextTests` asserts there is no `.approve` spec for an agent card. |
+| `speaking`, `error` | "Talk", "Stop Voice Agent" |
+| `paused` | "Resume Voice" (`.resume`) |
+
+Plus, in EVERY state, only when `debugTyping` (env `DESNOTCH_VOICE_DEBUG == "1"`): "Type a Voice Command…" (`.typeCommand`), enabled only while `state == .idle`; it opens a small `NSAlert` with a text field and calls `voice.submitTyped(text)` (empty text does nothing). In an accessory app call `NSApp.activate(ignoringOtherApps: true)` before `runModal()` and set `alert.window.initialFirstResponder = field`, or the field is unfocused. The local-card summary is `request.summary` (desnotch-authored: it IS the literal for local cards). `.talk` and `.stopListening` both call `voice.toggleTalk()`; `.cancel` calls `voice.cancelReview()`; `.stopAgent` calls `voice.stopAll()`; `.resume` calls `voice.resume()`. Approve/Deny bind the nonce rendered at menu build time via `representedObject` (see AGENTS.md "Notification menu actions bind the app name they rendered").
+
+**Enablement (the existing builder does NOT set `autoenablesItems`).** `StatusMenuBuilder` never sets `autoenablesItems`, and its action-less header items rely on auto-disable, so do NOT set `menu.autoenablesItems = false`. Instead implement `validateMenuItem(_:)` in the `StatusMenuBuilder+Actions` extension: it returns `true` for every item that is not a voice item (so every existing item behaves exactly as before; mark voice items by a `representedObject` payload type, e.g. `VoiceMenuPayload`), and for a voice item: Approve is enabled only when the payload nonce equals `composition.voiceModel.pendingConfirmation?.nonce` AND that card's `canApprove` is true; Deny only when the nonce still matches; `.typeCommand` only while the state is `.idle`; the others follow their spec's `isEnabled`. `NSMenuItem.isEnabled` alone is not a gate (auto-enable re-enables items that have a target). The action handler ALSO re-checks both conditions (nonce equality, and `canApprove` for Approve) before calling `approve`/`deny`. The reducer (R72) is the final gate either way.
 
 ### 2.8 Settings
 
 `VoiceSettingsSection` (added to `SettingsView.content` after the notification section) shows:
 
 - Toggle "Voice control" bound to `settings.voiceEnabled`, with a `SettingsNote`: "Off by default. Hold the shortcut to speak. Uses the microphone and on-device speech recognition; audio is never saved."
-- When on: two permission rows (Microphone, Speech Recognition) from `model.permissions` ("Allowed" / "Not allowed" / "Not asked yet"), a "Allow Access…" button -> `model.requestPermissions()`, and, when a permission is denied, buttons that open System Settings at `x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone` and `x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition` (`NSWorkspace.shared.open(URL)`).
-- Picker "Language" over `SettingsStore.supportedVoiceLocales` ("English (US)", "Bahasa Indonesia"), Picker "Shortcut" over `VoiceHotkeyChoice` ("⌥⌘V", "⇧⌥⌘V", "⌥⌘J") with a warning-colored note "Another app uses this shortcut or the Stop shortcut ⌥⌘." when `model.hotkeyStatus == .unavailable` (only while voice is enabled), Toggle "Speak replies" (`voiceTTSEnabled`, note: "Silent in Privacy mode"), Toggle "Lower other audio while listening" (`voiceDuckMedia`).
-- Toggle "Send other requests to the Hermes agent (cloud)" bound to `voiceHermesLane`, with a note in the warning color: "Anything that is not a built-in command is sent to the cloud-routed Hermes agent. Requires the locked 'voice' Hermes profile." and the status line from `model.hermesLaneStatus` ("Off", "Checking…", "Ready", "Refused: <reason word>").
+- When on (every row below, INCLUDING the Hermes toggle, is shown only while `settings.voiceEnabled` is true): two permission rows (Microphone, Speech Recognition) from `model.permissions`, a "Allow Access…" button -> `model.requestPermissions()` (shown while either state is `.notDetermined`), and, when a permission is `.denied`, buttons that open System Settings at `x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone` and `x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition` (`NSWorkspace.shared.open(URL)`); no button for `.restricted` (the user cannot change it).
+- Picker "Language" over `SettingsStore.supportedVoiceLocales` ("English (US)", "Bahasa Indonesia"), Picker "Shortcut" over `VoiceHotkeyChoice` with a warning-colored note "Another app uses this shortcut or the Stop shortcut ⌥⌘." when `model.hotkeyStatus == .unavailable` (only while voice is enabled), Toggle "Speak replies" (`voiceTTSEnabled`, note: "Silent in Privacy mode"), Toggle "Lower other audio while listening" (`voiceDuckMedia`).
+- Toggle "Send other requests to the Hermes agent (cloud)" bound to `voiceHermesLane`, with a note in the warning color: "Anything that is not a built-in command is sent to the cloud-routed Hermes agent. Requires the locked 'voice' Hermes profile." and the status line from `model.hermesLaneStatus`.
 - The pane is 300 pt wide (`SettingsView.contentWidth`): the section must fit it without horizontal scrolling.
+
+**Copy tables (all in `VoiceSettingsWords` in `VoiceSectionPresentation.swift`, pure, tested in `VoiceSectionPresentationTests`).** `VoiceHotkeyChoice` and `SettingsStore.supportedVoiceLocales` carry no labels, so the labels live here:
+
+| `VoiceHotkeyChoice` | label | | locale id | label |
+|---|---|---|---|---|
+| `optionCommandV` | "⌥⌘V" | | `en-US` | "English (US)" |
+| `shiftOptionCommandV` | "⇧⌥⌘V" | | `id-ID` | "Bahasa Indonesia" |
+| `optionCommandJ` | "⌥⌘J" | | anything else | the identifier itself |
+
+| `VoicePermissionState` | row text | | `HermesLaneStatus` | status line |
+|---|---|---|---|---|
+| `authorized` | "Allowed" | | `off` | "Off" |
+| `notDetermined` | "Not asked yet" | | `checking` | "Checking…" |
+| `denied` | "Not allowed" | | `ready` | "Ready" |
+| `restricted` | "Restricted by this Mac" | | `refused(reason)` | "Refused: " + the word below |
+| `unknown` | "Unknown" | | | |
+
+| `PreflightFailure` | reason word | | `PreflightFailure` | reason word |
+|---|---|---|---|---|
+| `binaryMissing` | "Hermes not found" | | `configNotLocked` | "profile not locked" |
+| `profileMissing` | "no voice profile" | | `mcpConfigured` | "MCP configured" |
+| `approvalsOff` | "approvals off" | | `protocolMismatch` | "protocol mismatch" |
+| `allowlistNotEmpty` | "allowlist not empty" | | `notImplemented` | "not available" |
+| `toolsetOutsideAllowlist` | "toolsets not empty" | | | |
+
+Every `PreflightFailure` case has a word (a test iterates `PreflightFailure.allCases`).
 - **Wiring.** `SettingsHeader` and `SettingsNote` are `private struct`s inside `App/SettingsView.swift` (around lines 411 and 431), so the new file cannot see them: you own `SettingsView.swift`, so change both to internal (drop `private`) and use them from `VoiceSettingsSection`. `SettingsView` gains `var voice: VoiceSessionModel?` (default nil, like `notificationMirror`), `WindowCoordinator` passes `voice: composition.voiceModel`, and `SettingsView.content` renders `VoiceSettingsSection(model:)` only when it is non-nil. Settings are NOT exported (do not touch `SettingsTransfer`).
 
 ## 3. Tests to write (named; each is a test method)
 
-- `VoiceSectionPresentationTests`: one test per state (`testListeningShowsPartialAndMeter`, `testReviewShowsHeardAndRouteSummary`, `testAwaitingApprovalCardDisablesApproveWhenLiteralTooLong`, `testApproveDisabledWhenLiteralHasMoreThanSixLines`, `testHermesCardRequiresHold`, `testLocalCardApprovesWithClick`,
-  `testTruncatedRequestCannotBeApproved`, `testTier3RequestCannotBeApproved`, `testPausedShowsSurvivorsAndResume`, `testPausedHasNoStopButtonAndListeningHasNoCancelButton`, `testErrorSeverityStyling`, `testCloudBadgeWhenLaneIsHermes`, `testReviewShowsRouteSummaryVerbatim`, `testRiskWordsOrderAndCap`, ...). Plus `testPrivacyModeRedactsTranscriptReplyAndLiteral` (assert none of the secret strings appear anywhere in the presentation, including an agent card's `summary`), `testNoPresentationOffersASpokenApproval`.
-- `VoiceSectionRenderTests`: render `VoiceSectionView` for every `VoiceState` (use `NSHostingView` offscreen like `ArtworkGlowRenderTests`; `fittingSize` works headless; assert a non-zero size, width == the pill width you pass, and height <= `VoiceCardLayout.sectionHeightBudget` for every state except `awaitingApproval`, whose budget is `approvalHeightBudget`). Card cases, each at content widths 268 (default) AND 228 (supported minimum): a 240-character literal with no spaces; a 6-line literal; a 7-line literal (not reviewable: Approve disabled, "Too long to review here" shown). For the reviewable literals assert the full text is laid out: the literal block's fitting height >= the wrapped line count computed independently with `NSAttributedString(string: literal, attributes: [.font: <the 10pt monospaced NSFont>]).boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin]).height` (nothing is clipped), and that the whole section height is <= 260. Follow the existing render-test pattern; use `drainMainQueue()`.
-- `VoiceWingSelectionTests`: the table in 2.4 (every row, both wings), plus "voice beats volume on the left", plus an unchanged-behavior test with `voiceState == nil` for three of the existing combinations, plus `WingMetrics` width/inset/extraWidth for `.voice`.
+Every test class below that builds a `VoiceSessionModel`, an `NSHostingView`, a `VoiceCuePlayer` or reads `SettingsStore` is declared `@MainActor final class XTests: XCTestCase {` (as `ArtworkGlowRenderTests` is).
+
+- `VoiceSectionPresentationTests`: one test per row of the per-state table in 2.3, asserting `title`, `bodyLines`, `chips`, `buttons` (roles, titles, enabled flags, order), `wingLeft`, `wingRight`, `tint`, `heightBudget` (`testListeningShowsPartialAndMeter`, `testListeningWithEmptyPartialSaysListening`, `testReviewShowsHeardAndRouteSummary`, `testActingAgentWithZeroStepsSaysWorking`, `testActingLocalShowsRouteSummary`, `testErrorWithNilTextUsesTheGenericFallback`, `testPausedAfterTripwireShowsTheTripwireText`, `testPausedAfterUserStopShowsAgentStopped`, `testPausedSurvivorsAreCappedAtThreeNames` ("N still running: a, b, c, +K"), `testPausedShowsSurvivorsAndResume`, `testPausedHasNoStopButtonAndListeningHasNoCancelButton`, `testErrorSeverityStyling`, `testCloudBadgeWhenLaneIsHermes`, `testReviewShowsRouteSummaryVerbatim`, `testInterruptListeningAddsTheAbortLineAndMeter`, ...), plus the card tests: `testAwaitingApprovalCardDisablesApproveWhenLiteralTooLong`, `testApproveDisabledWhenLiteralHasMoreThanSixLines`, `testHermesCardRequiresHold` (`.approveHold`, `hint`), `testLocalCardApprovesWithClick` (`.approveClick`), `testTruncatedRequestCannotBeApproved`, `testTier3RequestCannotBeApproved`, `testButtonsCarryTheNonceOfTheCardOnScreen`, `testRiskWordsOrderAndCap`, `testCountdownRemainingFraction`. Plus `testPrivacyModeRedactsTranscriptReplyAndLiteral` (assert none of the secret strings appear anywhere in the presentation, including an agent card's `summary` and the survivors names, and that a `.local` card's desnotch-authored `summary` is kept), `testNoPresentationOffersASpokenApproval`, `testAccessibilityLabelNeverContainsLiveContent` (distinctive strings in transcript, reply, literal, agent summary and survivor names, with privacy mode ON and OFF: none appears in `accessibilityLabel`), and the settings copy: `testSettingsWordsCoverEveryPreflightFailure` (iterates `PreflightFailure.allCases`), the permission-state, hotkey and locale tables.
+- `VoiceSectionRenderTests`: render `VoiceSectionView` for every `VoiceState` (use `NSHostingView` offscreen like `ArtworkGlowRenderTests`; `fittingSize` works headless; assert a non-zero size, width == the content width you pass, and height <= `presentation.heightBudget` (`VoiceCardLayout.sectionHeightBudget` for every state except `awaitingApproval`, whose budget is `approvalHeightBudget` = 300)). Card cases, each at content widths 268 (default) AND 228 (supported minimum): a 240-character literal with no spaces; a 6-line literal; the WORST legal literal (6 hard lines of 36 to 40 characters each); a 7-line literal (not reviewable: Approve disabled, "Too long to review here" shown). For the reviewable literals size `VoiceLiteralBlock(text:)` on its own (it is an internal view precisely so this is possible) at `contentWidth` and assert the full text is laid out: its fitting height >= the wrapped height computed independently with `NSAttributedString(string: literal, attributes: [.font: VoiceCardLayout.literalNSFont]).boundingRect(with: CGSize(width: contentWidth - 2 * VoiceLiteralBlock.horizontalPadding, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin]).height + 2 * VoiceLiteralBlock.verticalPadding` (nothing is clipped), and that the whole card height is <= 300. Follow the existing render-test pattern; use `drainMainQueue()`.
+- `VoiceWingSelectionTests`: the table in 2.4 (every row, both wings), plus "voice beats volume on the left", plus an unchanged-behavior test with `voiceState == nil` for three of the existing combinations, plus `WingMetrics` width/inset/extraWidth for `.voice`, plus the meter metrics (`VoiceMeter` total width == 16).
 - `VoiceHoverPolicyTests`: the full truth table of `wantsHover` (8 rows) and `acceptsMouse` unchanged.
-- `VoiceStatusMenuTextTests`: for each state the list of item titles/enabled flags that `StatusMenuText.voiceMenuItems` returns, including a local card (Approve + Deny), an agent card (Deny only, NO approve spec), `canApprove == false` (Approve disabled), `debugTyping` on/off, and `voiceStateTitle` for all 11 states.
+- `VoiceStatusMenuTextTests`: for each of the 11 states the list of item titles/enabled flags/actions that `StatusMenuText.voiceMenuItems` returns (the table in 2.7), including a local card (Approve + Deny), an agent card (Deny only, NO `.approve` spec), `canApprove == false` (Approve disabled), `debugTyping` on/off (the item is enabled only in `.idle`), and `voiceStateTitle` for all 11 states.
 - `VoiceCuePlayerTests`: the mapping table above with fake closures; the `error` fallback beep.
-- `VoiceAccessibilityTextTests`: `NotchPillView.voiceCompactLabel` for nil and all 11 states (exact words from the 2.4 table), the three `PillAnnouncements` strings, and that none of these ever contains a transcript/reply/literal string.
-- Update `PillSectionMotionTests` (`testVoiceIsFirstAndEveryOtherKindShiftsByOne`, `testOnlyTimerCompletionIsADoubleTap` for `{.timerComplete, .voiceError}`), `PillInteractionPolicyTests`, `WingMetricsTests`, `PillStackBudgetTests` (voice height estimate is included in the stack; row caps still fit), `NotchPillPresentationTests` (`PillFlashKind.voice`: hold 3.0, spotlight `.voice`, rim `(.cyan, 0.5)`).
+- `VoiceAccessibilityTextTests`: `NotchPillView.voiceCompactLabel` for nil and all 11 states (exact words from the 2.4 table), the three `PillAnnouncements` strings, `VoiceAnnouncementPolicy.announcement(for:severity:)` for every state x severity (only `awaitingApproval` (high priority), `error` with `.warning`/`.alert`, and `paused` announce), and that none of these ever contains a transcript/reply/literal string.
+- Update `PillSectionMotionTests` (`testVoiceIsFirstAndEveryOtherKindShiftsByOne`, `testApproveHoldDurationIsTheSameInEveryTokenSet`, `testOnlyTimerCompletionIsADoubleTap` for `{.timerComplete, .voiceError}`), `PillInteractionPolicyTests`, `WingMetricsTests`, `PillStackBudgetTests` (voice height estimate is included in the stack: 112 / 300 plus one divider; row caps still fit), `NotchPillPresentationTests` (`PillFlashKind.voice`: hold 3.0, spotlight `.voice`, rim `(.cyan, 0.5)`).
 - `PillSourceGuardTests` (existing, in `PillPolishTests.swift`) must keep passing: no `.onHover`, no `repeatForever`, in any `UI/` file, and the notification-divider text match described in 2.3.1.
 
 ## 4. Verification
@@ -378,10 +470,22 @@ How to read the results:
   extra line `harness: only known baseline failures remain` (two existing render tests,
   `ArtworkGlowRenderTests.testGlowFollowsTheCurrentAccentNotThePreviousOne` and
   `PillMarqueeRenderTests.testLongTitleScrollsAfterTheStartDelayOnceActive`, always fail under the stub; ignore them, and
-  never edit them). If the harness build prints a `warning:` for one of YOUR test or source files, fix it too. The generated
-  `runner/main.swift` prints about 1,700 baseline warnings `no calls to throwing functions occur within 'try' expression`;
-  they are not yours, so ignore every warning whose file is `main.swift`
-  (`scripts/voice-harness/run.sh 2>&1 | grep 'warning:' | grep -v 'main.swift'` must print nothing).
+  never edit them). The generated `runner/main.swift` prints about 1,700
+  baseline `no calls to throwing functions occur within 'try' expression` warnings, and SwiftPM prints every diagnostic twice (a
+  `/path/File.swift:L:C: warning:` line, then an indented caret line that starts with `|` and has no file name), so a plain
+  `grep 'warning:'` over the raw output is useless. **The warning check** is the command below. SwiftPM prints a file's warnings only
+  when it recompiles that file and an incremental harness build skips files it already built, so the check builds into a FRESH
+  harness directory (about 40 s) and keeps only lines that START with a file path. It must print nothing:
+
+  ```sh
+  W="$(mktemp -d)"; HARNESS_DIR="$W" scripts/voice-harness/run.sh --filter VoiceContractSmoke 2>&1 \
+    | grep -E '^/.*: (warning|error):' | grep -vE '/(main|UpdateCheckerTests)\.swift:'; rm -rf "$W"
+  ```
+
+  The only known baseline warnings are the `main.swift` `try` warnings and 4 copies of one actor-isolation warning at
+  `Tests/DesnotchCoreTests/UpdateCheckerTests.swift:41`; they are not yours and you must not touch that file. Any other line the check
+  prints is yours: fix it. `swift build` never compiles the test target, so a warning or an error in a TEST file shows up only in
+  the harness run (and in CI).
   The harness finds a test class only when it is declared on ONE line as `class X: XCTestCase` or `final class X: XCTestCase`,
   and it resets its current class at every column-0 `class`, `struct`, `enum` or `actor`: put helper types and fakes at
   column 0 AFTER the test class (or indent them inside it), and confirm with `scripts/voice-harness/run.sh --list | grep <Class>`
@@ -389,9 +493,12 @@ How to read the results:
 - `lint-lite.sh` must print `lint-lite: clean (N files)`. Pass your files explicitly
   (`scripts/voice-harness/lint-lite.sh path/one.swift path/two.swift`). It only checks the whitespace rules; CI's SwiftLint also
   enforces `duplicate_imports`, `empty_enum_arguments`, `redundant_discardable_let`, `unused_optional_binding` and
-  `void_return`, so check those by eye (only `trailing_whitespace` is an error there).
-- First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); allow 2-4 minutes.
-  `--skip-build` re-runs without rebuilding.
+  `void_return`, so check those by eye (only `trailing_whitespace` is an error there): write `case .foo`, not `case .foo(_)`;
+  never `if let _ = x` (use `x != nil`) or `let _ = f()` (use `_ = f()`).
+- First harness run builds everything into `.build/voice-harness/` inside your worktree (gitignored); it takes about 1 minute
+  (about 40 s on the Mac mini). If your shell tool times out after 2 minutes, raise the timeout, or run
+  `scripts/voice-harness/run.sh --filter VoiceContractSmoke` once up front so later runs are incremental. `--skip-build` re-runs
+  without rebuilding.
 - The harness copies your current `Sources/DesnotchCore` and `Tests/DesnotchCoreTests` on every run, so just save and re-run.
 - Tests only ever run for real on GitHub Actions (`swift test` on macos-14 with Swift 5.10, and macos-15). The harness uses
   your local Swift 6.1 compiler in Swift 5 language mode, so it can NOT catch every Swift 5.10 actor-isolation error. Follow
@@ -415,7 +522,7 @@ scripts/voice-harness/lint-lite.sh Sources/DesnotchCore/UI/Voice*.swift Sources/
 scripts/voice-harness/check-ownership.sh WP-UI
 ```
 
-Done means: build clean; the full suite has no failures beyond the two documented baseline ones; every class in section 3 exists and passes; lint clean; `git status` shows changes only in the files of 2.2.
+Done means: build clean; the warning check of this section prints nothing; the full suite has no failures beyond the two documented baseline ones; every class in section 3 exists and passes; lint clean; `git status` shows changes only in the files of 2.2.
 
 Visual check: the app cannot be driven by the mic yet. If you have a display, you MAY add a temporary local-only preview in a render test that writes PNGs to `NSTemporaryDirectory()` for the 11 states and look at them; do not commit
 the PNGs or any preview code. Describe in your report what you looked at. Final on-screen review happens after WP-HERMES lands (typed debug command).
@@ -438,14 +545,19 @@ These apply to every work package. They are not suggestions.
      (`import Testing`, `#expect`), macros, `nonisolated(unsafe)` (outside tests it hides bugs), `@preconcurrency` imports as a
      way to silence a warning, or any API newer than macOS 13.
    - Do not put `await` inside an `XCTAssert...(...)` argument; assign to a `let` first.
+   - Never call `NSLock.lock()` / `unlock()` inside the body of an `async` function or closure: the Swift 6.1 compiler warns
+     "unavailable from asynchronous contexts" (breaking rule 3). Put every locked access in a private SYNCHRONOUS helper
+     (`private func appendLocked(...) -> Bool`) and call the helper from the async body. The frozen
+     `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (`ScriptedBackend.recordResponse`) shows the pattern.
 3. **No warnings.** `swift build` must be warning-free for the whole package, and the harness build must show no warnings
    from your files. No `// swiftlint:disable`. No `try!` / `as!` / `!` force unwraps in non-test code unless the
    spec above shows one.
 4. **No secrets, no real user data.** Never read, print, log or commit `auth.json`, `.env`, keychain items, `~/.ssh`,
    `~/.hermes/config.yaml`, vault or engagement files. Tests use synthetic fixtures only.
-5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Never `print`,
-   never `NSLog`, never put it in an `os.Logger` string unless the interpolation is `privacy: .private`, never write it to disk
-   (the audit log stores hashes and codes only), never pass it to VoiceOver announcements. Log `VoiceFailure.code` instead.
+5. **Privacy boundary.** A transcript, a command line, a reply text or an audio buffer is live content. Voice code logs
+   NOTHING: no `print`, no `NSLog`, no `os_log`, no `Logger` anywhere under `Sources/DesnotchCore/Voice` or in the voice UI files (the
+   final-check `rg` bans all of them). Surface a failure as a typed `VoiceFailure` (its `code` is what the audit log stores).
+   Never write live content to disk (the audit log stores hashes and codes only) and never pass it to VoiceOver announcements.
 6. **No git.** Do not run `git add`, `git commit`, `git push`, `git merge`, `git rebase`, `git stash`, `git checkout` of other
    branches, `git worktree`, or `git reset`. Leave your changes uncommitted in your worktree; the orchestrator reviews and commits.
    Reading (`git status`, `git diff`, `git log`) is fine.
@@ -465,7 +577,11 @@ These apply to every work package. They are not suggestions.
    `private`/`fileprivate` unless another test file of YOUR package must reuse them (then they are internal and use the name or
    prefix your package doc prescribes), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
    on a collision. `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (frozen) already provides `FakeVoiceClock`,
-   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are.
+   `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are. A test class that
+   touches a `@MainActor` type (`SystemLocalExecutor`, `VolumeDucker`, `CarbonPushToTalk`, `VoiceCuePlayer`, `NSHostingView`,
+   `VoiceSessionModel`, `SettingsStore`, or a double that conforms to a `@MainActor` protocol) is declared
+   `@MainActor final class XTests: XCTestCase {` (the harness accepts the attribute on the same line or on the line before).
+   Doubles that conform to a `@MainActor` protocol are themselves `@MainActor` and can only be created from `@MainActor` code.
 9. **Style.** Match the surrounding code. No trailing whitespace, exactly one final newline, never two blank lines in a
    row (CI's SwiftLint fails the build on these; run `scripts/voice-harness/lint-lite.sh`). Doc comments explain WHY.
    Names in this plan are exact: do not rename a type, method, case or file that the plan names.

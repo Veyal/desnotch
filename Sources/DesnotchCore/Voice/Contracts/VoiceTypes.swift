@@ -597,8 +597,11 @@ struct AuditRecord: Equatable, Codable, Sendable {
 
 struct AuditVerification: Equatable, Sendable {
     var isValid: Bool
+    /// Number of consecutive GOOD records from the start (all records when valid; the records
+    /// before the first break otherwise).
     var recordCount: Int
-    /// 1-based sequence number of the first broken record, if any.
+    /// The `seq` of the first broken record when it decodes, otherwise the 1-based line number
+    /// of the line that does not; nil when valid.
     var firstBrokenSeq: Int?
     /// Hash of the last good record; the value to anchor externally.
     var headHash: String
