@@ -70,7 +70,8 @@ final class WindowCoordinator: NSObject, NSWindowDelegate {
             window.contentView = NSHostingView(rootView: SettingsView(
                 notificationMirror: composition.notificationMirror,
                 globalHotKey: composition.globalHotKey,
-                onShowOnboarding: { [weak self] in self?.showOnboarding() }
+                onShowOnboarding: { [weak self] in self?.showOnboarding() },
+                voice: composition.voiceModel
             ))
             window.isReleasedWhenClosed = false
 

@@ -156,6 +156,69 @@ extension StatusMenuBuilder {
         windows.openReminderCapture()
     }
 
+    @objc func menuVoiceAction(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? VoiceMenuPayload else { return }
+        let model = composition.voiceModel
+        switch payload.action {
+        case .talk, .stopListening:
+            model.toggleTalk()
+        case .cancel:
+            model.cancelReview()
+        case .stopAgent:
+            model.stopAll()
+        case .resume:
+            model.resume()
+        case .approve:
+            guard let nonce = payload.nonce,
+                  let pending = model.pendingConfirmation,
+                  nonce == pending.nonce,
+                  pending.canApprove
+            else { return }
+            model.approve(nonce: nonce)
+        case .deny:
+            guard let nonce = payload.nonce, nonce == model.pendingConfirmation?.nonce else { return }
+            model.deny(nonce: nonce)
+        case .typeCommand:
+            presentTypedVoiceCommand()
+        }
+    }
+
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard let payload = menuItem.representedObject as? VoiceMenuPayload else { return true }
+        let model = composition.voiceModel
+        switch payload.action {
+        case .approve:
+            guard let nonce = payload.nonce, let pending = model.pendingConfirmation, nonce == pending.nonce else {
+                return false
+            }
+            return pending.canApprove
+        case .deny:
+            guard let nonce = payload.nonce else { return false }
+            return nonce == model.pendingConfirmation?.nonce
+        case .typeCommand:
+            return model.state == .idle
+        default:
+            return menuItem.isEnabled
+        }
+    }
+
+    private func presentTypedVoiceCommand() {
+        let model = composition.voiceModel
+        guard model.state == .idle else { return }
+        let alert = NSAlert()
+        alert.messageText = "Type a Voice Command"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Send")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let text = field.stringValue
+        guard !text.isEmpty else { return }
+        model.submitTyped(text)
+    }
+
     @objc func toggleLaunchAtLogin(_ sender: NSMenuItem) {
         do {
             let state = try LaunchAtLogin.toggle()

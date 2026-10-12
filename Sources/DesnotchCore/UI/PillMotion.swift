@@ -165,6 +165,9 @@ enum NotchAnimation {
         let progressMinimumInterval: TimeInterval
         /// Cadence for the opt-in equalizer loop.
         let equalizerMinimumInterval: TimeInterval
+        /// How long Approve must be held on an agent card. A safety gesture, so every
+        /// token set uses the same duration: Minimal and Reduce Motion must not shorten it.
+        let approveHoldDuration: TimeInterval
 
         /// Whether size/position-based emphasis (press scale, scrub-knob growth, reveal
         /// offset/scale, row slides) may be used at all. Reduce Motion's central complaint
@@ -311,7 +314,8 @@ extension NotchAnimation.Motion {
         allowsPulse: false,
         pressScale: 1,
         progressMinimumInterval: 1,
-        equalizerMinimumInterval: 1
+        equalizerMinimumInterval: 1,
+        approveHoldDuration: 0.6
     )
 
     /// `.subtle`: the shipped "fluid hardware extension" feel. About 2% overshoot on
@@ -380,7 +384,8 @@ extension NotchAnimation.Motion {
         allowsPulse: true,
         pressScale: 0.96,
         progressMinimumInterval: 1.0 / 15.0,
-        equalizerMinimumInterval: 1.0 / 15.0
+        equalizerMinimumInterval: 1.0 / 15.0,
+        approveHoldDuration: 0.6
     )
 
     /// `.dynamic`: the same choreography, livelier (more overshoot, bigger blur/offset,
@@ -449,7 +454,8 @@ extension NotchAnimation.Motion {
         allowsPulse: true,
         pressScale: 0.90,
         progressMinimumInterval: 1.0 / 15.0,
-        equalizerMinimumInterval: 1.0 / 15.0
+        equalizerMinimumInterval: 1.0 / 15.0,
+        approveHoldDuration: 0.6
     )
 }
 
@@ -458,23 +464,24 @@ extension NotchAnimation.Motion {
 /// The expanded pill's sections in their stacking order (top to bottom). The order is also
 /// the reveal-stagger rank, so adding a section means adding a case in its visual position.
 enum PillSectionKind: CaseIterable, Hashable {
-    case notification, media, timer, agents, processes, calendar, reminders, battery,
+    case voice, notification, media, timer, agents, processes, calendar, reminders, battery,
          clipboard, privacy, tray
 
     /// Position in the stack (top = 0): the reveal-stagger rank and the staged-mount cursor.
     var order: Int {
         switch self {
-        case .notification: return 0
-        case .media: return 1
-        case .timer: return 2
-        case .agents: return 3
-        case .processes: return 4
-        case .calendar: return 5
-        case .reminders: return 6
-        case .battery: return 7
-        case .clipboard: return 8
-        case .privacy: return 9
-        case .tray: return 10
+        case .voice: return 0
+        case .notification: return 1
+        case .media: return 2
+        case .timer: return 3
+        case .agents: return 4
+        case .processes: return 5
+        case .calendar: return 6
+        case .reminders: return 7
+        case .battery: return 8
+        case .clipboard: return 9
+        case .privacy: return 10
+        case .tray: return 11
         }
     }
 }

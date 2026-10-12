@@ -5,10 +5,10 @@ import Foundation
 /// keyboard/VoiceOver "pin" is just a second input to the same decision, never a second
 /// hover source.
 enum PillInteractionPolicy {
-    /// Whether the pill should be treated as hovered: the cursor is over it, or the user
-    /// pinned it open from the status menu or the global shortcut.
-    static func wantsHover(cursorInside: Bool, pinnedOpen: Bool) -> Bool {
-        cursorInside || pinnedOpen
+    /// Whether the pill should be treated as hovered. The cursor, a keyboard pin, and an
+    /// active voice session are inputs to this one decision, not separate hover sources.
+    static func wantsHover(cursorInside: Bool, pinnedOpen: Bool, voiceActive: Bool) -> Bool {
+        cursorInside || pinnedOpen || voiceActive
     }
 
     /// The panel takes mouse events only while the cursor is over the pill itself. A pin keeps

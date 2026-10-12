@@ -92,6 +92,8 @@ public final class NotchWindowController {
     private var resizeWorkItem: DispatchWorkItem?
     private var screenObserver: NSObjectProtocol?
     private var displaySettingObserver: AnyCancellable?
+    private var voiceObserver: AnyCancellable?
+    private var isVoiceActive = false
 
     /// Held open from the status menu or the global shortcut. A second input to the same
     /// `updateInteractivity()` decision that hover uses - never a second hover source.
@@ -223,6 +225,22 @@ public final class NotchWindowController {
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateForScreenChange() }
+
+        isVoiceActive = MainActor.assumeIsolated { voice.isActive }
+        updateInteractivity()
+        voiceObserver = MainActor.assumeIsolated { voice.$state }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] state in
+                guard let self else { return }
+                // The published value is delivered before it is stored, so the decision uses
+                // the emitted phase rather than reading the model again.
+                self.isVoiceActive = (state != .idle)
+                self.updateInteractivity()
+                if state == .error || state == .speaking {
+                    MainActor.assumeIsolated { self.presentation.flashOpen(kind: .voice) }
+                }
+            }
     }
 
     /// Holds the pill open (or releases it) for keyboard and VoiceOver users, who cannot hover.
@@ -379,7 +397,9 @@ public final class NotchWindowController {
         }
         MainActor.assumeIsolated {
             presentation.setHovering(
-                PillInteractionPolicy.wantsHover(cursorInside: inside, pinnedOpen: isPinnedOpen)
+                PillInteractionPolicy.wantsHover(
+                    cursorInside: inside, pinnedOpen: isPinnedOpen, voiceActive: isVoiceActive
+                )
             )
         }
     }

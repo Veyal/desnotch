@@ -21,7 +21,9 @@ extension NotchPillView {
             hasBattery: showBatteryRow && battery.state != nil,
             clipboard: hasClipboard ? clipboard.entries.count : 0,
             trayEnabled: settings.trayEnabled,
-            tray: tray.items.count
+            tray: tray.items.count,
+            hasVoice: hasVoice,
+            voiceState: voiceState
         )
     }
 
@@ -43,6 +45,7 @@ extension NotchPillView {
     /// only to skip empty stages while the stack is mounting.
     func hasSection(_ kind: PillSectionKind) -> Bool {
         switch kind {
+        case .voice: return hasVoice
         case .notification: return hasNotification
         case .media: return hasMedia
         case .timer: return hasTimer
@@ -94,7 +97,7 @@ extension NotchPillView {
     }
 
     var hasContentBeforePrivacyAction: Bool {
-        hasNotification || hasMiddleSection
+        hasVoice || hasNotification || hasMiddleSection
     }
 
     /// Blank sensitive strings while privacy mode is on (screen sharing/recording).

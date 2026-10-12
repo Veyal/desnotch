@@ -18,6 +18,8 @@ struct SettingsView: View {
     var globalHotKey: GlobalHotKeyController?
     /// Reopens the privacy-safe product guide. Nil keeps previews independent of AppKit windows.
     var onShowOnboarding: (() -> Void)?
+    /// Present in the real app; nil keeps previews independent of the voice session.
+    var voice: VoiceSessionModel? = nil
     /// Fixed pane width, shared with the window sizing so both stay in step.
     static let contentWidth: CGFloat = 300
 
@@ -198,6 +200,12 @@ struct SettingsView: View {
                 NotificationPermissionStatus(controller: mirror)
             }
 
+            if let voice {
+                Divider()
+                    .padding(.vertical, 2)
+                VoiceSettingsSection(model: voice)
+            }
+
             Divider()
                 .padding(.vertical, 2)
 
@@ -250,7 +258,7 @@ struct SettingsView: View {
                 }
             }
             Toggle("Check for updates", isOn: $settings.checkForUpdates)
-            SettingsNote("Asks GitHub once a day whether a newer release exists. That is the only network request desnotch makes. You still download and install updates yourself.")
+            SettingsNote(VoiceSettingsWords.updateCheckNote)
 
             Text("Settings file")
                 .font(.system(size: 11, weight: .semibold))
@@ -409,7 +417,7 @@ struct SettingsView: View {
 
 /// A section title with a quiet leading glyph. The glyph is decorative; the title carries the
 /// header trait so VoiceOver can jump between sections.
-private struct SettingsHeader: View {
+struct SettingsHeader: View {
     let title: String
     let symbol: String
 
@@ -433,7 +441,7 @@ private struct SettingsHeader: View {
 
 /// Explanatory footnote under a control: 11pt secondary (system colors adapt to Increase
 /// Contrast), red when it reports a problem. Wraps instead of truncating.
-private struct SettingsNote: View {
+struct SettingsNote: View {
     let text: String
     var warning = false
 

@@ -3,13 +3,13 @@ import XCTest
 
 final class PillInteractionPolicyTests: XCTestCase {
     func testCursorAloneDrivesHover() {
-        XCTAssertTrue(PillInteractionPolicy.wantsHover(cursorInside: true, pinnedOpen: false))
-        XCTAssertFalse(PillInteractionPolicy.wantsHover(cursorInside: false, pinnedOpen: false))
+        XCTAssertTrue(PillInteractionPolicy.wantsHover(cursorInside: true, pinnedOpen: false, voiceActive: false))
+        XCTAssertFalse(PillInteractionPolicy.wantsHover(cursorInside: false, pinnedOpen: false, voiceActive: false))
     }
 
     func testPinKeepsTheHoverStateWithoutTheCursor() {
-        XCTAssertTrue(PillInteractionPolicy.wantsHover(cursorInside: false, pinnedOpen: true))
-        XCTAssertTrue(PillInteractionPolicy.wantsHover(cursorInside: true, pinnedOpen: true))
+        XCTAssertTrue(PillInteractionPolicy.wantsHover(cursorInside: false, pinnedOpen: true, voiceActive: false))
+        XCTAssertTrue(PillInteractionPolicy.wantsHover(cursorInside: true, pinnedOpen: true, voiceActive: false))
     }
 
     func testPinNeverMakesThePanelSwallowClicksOutsideThePill() {

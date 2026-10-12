@@ -29,6 +29,9 @@ public enum PillAnnouncements {
     public static let reminderFailed = "Couldn't update the reminder"
     public static let timerStarted = "Focus timer started"
     public static let timerCompleted = "Focus timer complete"
+    public static let voiceNeedsApproval = "Voice command needs approval"
+    public static let voiceFailed = "Voice command failed"
+    public static let voiceStopped = "Voice agent stopped"
 }
 
 /// Posts a VoiceOver announcement. A no-op in practice when no assistive technology is

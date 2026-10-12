@@ -52,4 +52,49 @@ final class PillStackBudgetTests: XCTestCase {
         XCTAssertEqual(PillRowCaps.full.tray, PillLimits.trayRows)
         XCTAssertEqual(PillRowCaps.full.clipboard, PillLimits.clipboardRows)
     }
+
+    func testVoiceHeightEstimateIsIncluded() {
+        let idle = PillStackEstimate(topInset: 38)
+        let listening = PillStackEstimate(topInset: 38, hasVoice: true, voiceState: .listening)
+        let approval = PillStackEstimate(topInset: 38, hasVoice: true, voiceState: .awaitingApproval)
+        let idleHeight = idle.height(caps: .full)
+        XCTAssertEqual(
+            listening.height(caps: .full) - idleHeight,
+            PillStackEstimate.voiceHeight + PillStackEstimate.dividerHeight
+        )
+        XCTAssertEqual(
+            approval.height(caps: .full) - idleHeight,
+            PillStackEstimate.voiceApprovalHeight + PillStackEstimate.dividerHeight
+        )
+        XCTAssertEqual(PillStackEstimate.voiceHeight, 112)
+        XCTAssertEqual(PillStackEstimate.voiceApprovalHeight, 300)
+        let crowded = PillStackEstimate(
+            topInset: 38,
+            agents: 8,
+            processes: 8,
+            clipboard: 8,
+            trayEnabled: true,
+            tray: 8,
+            hasVoice: true,
+            voiceState: .listening
+        )
+        let room = crowded.height(caps: .full)
+        XCTAssertEqual(PillRowCaps.fitting(crowded, maxHeight: room), .full)
+        let approvalCrowded = PillStackEstimate(
+            topInset: 38,
+            agents: 8,
+            processes: 8,
+            clipboard: 8,
+            trayEnabled: true,
+            tray: 8,
+            hasVoice: true,
+            voiceState: .awaitingApproval
+        )
+        let approvalRoom = approvalCrowded.height(caps: .full)
+        XCTAssertEqual(PillRowCaps.fitting(approvalCrowded, maxHeight: approvalRoom), .full)
+        XCTAssertLessThanOrEqual(
+            approvalCrowded.height(caps: PillRowCaps.fitting(approvalCrowded, maxHeight: approvalRoom)),
+            approvalRoom
+        )
+    }
 }
