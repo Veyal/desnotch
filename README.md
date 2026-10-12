@@ -123,7 +123,9 @@ may warn on other machines; use the first-launch confirmation above. Drag `dist/
   (`api.github.com/repos/Veyal/desnotch/releases/latest`) whether a newer version exists and
   shows a status-menu item if so. The request carries no identifiers beyond a fixed
   `User-Agent`. Turn it off with Settings > "Check for updates" (`checkForUpdates`); when off,
-  desnotch makes no network request. Development builds without a bundle version never check.
+  desnotch makes no network request of its own. That stays true only while the optional Hermes
+  voice lane is also off: with the lane on, the Hermes child is the other network path.
+  Development builds without a bundle version never check.
 - **Notification mirror**: optional and off by default. It uses an Accessibility observer for
   notification banners, keeps banner content in memory only, and does not scrape the notification
   database.
@@ -156,6 +158,43 @@ may warn on other machines; use the first-launch confirmation above. Drag `dist/
 See `AGENTS.md` for implementation details load-bearing for anyone continuing this project, and
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for build, test, and lint instructions.
 
+## Voice control
+
+Off by default. In Settings, turn on "Voice control", then hold the shortcut and speak. The
+default shortcut is Option-Command-V. While Finder is frontmost that chord is also Finder's
+"Move Item Here". Settings offers two other choices, Shift-Option-Command-V and
+Option-Command-J, which avoid it. A short review window runs before anything happens, and you
+can cancel it.
+
+Local commands have to match the whole utterance. They cover play, pause, next, and previous;
+volume up, down, mute, unmute, or a percent (above 70% asks for a click); opening a catalogued
+app (Safari, Chrome, Terminal, iTerm, Finder, Notes, Calendar, Reminders, Music, Spotify,
+Messages, Mail, System Settings, Activity Monitor, Calculator, Preview, Visual Studio Code, or
+Notion); and starting or cancelling a timer of 1 to 120 minutes. English and Indonesian phrases
+are both accepted. The recognition locales are English (US) and Bahasa Indonesia; Indonesian
+needs the on-device dictation asset, and a locale without on-device recognition fails closed.
+
+Audio stays in memory and is never saved. Recognition stays on this Mac. Transcripts, replies,
+and commands are not logged, not announced to VoiceOver, and not put in the status menu. They
+clear when the session returns to idle.
+
+The agent lane is a second toggle, "Send other requests to the Hermes agent (cloud)". The agent
+lane needs a locked Hermes profile. You create it; desnotch only reads it. The file is
+`~/.hermes/profiles/voice/config.yaml`. After writing it, lock that file with `chflags uchg`.
+A profile that passes the preflight looks like this:
+
+```yaml
+approvals:
+  mode: manual
+command_allowlist: []
+mcp_servers: {}
+platform_toolsets:
+  acp: []
+```
+
+With that empty toolset, an agent tool call usually ends in a tripwire pause. That pause is the
+expected outcome: the tool is not allowlisted, so the lane stops instead of running it.
+
 ## Current Boundaries
 
 - **Real notch geometry is untested on this dev machine.** This project was developed on a
@@ -167,7 +206,9 @@ See `AGENTS.md` for implementation details load-bearing for anyone continuing th
 - Accessibility has no standard Info.plist usage-description key. Enable it for notification
   mirroring in System Settings → Privacy & Security → Accessibility; the app documents and
   rechecks that grant. Calendar and Reminders use their standard usage-description keys, and
-  Reminders access is requested only after its off-by-default feature is enabled.
+  Reminders access is requested only after its off-by-default feature is enabled. Microphone
+  and Speech Recognition use their standard usage-description keys and are requested only
+  after voice control, which is off by default, is enabled.
 - Universal builds and external signing/notarization are explicit opt-ins. The default host build
   is intentionally retained, and real-notch/Intel runtime verification remains hardware-gated.
 

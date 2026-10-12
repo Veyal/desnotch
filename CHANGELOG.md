@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Voice control (experimental, off by default):** hold a shortcut to run a closed set of local
+  commands (media, volume, a catalogued app, the focus timer) with on-device speech recognition.
+  Anything else can go to an optional cloud Hermes agent lane, which is a second opt-in. Microphone
+  and Speech Recognition permissions are requested only when voice is enabled.
+
 ## v0.11.0 — 2026-10-08
 
 - **Smoother open:** hovering no longer freezes the pill for 30-90 ms while it builds its sections; they

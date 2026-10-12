@@ -73,15 +73,20 @@ after 1s while still hovering" bug). Don't reintroduce it. The same test drives
 `panel.ignoresMouseEvents` so menu-bar clicks outside the pill rect pass through. The
 expanded pill stacks every section at once - no priority switch. An agent needing
 attention changes the wing icon (lightning, yellow) but does NOT force the pill open.
+An active voice session does: any `VoiceSessionModel` phase other than `.idle` sets
+`voiceActive`, which holds the pill open.
 
 Keyboard/VoiceOver users cannot hover, so `NotchWindowController.isPinnedOpen` (status menu "Show
 Notch" and the opt-in `globalHotkeyEnabled` Carbon `RegisterEventHotKey` shortcut, which needs no
 Accessibility permission) feeds the SAME `updateInteractivity()` decision via
-`PillInteractionPolicy.wantsHover` - it is an extra input, not a second hover source, and it never
-changes `ignoresMouseEvents`. The display that hosts the pill is chosen by
+`PillInteractionPolicy.wantsHover(cursorInside:pinnedOpen:voiceActive:)`. The cursor, the pin,
+and `voiceActive` are three inputs to that one decision, not extra hover sources, and neither
+the pin nor `voiceActive` changes `ignoresMouseEvents` (`acceptsMouse` stays cursor-only).
+The display that hosts the pill is chosen by
 `DisplaySelection.preferredIndex` (Settings `pillDisplay`, else a notch display, else
 `NSScreen.screens.first`; never the focus-dependent `NSScreen.main`). `AccessibilityAnnouncer`
-posts VoiceOver announcements; never announce banner/reminder/agent text, only that an event happened.
+posts VoiceOver announcements; never announce banner, reminder, agent, or voice transcript,
+reply, or command text, only that an event happened.
 
 The expanded pill has a **fixed width** (`SettingsStore.expandedWidth`, 300pt by default; on a
 notch screen at least cutout + 2 wings, and never below the minimized pill's `compactWidth`). This is deliberate: the rows contain greedy `Spacer`s, so
@@ -188,7 +193,10 @@ rejected because `proc_pidinfo` cannot read root-owned processes from a user ses
   `notifyStuckProcess` (stuck-process detector), both on by default.
 - **Calendar glance** (`CalendarController`, EventKit): next non-all-day event within 24h as
   an expanded row; it keeps the pill alive on its own only when imminent (<30 min or
-  ongoing). Usage-description keys live in `scripts/build-app.sh`'s Info.plist. If access is
+  ongoing). Usage-description keys for Calendar, Reminders, Microphone
+  (`NSMicrophoneUsageDescription`), and Speech Recognition
+  (`NSSpeechRecognitionUsageDescription`) live in `scripts/build-app.sh`'s Info.plist.
+  Microphone and speech are requested only after voice is enabled. If Calendar access is
   denied or can't be prompted (headless/SSH bare binary), the row just never appears. A Join
   action is exposed only for recognized HTTP(S) conferencing hosts found in the event URL,
   bounded location, or bounded notes. Location/notes are never rendered or persisted, and the
@@ -352,7 +360,9 @@ Transparency). Structural and content motion have separate authorities:
   (tray drop, copy, reminder complete, privacy toggle) fire from the action; the only
   observer-driven one is `timerComplete`.
 - **Accessibility and fallbacks**: every hold/delay/sweep is a `Motion` token (no raw durations in
-  views; only values derived from a token or the 1 Hz tick may build an `Animation`). Translucent
+  views; only values derived from a token or the 1 Hz tick may build an `Animation`, except the
+  voice review countdown bar in `VoiceCountdownBar`: a determinate `.linear(duration: remaining)`
+  taken from the countdown deadline, derived from neither a motion token nor `PillClock`). Translucent
   white surfaces go through `PillSurface.highlight` (opaque under Reduce Transparency, stronger under
   Increase Contrast) and every button carries `pillFocusRing` (one width/opacity, 2pt under Increase
   Contrast) - it draws only while the panel is key, and the non-activating panel never is, so the
@@ -395,7 +405,8 @@ needs-you wing icon bounces on count change (macOS 14+ symbolEffect); `BatteryCo
 `UpdateChecker` (daily GitHub latest-release poll, status-menu item; inert in dev builds
 with no bundle version; `isVersion(_:newerThan:)` is tested); `MediaUseMonitor` (push:
 CoreAudio/CMIO "running somewhere" property listeners via `HardwareMediaUseSource`, 5s poll
-only as the fallback if registration fails - no capture permission needed - orange mic/green
+only as the fallback if registration fails - these dots need no capture permission; the
+microphone is requested only by opt-in voice control - orange mic/green
 camera dots overlaid top-trailing on the shape); privacy mode (`privacyModeEnabled`,
 default OFF, quick toggle in the status menu) follows the centralized
 `NotchPillView.privacyRedacted` boundary above; tray drag-out uses
@@ -446,11 +457,54 @@ not treated as off). Controllers that observe a flag take an injectable `setting
 The one-time `OnboardingView` is a separate activating window so it never changes pill geometry;
 it contains no live user content or permission prompts and remains reopenable from Settings/menu.
 
+## Voice control (`Sources/DesnotchCore/Voice/`)
+
+Off by default (`SettingsStore.voiceEnabled`). Holding the talk shortcut (`VoiceHotkeyChoice`,
+default Option-Command-V) drives `CarbonPushToTalk` into `VoiceCoordinator`, which runs the pure
+`VoiceReducer` and applies its effects: on-device `AppleSpeechRecognizer` (audio stays in the
+process), `SystemLocalExecutor` for the closed local grammar, or, when the second opt-in is on,
+`HermesAgentBackend` speaking ACP over stdio to a `hermes -p voice acp` child. `VoiceSessionModel`
+is what the pill, wings, status menu, and Settings read. The flow, tiers, and rule table are
+`docs/voice/PLAN.md`.
+
+`Contracts/` is frozen. The other folders are `Logic/` (reducer, router, tiers), `Platform/`
+(speech, hotkey, permissions, audit), `Coordinator/`, and `Hermes/` (preflight, ACP, process
+guard). Put a change in the folder that already owns that layer.
+
+Load-bearing privacy rules (all 12 are `docs/voice/PLAN.md` section 14):
+
+- Audio is never written to disk. Recognition is on-device only; a locale without on-device
+  support fails closed.
+- Utterance, reply, and command text stay out of logs, the audit log, VoiceOver, and the status
+  menu. A local approval shows a desnotch-authored summary. The audit log stores metadata only
+  (hashes and codes).
+- Approvals are visual only, bound to a random nonce, and answered once or deny. T3 is denied
+  in the MVP. T4 has no voice path.
+- Tools are default-deny, plus a tripwire. The profile's ACP toolset is empty. A tool at T2 or
+  higher trips the wire. A tripwire pause is the normal outcome of an agent tool call in the
+  MVP; agent approval cards are exercised only by tests.
+- Stop is total (interrupt, then SIGTERM and SIGKILL on the agent's process group). desnotch
+  signals only processes it spawned. Crash recovery of a stale pid file also requires the
+  command-line tokens `-p voice acp`, a matching start time, and a group leader
+  (`HermesProcessGuard`).
+- This feature's permissions are Microphone and Speech Recognition, requested only after the
+  user enables voice and presses Allow. It does not take Accessibility, Automation, Screen
+  Recording, or Full Disk Access.
+- Voice is off by default and inert in smoke-test mode.
+- The human creates and locks the Hermes profile `voice`. desnotch only reads
+  `~/.hermes/profiles/voice/config.yaml`. Never edit `~/.hermes`.
+- Hermes retains its own transcripts in its `state.db`. The desnotch audit log is metadata only.
+- Harness: `scripts/voice-harness/run.sh` and `scripts/voice-harness/lint-lite.sh`. The warning
+  check (fresh harness directory, path-prefixed diagnostics) is in `docs/voice/PLAN.md` section 12.
+- `voiceEnabled` stops the feature at runtime. Removing it from the tree is `docs/voice/PLAN.md`
+  section 17.
+
 ## App wiring (`Sources/DesnotchCore/App/`)
 
 `AppDelegate` (`@MainActor`) is only the single-instance guard plus launch/terminate sequencing.
-`AppComposition` owns every controller and their wiring (update checker and global hot key are nil in
-smoke-test mode); `WindowCoordinator` owns the notch panel's `NotchWindowController` (hover authority
+`AppComposition` owns every controller and their wiring (the update checker, the global hot key,
+the voice coordinator, and the Hermes backend are nil in smoke-test mode; `voiceModel` still
+exists and nothing drives it); `WindowCoordinator` owns the notch panel's `NotchWindowController` (hover authority
 stays there) and the lazily created Settings / Getting Started / Add Reminder windows;
 `StatusMenuBuilder` (+ `StatusMenuBuilder+Actions.swift`) owns the status item, the rebuild-on-open
 menu, and every menu action handler. New controllers go in `AppComposition`; new menu actions need a
@@ -461,8 +515,10 @@ menu, and every menu action handler. New controllers go in `AppComposition`; new
 See `README.md` for `swift run`/`swift build` and `scripts/build-app.sh` (release build + minimal
 `.app` bundle + inside-out codesign verified with `--deep --strict`; ad-hoc by default, Developer
 ID/notarization opt-in). `HARDENED_RUNTIME=1` signs the main executable and app with
-`scripts/desnotch.entitlements` (calendars; EventKit is denied silently without it) and fails if it is
-missing. `VERSION` comes from the environment or the latest git tag and the build
+`scripts/desnotch.entitlements` (calendars, so EventKit is not denied silently, and
+`com.apple.security.device.audio-input`, so the microphone is not denied) and fails if the file is
+missing. The Info.plist that script writes includes `NSMicrophoneUsageDescription` and
+`NSSpeechRecognitionUsageDescription`. `VERSION` comes from the environment or the latest git tag and the build
 fails without either. The vendored adapter is pinned by `VENDOR.sha256` (verified before and
 after bundling). `CONTRIBUTING.md` covers build/test/lint (XCTest only runs in CI), and
 `RELEASING.md` the tag-driven `release.yml` flow. No Xcode project - SPM executable target only.
