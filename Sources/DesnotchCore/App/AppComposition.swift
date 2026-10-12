@@ -22,6 +22,11 @@ final class AppComposition {
     /// coordinator that drives it is wired by WP-HERMES and stays off unless `voiceEnabled`.
     let voiceModel = VoiceSessionModel()
 
+    /// Nil in smoke-test mode. Drives `voiceModel`; registering keys or audio happens
+    /// only after voice is enabled.
+    private(set) var voiceCoordinator: VoiceCoordinator?
+    /// Nil in smoke-test mode. Constructing it spawns nothing; `stopOwnedResources` terminates it.
+    private var hermesBackend: HermesAgentBackend?
     /// Nil in smoke-test mode (never polls GitHub there).
     private(set) var updateChecker: UpdateChecker?
     /// Nil in smoke-test mode (must not take a key combination from the developer's apps).
@@ -54,6 +59,38 @@ final class AppComposition {
         batteryController = BatteryController(presentation: presentation)
         mediaUseMonitor = MediaUseMonitor()
         notificationMirror = NotificationMirrorController(presentation: presentation, settings: .shared)
+        if !smokeTestMode {
+            let backend = HermesAgentBackend()
+            hermesBackend = backend
+            voiceCoordinator = VoiceCoordinator(
+                model: voiceModel,
+                settings: SettingsStore.shared,
+                clock: SystemVoiceClock(),
+                recognizer: AppleSpeechRecognizer(),
+                synthesizer: AppleSpeechSynthesizer(),
+                executor: SystemLocalExecutor(
+                    nowPlaying: nowPlayingController,
+                    focusTimer: focusTimerController
+                ),
+                backend: backend,
+                terminateAgentNow: { [backend] in backend.terminateNow() },
+                audit: FileAuditLogger(
+                    directory: FileAuditLogger.defaultDirectory(),
+                    writer: DiskFileWriter(),
+                    clock: SystemVoiceClock()
+                ),
+                makeKeys: { CarbonPushToTalk(choice: $0) },
+                lock: ScreenLockMonitor(),
+                ducker: VolumeDucker(),
+                permissions: SystemVoicePermissions(),
+                cues: VoiceCuePlayer(),
+                timers: RunLoopTimerScheduler(),
+                dailyTurns: DailyTurnCounter(defaults: .standard),
+                isPrivacyMode: { SettingsStore.shared.privacyModeEnabled },
+                debugTypingEnabled: ProcessInfo.processInfo.environment["DESNOTCH_VOICE_DEBUG"] == "1"
+            )
+            voiceCoordinator?.start()
+        }
     }
 
     /// Daily release poll; `onUpdateAvailable` runs on the main actor. No-op in smoke mode.
@@ -95,5 +132,7 @@ final class AppComposition {
     func stopOwnedResources() {
         globalHotKey?.stop()
         displayAwakeController.stop()
+        voiceCoordinator?.stop()
+        hermesBackend?.terminateNow()
     }
 }
