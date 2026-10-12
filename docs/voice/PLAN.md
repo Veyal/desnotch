@@ -5,7 +5,7 @@ prompt per work package (`WP-LOGIC.md`, `WP-UI.md`, `WP-PLATFORM.md`, `WP-HERMES
 compiled code under `Sources/DesnotchCore/Voice/Contracts/`. The research behind the design is not in the repo; every decision
 that matters is restated here.
 
-Status (commits "feat(voice): plan and contracts", "docs(voice): revise plan round 1", "docs(voice): revise plan round 2", "docs(voice): revise plan round 3"): the package builds
+Status (the commit "feat(voice): plan and contracts" followed by the series of "docs(voice): revise plan round N" commits; the newest, "docs(voice): revise plan round 2" (second series), is the plan of record): the package builds
 warning-free, voice is OFF by default, every seam has a fail-closed stub, and the 20 contract smoke tests plus every existing test pass under the local harness
 (apart from two known baseline failures, section 12). Round 2 also removed the async `NSLock` warnings from the frozen `VoiceTestSupport.swift`, so the only
 remaining harness warning outside `main.swift` is the pre-existing `UpdateCheckerTests.swift:41`.
@@ -258,8 +258,8 @@ Every rule below is built from these. `next` is a copy of the incoming context; 
 
 An event with a `generation` payload is **current** when `generation == context.generation`, or
 (`context.interrupt?.generation == generation`; write it with optional chaining or `if let`, never a force unwrap). A non-current event is
-a no-op, with exactly one exception: `.agent(.usage(...), generation:)` always yields
-`[.audit(AuditDraft(kind: .cost, counters: [...]))]` (see R88) even when stale, so cost accounting is
+a no-op, with exactly one exception: `.agent(.usage(...), generation:)` always yields exactly the R88 effects,
+`[.audit(AuditDraft(kind: .cost, lane: .hermes, counters: [...]))]` (with `lane: .hermes`, see R88) even when stale, so cost accounting is
 never lost.
 
 #### Final transcript handling (`HANDLE_FINAL(text)`)
@@ -644,7 +644,7 @@ owned paths into the `feat/voice` worktree. All commits are local, on `feat/voic
    `feat/voice` HEAD after LOGIC, UI and PLATFORM are imported. After each part: the gate (build, the warning check, harness, lint, ownership check),
    a separate review, `import-wp.sh WP-HERMES <worktree>`, a local commit on `feat/voice`, then a fresh detached worktree at the new
    HEAD for the next part. The orchestrator takes the implementer's final report after every part.
-6. **Cleanup.** After each package has been imported and committed, remove its sibling worktree: `git worktree remove --force ../desnotch-wp-<name>` (each holds a `.build` and a harness build, several GB in total; the path was created by the orchestrator, is detached, and holds nothing that is not already committed on `feat/voice`; verify with `git -C ../desnotch-wp-<name> status --short` first and keep the worktree if it shows anything the import did not copy). After the last part, run `update-filemap` once (Des's rule for new or removed notable paths).
+6. **Cleanup.** The per-package gates (including `check-ownership.sh WP-<NAME>`, G6 (a)) run BEFORE this step, because they need that package's worktree. After each package has been imported and committed, remove its sibling worktree: `git worktree remove --force ../desnotch-wp-<name>` (each holds a `.build` and a harness build, several GB in total; the path was created by the orchestrator, is detached, and holds nothing that is not already committed on `feat/voice`; verify with `git -C ../desnotch-wp-<name> status --short` first and keep the worktree if it shows anything the import did not copy). After the last part, run the two whole-branch ownership commands of G6 (b) on the final HEAD (they replace the per-worktree check once the worktrees are gone), then run `update-filemap` once (Des's rule for new or removed notable paths).
 7. Final review pass; the manual verification list (section 15) is the human's and does not gate anything. Nothing is pushed or merged to `main` by agents.
 
 **Contract amendments.** Implementers may not run git, so when the plan owner amends a `Contracts/*` file (section 8) after the worktrees exist, the orchestrator copies the amended file into every package worktree BY HAND (`cp`), re-runs `swift build` and the package's harness filter there, and tells the implementer. A worktree that was not refreshed would compile against a stale contract.
@@ -657,15 +657,15 @@ owned paths into the `feat/voice` worktree. All commits are local, on `feat/voic
 
 | # | Command (from the repo root) | Required result |
 |---|---|---|
-| G1 | `swift build 2>&1 \| grep -E "warning:\|error:\|Build complete"` | exactly `Build complete!` |
-| G2 | `swift build --scratch-path "$PWD/.build/scratch-check" 2>&1 \| grep -E "warning:\|error:\|Build complete"` (then `rm -rf .build/scratch-check`) | exactly `Build complete!` (a clean, warning-free whole-package build) |
+| G1 | `swift build 2>&1 \| grep -E "warning:\|error:\|Build complete"` | exactly ONE line, matching `^Build complete!` (the real line is `Build complete! (1.73s)`, the time varies), and no line contains `warning:` or `error:` |
+| G2 | `swift build --scratch-path "$PWD/.build/scratch-check" 2>&1 \| grep -E "warning:\|error:\|Build complete"` (then `rm -rf .build/scratch-check`; if the `rm` reports "Directory not empty", wait for `swift-build` to exit and rerun it; prefer `--scratch-path "$(mktemp -d)"` when the sandbox allows it) | exactly ONE line matching `^Build complete!` and no line containing `warning:` or `error:` (a clean, warning-free whole-package build). The first run in a fresh scratch directory is occasionally non-deterministic (`error opening input file .../resource_bundle_accessor.swift`); RERUN it once before treating it as a failure |
 | G3 | `scripts/voice-harness/run.sh` | `harness: only known baseline failures remain` or `0 failed` |
 | G4 | the harness warning check of section 12 | prints nothing |
-| G5 | `scripts/voice-harness/lint-lite.sh` | `lint-lite: clean (N files)` |
-| G6 | `scripts/voice-harness/check-ownership.sh WP-<NAME>` for each package in its own worktree; `for f in scripts/*.sh scripts/voice-harness/*.sh; do bash -n "$f" \|\| echo "BAD $f"; done` | all owned; prints no `BAD` line |
+| G5 | `scripts/voice-harness/lint-lite.sh $(git diff --name-only --diff-filter=d origin/main -- '*.swift')` (with NO arguments `lint-lite.sh` lints only files that differ from `HEAD`, which is nothing on a committed branch, so it would pass vacuously) | `lint-lite: clean (N files)` with N equal to the number of changed `.swift` files (`git diff --name-only --diff-filter=d origin/main -- '*.swift' \| wc -l`) and N > 0 |
+| G6 | (a) per package, at that package's gate and BEFORE its worktree is removed (section 10 step 6): `scripts/voice-harness/check-ownership.sh WP-<NAME>` in its own worktree; (b) on the final `feat/voice` HEAD, two whole-branch commands that must BOTH print nothing: `git diff --name-only origin/main \| while read p; do awk -F'\t' -v p="$p" '$1==p{f=1} END{exit !f}' scripts/voice-harness/ownership.tsv \|\| echo "UNOWNED $p"; done` (no changed file without an owner) and, after Part C, `awk -F'\t' '{print $1}' scripts/voice-harness/ownership.tsv \| while read p; do [ -f "$p" ] \|\| echo "MISSING $p"; done` (no orphan: every owned path exists); (c) `for f in scripts/*.sh scripts/voice-harness/*.sh; do bash -n "$f" \|\| echo "BAD $f"; done` | (a) all owned; (b) both print nothing; (c) prints no `BAD` line |
 | G7 | `scripts/voice-harness/check-rule-tests.sh`, and `scripts/voice-harness/check-test-names.sh` for each of `WP-UI`, `WP-PLATFORM`, `WP-HERMES-A`, `WP-HERMES-B` | every mandated test method, class and count exists |
-| G8 | every `rg` pass of section 12 | prints what section 12 states (passes 1, 3, the accessibility, `textCase` and stale-note checks and the diff check print nothing; pass 2a hits only the allowlisted scanner constants; the positive on-device check prints `1`; the `.contain` count prints `1`) |
-| G9 | `scripts/voice-harness/run.sh --filter FileAuditLoggerTests`, `--filter HermesProcessGuardTests` | the Python-agreement test prints `ok` (it really ran, section 12), and after the Hermes suite `for m in 61 63 64 66 67 68; do pgrep -fx "sleep $m"; done` and `pgrep -f 'setsid-u[p]'` print nothing |
+| G8 | every `rg` pass of section 12 | prints what section 12 states (passes 1, 2a, 2b, 3, the accessibility, `textCase` and stale-note checks and the diff check print NOTHING (pass 2a includes its `rg -v` allowlist filter, so it is mechanical: no human judges the hits); the positive on-device check prints `1`; the `.contain` count prints `1`) |
+| G9 | `scripts/voice-harness/run.sh --filter FileAuditLoggerTests`, `--filter HermesProcessGuardTests` | the Python-agreement test prints `ok` (it really ran, section 12), and after the Hermes suite `for m in 61 63 64 66 67 68 69; do pgrep -fx "sleep $m"; done` and `pgrep -f 'setsid-u[p]'` print nothing |
 | G10 | `VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app`, and the same with `HARDENED_RUNTIME=1` | both pass (the packaged-app checks do not launch the app) |
 | G11 | a SEPARATE reviewer (never the author) signs off each package against its DO-NOT list | recorded |
 
@@ -677,7 +677,7 @@ Everything else (a microphone, a TCC grant, a notch display, a launched app, the
 
 **P1a WP-LOGIC (automated).** Every table row in `WP-LOGIC.md` is its own passing test METHOD with the mandated name (`check-rule-tests.sh` verifies the names; `check-test-names.sh` does the same for the other packages): normalizer 14 (`testN1_`..), spoken number 34 (`testS1_`..), catalog at least 22 test methods, router 72 (`testRouter_<n>_`), policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32 (`testT1_`..), scanner 33 (`testC1_`..`testC33_`, one method per row), rate limiter 11 (`testL1_`..), reducer one test per rule ID, 10 scenarios (`testScenarioS<n>_`); no file outside the 18 owned; build clean; lint clean.
 
-**P1b WP-UI (automated).** The 10 presentable states render (offscreen render tests) at the fixed pill width, and `idle` has a defined empty presentation; the wing table passes; `wantsHover` has the third input and `PillSourceGuardTests` still passes; privacy mode hides every transcript/reply/literal; Approve is disabled for truncated/auto-deny/T3 cards and for literals over 240 characters or 6 lines, the literal is never clipped (render tests at content widths 268 and 228, approval card height at most `approvalHeightBudget` = 300), and Approve is hold-to-approve (`NotchAnimation.Motion.approveHoldDuration` = 0.6 s in every token set) for agent cards with no accessibility shortcut; status-menu mirror and Settings section exist; announcements never carry content; existing tests green. (Looking at the pill on a notch display is a HUMAN item, section 15 item 7.)
+**P1b WP-UI (automated).** The 10 presentable states render (offscreen render tests) at the fixed pill width, and `idle` has a defined empty presentation; the wing table passes; `wantsHover` has the third input and `PillSourceGuardTests` still passes; privacy mode hides every transcript/reply/literal; Approve is disabled for truncated/auto-deny/T3 cards, for literals over 240 characters or 6 lines, and for an AGENT card while Privacy mode hides its literal (Deny and Stop stay enabled), the literal is never clipped (render tests at content widths 268 and 228, approval card height at most `approvalHeightBudget` = 300), and Approve is hold-to-approve (`NotchAnimation.Motion.approveHoldDuration` = 0.6 s in every token set) for agent cards with no accessibility shortcut; status-menu mirror and Settings section exist; announcements never carry content; existing tests green. (Looking at the pill on a notch display is a HUMAN item, section 15 item 7.)
 
 **P1c WP-PLATFORM (automated).** All pure parts tested (levels, hotkey map, press tracker, the hot-key outcome functions, lock flags, executor with fakes, mute memory, ducker, audit chain incl. tamper detection and the Python-verifier agreement test, file logger, disk writer, permission mapping, the pure speech decision table, the lock-flag merge including `isLocked` with no observers); `VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app` passes in normal and `HARDENED_RUNTIME=1` mode (Info.plist usage strings and the audio-input entitlement present; these two runs do not launch the app). **HUMAN:** the manual checklist items 1-6 of `WP-PLATFORM.md` section 5 are reported `BLOCKED: human-run` (they need a physical key press, a spoken sentence and TCC grants), and move to section 15 (S2, S3, S5).
 
@@ -687,7 +687,7 @@ Everything else (a microphone, a TCC grant, a notch display, a launched app, the
 
 **P4 WP-HERMES part B.** *Automated:* preflight, ACP client, mapper, supervisor, hard stop and backend tests green with scripted transports and a real throwaway process tree; no stray processes after the suite (the `pgrep` checks of the Part B gate print nothing). *HUMAN:* the live canary matrix steps are written down in the Part B report (section 15 items 1-3); they run only after the human has created and locked the `voice` profile.
 
-**P5 (documentation and review gate).** *Automated:* `AGENTS.md`, `CHANGELOG.md`, `README.md` updated; full harness and clean `swift build` and the warning check of section 12 print nothing; both packaging smoke runs pass; every `rg` pass of section 12 prints what section 12 states (pass 1, pass 3 and the diff check print nothing, comments included; pass 2a hits only the allowlisted `CommandRiskScanner` constants); reviewer sign-off. *HUMAN:* `scripts/runtime-smoke-test.sh` (it launches the app, so it needs the installed copy quit) and the section 15 items.
+**P5 (documentation and review gate).** *Automated:* `AGENTS.md`, `CHANGELOG.md`, `README.md` updated; full harness and clean `swift build` and the warning check of section 12 print nothing; both packaging smoke runs pass; every `rg` pass of section 12 prints what section 12 states (pass 1, pass 3 and the diff check print nothing, comments included; pass 2a, with its `rg -v` allowlist filter, prints nothing); reviewer sign-off. *HUMAN:* `scripts/runtime-smoke-test.sh` (it launches the app, so it needs the installed copy quit) and the section 15 items.
 
 ## 12. Build, test and harness commands
 
@@ -786,8 +786,8 @@ rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --s
   --glob '!**/Logic/CommandRiskScanner.swift' Sources/DesnotchCore/Voice
 rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|pkill|killall|hermes pause|osascript|auth\.json|AXIsProcessTrusted' \
   -g 'Voice*.swift' -g 'NotchPillView+Voice.swift' Sources/DesnotchCore/UI
-# pass 2a: the scanner may name the dangerous words, but ONLY as data in its `Pat` constants and its protected-path list
-rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift
+# pass 2a: the scanner may name the dangerous words, but ONLY as data: on a `static let <Name> = #"..."#` line or as one quoted string per line in its protected-path array (WP-LOGIC Step 2c formatting rule). Must print NOTHING.
+rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift | rg -v '^[0-9]+:\s*(static let [A-Za-z0-9]+ = #"|"[^"]+",?$)'
 # pass 2b: the scanner must contain none of the other banned patterns. Must print nothing.
 rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|hermes pause|AXIsProcessTrusted' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift
 # pass 3: safety invariants (no audio file, no URL recognition, no network API, no voice processing, no session/always approvals, no AppleScript, no Accessibility API). Whole Voice tree INCLUDING the scanner. Must print nothing.
@@ -807,7 +807,7 @@ python3 -I scripts/voice-harness/verify-audit.py "$HOME/Library/Application Supp
 
 `git diff origin/main` compares the working tree of the worktree you are in with `origin/main` (committed and uncommitted TRACKED changes); new untracked files are covered by the globbed passes above, which is why WP-UI's new files are all named `Voice*.swift` / `NotchPillView+Voice.swift`.
 
-WP-LOGIC's mandated `CommandRiskScanner` constants contain `osascript` (`Pat.pipeToInterpreter`), `killall|pkill` (`Pat.destructive`) and `auth.json` (the protected-path list) AS DATA, so that file is excluded from pass 1 and checked by an allowlist instead: pass 2a may hit only those lines (the `Pat` constants and the protected-path array, nothing else), and pass 2b must print nothing. The two packaging runs modify only the gitignored `.build/` and `dist/`; each takes about 60 s, do not abort them.
+WP-LOGIC's mandated `CommandRiskScanner` constants contain `osascript` (`Pat.pipeToInterpreter`), `killall|pkill` (`Pat.destructive`) and `auth.json` (the protected-path list) AS DATA, so that file is excluded from pass 1 and checked by an allowlist instead: pass 2a filters its hits through the `rg -v` allowlist (the `Pat` constant lines and the one-string-per-line protected-path array, nothing else) and must print nothing, and pass 2b must print nothing. The two packaging runs modify only the gitignored `.build/` and `dist/`; each takes about 60 s, do not abort them.
 
 The installed `/Applications/desnotch.app` of the human normally runs on this machine. Its single-instance guard makes `scripts/runtime-smoke-test.sh`, `swift run` and any packaged-app launch exit at once, so those steps are the human's: agents never quit or kill the installed app or its `mediaremote-adapter` perl process.
 

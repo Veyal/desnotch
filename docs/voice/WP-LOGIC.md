@@ -17,7 +17,9 @@
    safe choice is to refuse (reject / deny / no-op).
 5. **Test file boilerplate.** Every test file starts with `import XCTest` and `@testable import DesnotchCore`. Declare each
    test class on ONE line, `final class XTests: XCTestCase {` (the harness runner generator only recognises that shape). Put
-   helper functions and fakes at column 0 AFTER the class, or indent them inside it (see the verification notes below). A
+   helper TYPES and fakes (structs, classes, enums) at column 0 AFTER the class, or indent them inside it (see the verification notes below); file-scope
+   `private let` and `private func` helpers (no type declaration, so the runner generator is not confused) may sit at the top of the file, before the class, which is where the
+   reducer test helpers below go. A
    `private` helper is not visible to another file: `VoiceReducerScenarioTests.swift` needs its own copies of `env`, `ctx` and
    `step`.
 6. **Two sessions are fine.** The work splits cleanly: session 1 = Step 1 and Step 2 (router chain, policy, tool tiers,
@@ -318,7 +320,7 @@ which must be the last token. Any leftover token means no match.
 `open`; `open up`; `launch`; `buka`; `jalankan`, and `NAME` is the whole remainder (1 to 3 tokens) and satisfies
 `AppCatalog.lookup(NAME) != nil`. There is no search over sub-ranges: `NAME` is what is left after the verb and the stripping below.
 Strip at most ONE leading article (`the`, `a`, `aplikasi`) and at most ONE trailing suffix
-(`app`, `application`, `aplikasi`), and strip the suffix only when the remainder is non-empty (so `open the app` has `NAME = ["app"]`, which
+(`app`, `application`, `aplikasi`), and strip the suffix only when at least one token remains after stripping it (so `open the app` has `NAME = ["app"]`, which
 is not in the catalog). If `NAME` is not in the catalog the grammar does not match (rule 11 then gives `.unknownApp`).
 **Try every `VERB` alternative, longest first** (`open up` before `open`): the first alternative whose remainder (after the article/suffix stripping) is a catalog hit wins, so `open up safari` is `VERB` `open up` + `NAME` `[safari]` and gives `.local(.openApp(bundleID: "com.apple.Safari", name: "Safari"))`, while `open up` alone is `VERB` `open` + `NAME` `[up]` (not in the catalog) and gives `.reject(.unknownApp)` through rule 11. If stripping the article and suffix leaves `NAME` EMPTY (`buka aplikasi`, `open the`), the grammar does not match and rule 11 gives `.reject(.unknownApp)` (2 to 5 tokens). Two extra router tests beyond the 72 rows (named, so the check script finds them): `testRouterOpenUpSafariUsesTheLongestVerb` and `testRouterBukaAplikasiAloneIsUnknownApp`.
 
@@ -548,6 +550,7 @@ and whether it may be approved at all. Algorithm:
    The patterns run on the lowercased sanitized text. The `.protectedPath`, `.commandSubstitution`, `.chaining` (`;`, `&&`, `||`)
    and `.redirect` checks use plain `lowered.contains(...)`.
 3. **Truncate**: if `sanitized.count > displayLimit`, `sanitized = String(sanitized.prefix(displayLimit)) + "…"` and `wasTruncated = true`.
+   **Formatting rule that makes the final `rg` check mechanical (pass 2a of PLAN section 12):** the dangerous words `osascript`, `pkill`, `killall` and `auth.json` may appear in `CommandRiskScanner.swift` ONLY (a) on a line that starts (after indentation) with `static let <Name> = #"` (the `Pat` constants, one constant per line, so `Pat.pipeToInterpreter` and `Pat.destructive` carry `osascript` and `killall|pkill`), or (b) as ONE quoted string per line in the protected-path array (`"auth.json",`, indentation allowed, a trailing comma or none). Never in a comment, never inside a longer expression, never two on one line outside those shapes. Pass 2a is then `rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift | rg -v '^[0-9]+:\s*(static let [A-Za-z0-9]+ = #"|"[^"]+",?$)'`, which must print nothing.
 4. **Tier**: if flags contain `.sudo` or `.protectedPath` -> `.t4`; else if flags intersect `RiskFlags.autoDeny` -> `.t4`;
    else if flags contain `.url` -> `.t3`; else `.t2`.
 
@@ -733,8 +736,8 @@ Every rule below is built from these. `next` is a copy of the incoming context; 
 
 An event with a `generation` payload is **current** when `generation == context.generation`, or
 (`context.interrupt?.generation == generation`; write it with optional chaining or `if let`, never a force unwrap). A non-current event is
-a no-op, with exactly one exception: `.agent(.usage(...), generation:)` always yields
-`[.audit(AuditDraft(kind: .cost, counters: [...]))]` (see R88) even when stale, so cost accounting is
+a no-op, with exactly one exception: `.agent(.usage(...), generation:)` always yields exactly the R88 effects,
+`[.audit(AuditDraft(kind: .cost, lane: .hermes, counters: [...]))]` (with `lane: .hermes`, see R88) even when stale, so cost accounting is
 never lost.
 
 #### Final transcript handling (`HANDLE_FINAL(text)`)
@@ -993,7 +996,7 @@ Important details people get wrong:
 - The reducer must be total: no `fatalError`, no force unwrap, no `precondition`. An event it does not know about in a state
   is a no-op.
 
-### Test helpers (put these at the top of `VoiceReducerRuleTests.swift`, copy them)
+### Test helpers (put these at the top of `VoiceReducerRuleTests.swift`, before the test class, copy them; they are `private let/func`, not types, so this agrees with item 5 of the global notes)
 
 ```swift
 private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
@@ -1024,6 +1027,8 @@ private func step(_ c: VoiceContext, _ e: VoiceEvent, _ env: VoiceReducerEnv = e
 
 ### Rule tests
 
+**Always set `lane` yourself when you edit a context** (`ctx(.review) { $0.route = .local(i); $0.lane = .local }`): `ctx(_:)` leaves `lane` nil, and rules R60, R61 and R73 never set it for you, so a `ctx(.review)` with a `.local` route and no lane would reach `.acting` with `lane == nil`; rules R82-R92, R95-R97 and R90 all depend on `lane` being `.local` or `.hermes`. For R64 a nil route counts as "any other route".
+
 `VoiceReducerRuleTests`: **one test per rule ID**, named `testR01_staleEventIsNoOp`, `testR02_featureDisabledStopsEverything`,
 `testR10_talkPressedStartsAHoldCapture`, ... Every ID that appears in the rule tables (R01-R04b, R10-R14, R20-R24, R30-R37,
 R40-R43, R50-R58, R60-R65, R70-R79, R80-R92, R95-R97, R100-R105, R110-R112, R120-R122, R130-R132) gets at least one test that
@@ -1044,7 +1049,7 @@ Include these specific checks (they catch the usual mistakes):
 - `testR22`/`testR32`: a tap (held 0.1 s) switches `captureMode` to `.toggle` and does not end the capture.
 - `testR54`: a cap-ended capture (`END_BY_CAP`) whose final text is not a local command ends in `.error` with
   `failure == .rejected(.needsUserRelease)` and no `.submitToAgent` effect.
-- `testR63`: the `.limited` branch with `ctx.rate` pre-filled with ten recent `.t1` events (call `tryConsume` in a loop to build it).
+- `testR63`: the `.limited` branch with `ctx.rate` pre-filled with ten recent `.t1` events (call `tryConsume` in a loop to build it, and write every call as `_ = rate.tryConsume(...)`: `tryConsume` is not `@discardableResult`, and an ignored result is an "unused result" warning that only the harness warning check would catch).
 - `testR83`: tripwire for `terminal`, for unknown `zzz`, and for a `t2` tool with `approvedToolStarts == 0`; and NOT for
   `clock` (R82) and NOT for `write_file` with `approvedToolStarts == 1` (R82, which also decrements it to 0).
 - `testR84`: auto-deny for a request whose `risk` contains `.pipeToInterpreter`, one with `tier: .t4`, and one with `tier: .t3`
@@ -1179,7 +1184,7 @@ rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --s
 rg -n 'AVAudioFile|SFSpeechURLRecognitionRequest|URLSession|setVoiceProcessingEnabled|allow_session|allow_always|deny_always|NSAppleScript|AXUIElement' Sources/DesnotchCore/Voice/Logic     # safety invariants: must print nothing
 ```
 
-`osascript`, `pkill`, `killall` and `auth.json` may appear in `CommandRiskScanner.swift` ONLY as data in the `Pat` constants and the protected-path list (`rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift` may hit only those lines). The warning check and the fresh-scratch `swift build` write OUTSIDE the worktree (`mktemp -d` is under the system temp directory): a sandbox that restricts you to your worktree must be given permission for that, or use `$PWD/.build/scratch-check` for the `--scratch-path` and `HARNESS_DIR` instead (`.build/` is gitignored); report which you used.
+`osascript`, `pkill`, `killall` and `auth.json` may appear in `CommandRiskScanner.swift` ONLY as data in the `Pat` constants and the protected-path list (pass 2a, the mechanical form: `rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift | rg -v '^[0-9]+:\s*(static let [A-Za-z0-9]+ = #"|"[^"]+",?$)'` must print nothing; see the formatting rule in Step 2c). The warning check and the fresh-scratch `swift build` write OUTSIDE the worktree (`mktemp -d` is under the system temp directory): a sandbox that restricts you to your worktree must be given permission for that, or use `$PWD/.build/scratch-check` for the `--scratch-path` and `HARNESS_DIR` instead (`.build/` is gitignored); report which you used.
 
 Done means: build clean; every class above shows `0 failed`; the full suite shows `0 failed` (or only the known baseline
 failures); lint clean; test METHOD counts at least: normalizer 14 (`testN1_`..`testN14_`), spoken number 34 (`testS1_`..`testS34_`), catalog at least 22 test methods (18 rows plus the negative and invariant tests below), router 72 (`testRouter_1_`..`testRouter_72_`), policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32 (`testT1_`..`testT32_`),

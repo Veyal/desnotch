@@ -31,7 +31,7 @@ case "$wp" in
     ;;
   WP-PLATFORM)
     text="$(cat docs/voice/WP-PLATFORM.md)"
-    classes="LevelMeterTests VoiceHotkeyMapTests PressTrackerTests CarbonHotKeyOutcomeTests LockFlagsTests ScreenLockMonitorTests SystemLocalExecutorTests MuteMemoryTests VolumeDuckerTests AuditChainTests FileAuditLoggerTests DiskFileWriterTests SystemVoicePermissionsTests SpeechDecisionTests"
+    classes="LevelMeterTests VoiceHotkeyMapTests PressTrackerTests CarbonHotKeyOutcomeTests CarbonPushToTalkLifecycleTests LockFlagsTests ScreenLockMonitorTests SystemLocalExecutorTests MuteMemoryTests VolumeDuckerTests AuditChainTests FileAuditLoggerTests DiskFileWriterTests SystemVoicePermissionsTests SpeechDecisionTests"
     ;;
   WP-HERMES-A)
     text="$(doc_section docs/voice/WP-HERMES.md '^### A\.9' '^\*\*Part A gate')"
