@@ -60,7 +60,7 @@ the feature (section 17).
 | `voice` Hermes profile | Created and locked (`chflags uchg`) by the human later; desnotch only runs a preflight on every spawn and every session and refuses the Hermes lane until it passes; desnotch does not create it |
 | MVP order | Local lane first, then Hermes lane code |
 | Engagement context | Never on the voice path |
-| Push-to-talk | Default hold `⌥⌘V` (also `⇧⌥⌘V`, `⌥⌘J`); hold >= 0.35 s and release commits; a tap latches a toggle capture (10 s cap); hold cap 30 s. `⌥⌘V` shadows Finder's "Move Item Here" while Finder is frontmost; the two alternatives avoid it, and the README and the Settings note for the shortcut say so |
+| Push-to-talk | Default hold `⌥⌘V` (also `⌥⇧⌘V`, `⌥⌘J`; the standard Apple modifier order, which is what the existing `HotKeyBinding.displayString` prints); hold >= 0.35 s and release commits; a tap latches a toggle capture (10 s cap); hold cap 30 s. `⌥⌘V` shadows Finder's "Move Item Here" while Finder is frontmost; the two alternatives avoid it, and the README and the Settings note for the shortcut say so |
 | Stop | Notch Stop button, global chord `⌥⌘.`, status menu, Esc (soft cancel), and the spoken phrase "abort agent" (during an agent turn via a stop-only interrupt capture) |
 | Daily cloud cap | 40 agent turns per local day, per-turn 180 s and 12-step budgets |
 | Defaults | `voiceEnabled` false, `voiceHermesLane` false, `voiceTTSEnabled` false, `voiceDuckMedia` true, locale `en-US` |
@@ -76,6 +76,11 @@ Deviations from the research report (each deliberate):
 7. **Audit anchoring** is a follow-up: the logger returns the chain head hash, but periodically anchoring it outside the file (e.g. a Notion note) is manual for now. `chflags uappend` is skipped on purpose: the file owner can clear it, so it is cosmetic.
 8. **No relabelling of the mic indicator.** The research report asked to relabel `MediaUseMonitor`'s microphone dot when the capture is desnotch's own. Not in this plan (no work package owns it, and `MediaUseMonitor` is outside every voice file list); the pill's own `listening` state already shows the mic. Follow-up, not an MVP item.
 9. **The cloud lane also needs the Stop chord.** `hermesLaneReady` additionally requires `hotkeyStatus == .active` (WP-HERMES A.2), because `CarbonPushToTalk.start()` returns `.unavailable` when the Stop chord could not be registered, and the status-menu Talk path still works then; the local lane may run without the chord, a cloud agent turn may not.
+10. **No vendored ACP contract hash and no CI diff script.** The research report proposed vendoring the ACP schema with a hash checked in CI. Not done: the client is lenient (four methods, a few updates, a protocol-version check in the preflight) and the live Hermes is not reachable from CI. The re-check against `acp/schema.py` is a reading step for the Part B implementer (B.4).
+11. **The agent approval card has no Approve item in the status menu** (WP-UI 2.7). The menu would show a command it cannot show (menus can be screen-shared) and would bypass hold-to-approve; a local (volume) card does have Approve. Deny and Stop are always there.
+12. **Approval-card text is capped, not scrollable.** The literal is shown whole up to 240 characters and 6 lines; beyond that the card shows a prefix and Approve is DISABLED (WP-UI 2.3). A scrollable text view was rejected because a pill that never takes focus cannot scroll reliably and a clipped literal is the unsafe failure.
+13. **No token and cost counters from a live Hermes.** ACP specifies no usage message, so the R88 counters in the audit log are produced only by scripted tests until the agent reports usage in a shape the mapper knows (WP-HERMES B.5).
+14. **Defence-in-depth gaps accepted for the MVP.** (a) The review-timer rules R60 and R63 (and the approve rule R73) do not re-check `env.screenLocked` when the timer fires; they rely on the `.screenLocked` event arriving during the 1.5 s window (R04 cancels the flow). The coordinator reads the lock lazily (A.2) for talk, toggle, final transcript and approve only. Adding the re-check means editing PLAN section 7 and WP-LOGIC identically, so it is left to a follow-up. (b) A spoken "cancel" while an agent card is on screen is R103 `.cancelTurn`, which emits `.cancelAgentTurn` without a `.respondToApproval(deny)`; WP-HERMES B.7 closes it on the backend side (`cancelTurn()` answers every open permission request `deny` before it sends `session/cancel`). (c) The tripwire audit record carries `outcome: kind40`, a model-authored tool label; the mapper restricts it to `^[a-z0-9_.-]{1,40}$` (otherwise `unknown_tool`) and the audit logger reduces it to `[A-Za-z0-9_.:-]`, so it can carry no free text, but it is not hashed. All three are recorded as QUESTIONS for the plan owner, not defects.
 
 ## 5. Architecture and data flow
 
@@ -252,7 +257,7 @@ Every rule below is built from these. `next` is a copy of the incoming context; 
 #### Stale events (rule R01)
 
 An event with a `generation` payload is **current** when `generation == context.generation`, or
-(`context.interrupt != nil` and `generation == context.interrupt!.generation`). A non-current event is
+(`context.interrupt?.generation == generation`; write it with optional chaining or `if let`, never a force unwrap). A non-current event is
 a no-op, with exactly one exception: `.agent(.usage(...), generation:)` always yields
 `[.audit(AuditDraft(kind: .cost, counters: [...]))]` (see R88) even when stale, so cost accounting is
 never lost.
@@ -506,6 +511,7 @@ generated from this table). `Package.swift` is not changed by anyone.
 | `scripts/voice-harness/stub-xctest/XCTest.swift` | new | BASE | local test harness and checks, frozen |
 | `scripts/voice-harness/import-wp.sh` | new | BASE | copies one package's owned paths from its worktree into feat/voice (section 10) |
 | `scripts/voice-harness/check-rule-tests.sh` | new | BASE | fails when a mandated WP-LOGIC test method name is missing (reducer rule IDs, scenarios, normalizer, spoken number, router, tool tier, scanner and rate-limiter tables) |
+| `scripts/voice-harness/check-test-names.sh` | new | BASE | fails when a test method or class that WP-UI, WP-PLATFORM or WP-HERMES (part A or B) mandates by name is missing (names are read from the backticked `testXxx` tokens of the package document) |
 | `scripts/voice-harness/verify-audit.py` | new | BASE | independent `python3 -I` verifier of the audit hash chain |
 | `Sources/DesnotchCore/Voice/Logic/UtteranceNormalizer.swift` | changed | WP-LOGIC | base provides a fail-closed stub with the final signature |
 | `Sources/DesnotchCore/Voice/Logic/SpokenNumber.swift` | changed | WP-LOGIC | base provides a fail-closed stub with the final signature |
@@ -638,7 +644,8 @@ owned paths into the `feat/voice` worktree. All commits are local, on `feat/voic
    `feat/voice` HEAD after LOGIC, UI and PLATFORM are imported. After each part: the gate (build, the warning check, harness, lint, ownership check),
    a separate review, `import-wp.sh WP-HERMES <worktree>`, a local commit on `feat/voice`, then a fresh detached worktree at the new
    HEAD for the next part. The orchestrator takes the implementer's final report after every part.
-6. Final review pass, manual acceptance by the human (section 15). Nothing is pushed or merged to `main` by agents.
+6. **Cleanup.** After each package has been imported and committed, remove its sibling worktree: `git worktree remove --force ../desnotch-wp-<name>` (each holds a `.build` and a harness build, several GB in total; the path was created by the orchestrator, is detached, and holds nothing that is not already committed on `feat/voice`; verify with `git -C ../desnotch-wp-<name> status --short` first and keep the worktree if it shows anything the import did not copy). After the last part, run `update-filemap` once (Des's rule for new or removed notable paths).
+7. Final review pass; the manual verification list (section 15) is the human's and does not gate anything. Nothing is pushed or merged to `main` by agents.
 
 **Contract amendments.** Implementers may not run git, so when the plan owner amends a `Contracts/*` file (section 8) after the worktrees exist, the orchestrator copies the amended file into every package worktree BY HAND (`cp`), re-runs `swift build` and the package's harness filter there, and tells the implementer. A worktree that was not refreshed would compile against a stale contract.
 
@@ -646,11 +653,29 @@ owned paths into the `feat/voice` worktree. All commits are local, on `feat/voic
 
 ## 11. Acceptance criteria per phase
 
+**Definition of done (the GATING list; every item is a command with an objective result, no human, no hardware).** The project is done for an agent-run execution when ALL of these hold on the `feat/voice` HEAD:
+
+| # | Command (from the repo root) | Required result |
+|---|---|---|
+| G1 | `swift build 2>&1 \| grep -E "warning:\|error:\|Build complete"` | exactly `Build complete!` |
+| G2 | `swift build --scratch-path "$PWD/.build/scratch-check" 2>&1 \| grep -E "warning:\|error:\|Build complete"` (then `rm -rf .build/scratch-check`) | exactly `Build complete!` (a clean, warning-free whole-package build) |
+| G3 | `scripts/voice-harness/run.sh` | `harness: only known baseline failures remain` or `0 failed` |
+| G4 | the harness warning check of section 12 | prints nothing |
+| G5 | `scripts/voice-harness/lint-lite.sh` | `lint-lite: clean (N files)` |
+| G6 | `scripts/voice-harness/check-ownership.sh WP-<NAME>` for each package in its own worktree; `for f in scripts/*.sh scripts/voice-harness/*.sh; do bash -n "$f" \|\| echo "BAD $f"; done` | all owned; prints no `BAD` line |
+| G7 | `scripts/voice-harness/check-rule-tests.sh`, and `scripts/voice-harness/check-test-names.sh` for each of `WP-UI`, `WP-PLATFORM`, `WP-HERMES-A`, `WP-HERMES-B` | every mandated test method, class and count exists |
+| G8 | every `rg` pass of section 12 | prints what section 12 states (passes 1, 3, the accessibility, `textCase` and stale-note checks and the diff check print nothing; pass 2a hits only the allowlisted scanner constants; the positive on-device check prints `1`; the `.contain` count prints `1`) |
+| G9 | `scripts/voice-harness/run.sh --filter FileAuditLoggerTests`, `--filter HermesProcessGuardTests` | the Python-agreement test prints `ok` (it really ran, section 12), and after the Hermes suite `for m in 61 63 64 66 67 68; do pgrep -fx "sleep $m"; done` and `pgrep -f 'setsid-u[p]'` print nothing |
+| G10 | `VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app`, and the same with `HARDENED_RUNTIME=1` | both pass (the packaged-app checks do not launch the app) |
+| G11 | a SEPARATE reviewer (never the author) signs off each package against its DO-NOT list | recorded |
+
+Everything else (a microphone, a TCC grant, a notch display, a launched app, the installed desnotch being quit, the human's `voice` Hermes profile) is on the **Manual verification** list, section 15. It is NON-GATING: it never blocks an import, a commit or the completion of an agent run, and an agent reports each item as `NOT RUN: <reason>` and never retries or works around it.
+
 **What "success" means for an agent-run (unattended) execution, read first.** Agent-run success is EVERY automated gate passing: `swift build`, the fresh-scratch warning check, the full harness (only the 2 known baseline failures remain), `lint-lite.sh`, `check-ownership.sh`, `check-rule-tests.sh`, all `rg` passes of section 12, the `pgrep` checks after the Hermes suite, and a SEPARATE reviewer's sign-off per package. Any step that needs a launched app, the microphone, a TCC grant, notch hardware, the human's Hermes profile, or the installed app being quit is a **HUMAN** item. Record it as `NOT RUN: <reason>` and carry it into section 15; it does NOT block the import or the commit, and it is NEVER retried or worked around. Never quit, kill or restart the installed desnotch or its adapter. The unattended run is complete (a "do it until success" loop may stop) when P1a, P1b, P1c, P2 (its automated part), P4 (its automated part) and the P5 documentation meet their automated criteria; P3, the manual parts of P2, the live canary of P4 and the runtime-smoke part of P5 stay open for the human and are listed under HUMAN in the final report.
 
 **P0 (this commit).** `swift build` prints no warning; `scripts/voice-harness/run.sh` ends with only the two known baseline failures; `VoiceContractSmokeTests` 20/20; settings default off; nothing in the app changes behavior (the model exists but nothing writes it); `scripts/voice-harness/lint-lite.sh` clean.
 
-**P1a WP-LOGIC (automated).** Every table row in `WP-LOGIC.md` is its own passing test METHOD with the mandated name (`check-rule-tests.sh` verifies the names): normalizer 14 (`testN1_`..), spoken number 34 (`testS1_`..), catalog at least 22 test methods, router 72 (`testRouter_<n>_`), policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32 (`testT1_`..), scanner 33 (`testC1_`..`testC33_`, one method per row), rate limiter 11 (`testL1_`..), reducer one test per rule ID, 10 scenarios (`testScenarioS<n>_`); no file outside the 18 owned; build clean; lint clean.
+**P1a WP-LOGIC (automated).** Every table row in `WP-LOGIC.md` is its own passing test METHOD with the mandated name (`check-rule-tests.sh` verifies the names; `check-test-names.sh` does the same for the other packages): normalizer 14 (`testN1_`..), spoken number 34 (`testS1_`..), catalog at least 22 test methods, router 72 (`testRouter_<n>_`), policy: tier boundaries (volume 0/70/71/100/-1/101, timer 0/1/120/121 and every other intent) plus the 10 `decide` combinations, tool tiers 32 (`testT1_`..), scanner 33 (`testC1_`..`testC33_`, one method per row), rate limiter 11 (`testL1_`..), reducer one test per rule ID, 10 scenarios (`testScenarioS<n>_`); no file outside the 18 owned; build clean; lint clean.
 
 **P1b WP-UI (automated).** The 10 presentable states render (offscreen render tests) at the fixed pill width, and `idle` has a defined empty presentation; the wing table passes; `wantsHover` has the third input and `PillSourceGuardTests` still passes; privacy mode hides every transcript/reply/literal; Approve is disabled for truncated/auto-deny/T3 cards and for literals over 240 characters or 6 lines, the literal is never clipped (render tests at content widths 268 and 228, approval card height at most `approvalHeightBudget` = 300), and Approve is hold-to-approve (`NotchAnimation.Motion.approveHoldDuration` = 0.6 s in every token set) for agent cards with no accessibility shortcut; status-menu mirror and Settings section exist; announcements never carry content; existing tests green. (Looking at the pill on a notch display is a HUMAN item, section 15 item 7.)
 
@@ -744,7 +769,7 @@ Extra commands:
 ```sh
 scripts/voice-harness/run.sh --list                    # print every generated "Class.testName"
 scripts/voice-harness/check-ownership.sh WP-LOGIC      # touched files must all belong to that package (also: WP-UI, WP-PLATFORM, WP-HERMES)
-bash -n scripts/*.sh                                   # shell syntax (CI also runs shellcheck on scripts/*.sh)
+for f in scripts/*.sh scripts/voice-harness/*.sh; do bash -n "$f" || echo "BAD $f"; done   # shell syntax, one file per call (bash -n checks only its first operand); CI also runs shellcheck on scripts/*.sh
 VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app            # packaging smoke (dist/ is gitignored)
 HARDENED_RUNTIME=1 VERSION=0.0.1 scripts/build-app.sh && scripts/smoke-test.sh dist/desnotch.app
 ```
@@ -767,11 +792,16 @@ rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/Comm
 rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|hermes pause|AXIsProcessTrusted' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift
 # pass 3: safety invariants (no audio file, no URL recognition, no network API, no voice processing, no session/always approvals, no AppleScript, no Accessibility API). Whole Voice tree INCLUDING the scanner. Must print nothing.
 rg -n 'AVAudioFile|SFSpeechURLRecognitionRequest|URLSession|setVoiceProcessingEnabled|allow_session|allow_always|deny_always|NSAppleScript|AXUIElement' Sources/DesnotchCore/Voice
-rg -n 'accessibilityAction' Sources/DesnotchCore/UI/VoiceSectionView.swift          # no accessibility shortcut may approve an agent card: must print nothing
+rg -n 'accessibilityAction|textCase' Sources/DesnotchCore/UI/VoiceSectionView.swift Sources/DesnotchCore/UI/VoiceSettingsSection.swift Sources/DesnotchCore/UI/NotchPillView+Voice.swift   # no accessibility shortcut may approve an agent card, no uppercase modifier: must print nothing
+rg -n '\.combine\b|\.ignore\b' Sources/DesnotchCore/UI/VoiceSectionView.swift          # the Deny/Approve/Stop/Cancel/Resume buttons must stay separate accessibility elements (WP-UI 2.3): must print nothing
+rg -c 'accessibilityElement\(children: \.contain\)' Sources/DesnotchCore/UI/VoiceSectionView.swift   # POSITIVE check, after WP-UI: must print 1
+rg -n 'only network request' Sources/DesnotchCore/App/SettingsView.swift           # the update-check note must not claim to be the only network request (WP-UI 2.8): must print nothing
 rg -c 'requiresOnDeviceRecognition = true' Sources/DesnotchCore/Voice/Platform/AppleSpeechRecognizer.swift     # POSITIVE check, after WP-PLATFORM: must print 1
 # diff-based logging check for every file the voice work touched OUTSIDE the globs above (AppComposition, StatusMenuBuilder*, SettingsView, AccessibilityAnnouncer, PillHaptics, NotchPillView*...): must print nothing
 git diff origin/main -- Sources | rg '^\+.*(\bprint\(|\bNSLog\(|\bos_log|\bLogger\()'
 scripts/voice-harness/check-rule-tests.sh                           # after WP-LOGIC: every mandated test method name exists (rule IDs, scenarios, N/S/T/C/L tables, router rows)
+scripts/voice-harness/check-test-names.sh WP-UI                      # after WP-UI (likewise WP-PLATFORM, WP-HERMES-A after part A, WP-HERMES-B after part B): every mandated test method, class and minimum count exists
+scripts/voice-harness/run.sh --filter FileAuditLoggerTests 2>&1 | grep -E '^ok +FileAuditLoggerTests\.testPythonVerifierAgreesWithTheSwiftChain$'   # after WP-PLATFORM: must PRINT the ok line, so the Swift/Python agreement test really ran and did not return early
 python3 -I scripts/voice-harness/verify-audit.py "$HOME/Library/Application Support/desnotch/voice/voice-audit.jsonl"   # HUMAN, needs a real log from a launched app (P2, P5); the automated equivalent is the WP-PLATFORM Python-agreement test
 ```
 
@@ -861,13 +891,13 @@ Files no implementer may touch (all packages): `Package.swift`, `.github/*`, `So
 7. Approvals are visual only, bound to a random nonce, answered `once` or `deny` only. No spoken confirmation. T3 is denied in the MVP; T4 never has a voice path.
 8. Voice is OFF by default and inert in smoke-test mode. The cloud lane is a second opt-in that is re-checked (preflight) on every spawn and every session, and it additionally requires the global Stop chord to be registered (`hotkeyStatus == .active`).
 9. Nothing from a transcript, screen, web page or tool result can raise a tier or satisfy an approval. Unknown tools are T3 and trip the tripwire.
-10. The stop is total: interrupt, then SIGTERM and SIGKILL to the agent's own process group, with a survivor report. desnotch only signals processes it spawned.
+10. The stop is total: interrupt, then SIGTERM and SIGKILL to the agent's own process group, with a survivor report. desnotch only signals processes it spawned (the crash-recovery kill of a stale pid file additionally requires the exact command-line tokens `-p voice acp`, a matching process start time and a group leader, WP-HERMES B.6).
 11. Hermes keeps its own transcripts (its `state.db`); the desnotch audit log is not a record of what Hermes stored.
 12. Pentest and engagement context never goes on the voice path.
 
-## 15. Manual acceptance (the human) and spikes
+## 15. Manual verification (NON-GATING: the human, hardware, a live Hermes profile) and spikes
 
-Needs the human, a microphone, and for items 7-8 a notch MacBook. Report results in the PR description.
+Nothing in this section gates an import, a commit or the completion of an agent run (the gating list is the Definition of done at the top of section 11). It needs the human, a microphone, and for items 7-8 a notch MacBook. Report results in the PR description. Agents list each item they could not run as `NOT RUN: <reason>`.
 
 1. **Create the `voice` Hermes profile** (the WP-HERMES Part B report carries the golden YAML, the path `~/.hermes/profiles/voice/config.yaml` and the `chflags uchg` step verbatim; the README section repeats them): approvals mode `manual` (or `smart`), empty command allowlist, no MCP servers, an explicit and empty ACP toolset list, no cloud STT; then `chflags uchg` its `config.yaml`. Note for the human: Hermes may still add a toolset the preflight cannot see even with `platform_toolsets.acp: []` (for example `x_search` when xAI credentials exist, `hermes_cli/tools_config.py` `_composite_toolsets`, and platform-native toolsets from `_recover_platform_native_toolsets`); fail-closed still holds because such a tool is not allowlisted, classifies T3 and trips R83, so expect a tripwire pause rather than a silent run, and do not put such credentials in the `voice` profile. desnotch refuses the lane until `hermes -p voice acp --check`-equivalent preflight passes.
 2. **S1 (ACP):** with the lane on, one utterance round trip (a plain question; remember that any agent tool call is expected to end in a tripwire pause with the empty toolset, section 1); note cold and warm latency; confirm the child has its own process group (`ps -o pid,pgid,command`).

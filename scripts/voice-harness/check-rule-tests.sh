@@ -55,6 +55,23 @@ need_range "tool tier T" ToolTierTableTests.swift 'testT%d_' 1 32
 need_range "scanner C" CommandRiskScannerTests.swift 'testC%d_' 1 33
 need_range "rate limiter L" RateLimiterTests.swift 'testL%d_' 1 11
 
+# Extra named router tests of the open-app grammar (WP-LOGIC "Open-app grammar"), beyond the 72 rows.
+for name in testRouterOpenUpSafariUsesTheLongestVerb testRouterBukaAplikasiAloneIsUnknownApp; do
+  count=$((count + 1))
+  if ! grep -qE "func ${name}\(" "$dir/IntentRouterTests.swift" 2>/dev/null; then
+    echo "no test $name in IntentRouterTests.swift"
+    missing=$((missing + 1))
+  fi
+done
+
+# Minimum number of test methods in the catalog tests (WP-LOGIC: 18 rows plus the negative and invariant tests).
+count=$((count + 1))
+catalog_methods="$(grep -cE 'func test' "$dir/AppCatalogTests.swift" 2>/dev/null || true)"
+if [[ "${catalog_methods:-0}" -lt 22 ]]; then
+  echo "AppCatalogTests.swift has ${catalog_methods:-0} test methods, WP-LOGIC requires at least 22"
+  missing=$((missing + 1))
+fi
+
 if [[ "$missing" == 0 ]]; then
   echo "check-rule-tests: all $count mandated test methods exist"
   exit 0

