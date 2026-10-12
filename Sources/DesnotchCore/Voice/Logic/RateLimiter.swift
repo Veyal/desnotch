@@ -19,7 +19,26 @@ struct RateLimiter: Equatable, Sendable {
     init() {}
 
     mutating func tryConsume(tier: VoiceTier, now: Date) -> RateVerdict {
-        // STUB (WP-LOGIC replaces this body): fail closed.
-        .limited(retryAfter: 60)
+        switch tier {
+        case .t0, .t4:
+            return .allowed
+        case .t1:
+            return Self.consume(&t1Events, window: 60, limit: VoiceLimits.t1PerMinute, now: now)
+        case .t2, .t3:
+            return Self.consume(&t2Events, window: 600, limit: VoiceLimits.t2PerTenMinutes, now: now)
+        }
+    }
+
+    /// Prunes expired events first, then refuses or records. An event exactly one window old
+    /// is expired. `events.min()` is safe because the count reached `limit >= 1`.
+    private static func consume(_ events: inout [Date], window: TimeInterval, limit: Int,
+                                now: Date) -> RateVerdict {
+        events.removeAll { now.timeIntervalSince($0) >= window }
+        if events.count >= limit {
+            let oldest = events.min() ?? now
+            return .limited(retryAfter: oldest.addingTimeInterval(window).timeIntervalSince(now))
+        }
+        events.append(now)
+        return .allowed
     }
 }
