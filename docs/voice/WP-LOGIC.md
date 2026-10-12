@@ -20,8 +20,7 @@
    helper TYPES and fakes (structs, classes, enums) at column 0 AFTER the class, or indent them inside it (see the verification notes below); file-scope
    `private let` and `private func` helpers (no type declaration, so the runner generator is not confused) may sit at the top of the file, before the class, which is where the
    reducer test helpers below go. A
-   `private` helper is not visible to another file: `VoiceReducerScenarioTests.swift` needs its own copies of `env`, `ctx` and
-   `step`.
+   `private` helper is not visible to another file: `VoiceReducerScenarioTests.swift` needs its own copies of `env`, `ctx`, `step` and `runScript`. Never name a file-scope helper after an `XCTestCase`/`XCTest` member (`run`, `name`, `record`, `measure`, `wait`, `expectation`, `setUp`, `tearDown`, `invokeTest`): see Global rules item 8; the local harness cannot catch it.
 6. **Two sessions are fine.** The work splits cleanly: session 1 = Step 1 and Step 2 (router chain, policy, tool tiers,
    scanner, rate limiter); session 2 = Steps 3 and 4 (the reducer), started with a fresh context. Each session ends with its own
    build, harness and lint run. The ownership check (`scripts/voice-harness/check-ownership.sh WP-LOGIC`) is run at the very end.
@@ -972,7 +971,7 @@ enum VoiceReducer {
             effects = extra; dropInterrupt(); newID(); clearFlow(); context.state = .idle
         }
         mutating func toError(_ failure: VoiceFailure, _ extra: [VoiceEffect] = []) { /* TO_ERROR row */ }
-        mutating func stopAll(_ reason: PauseReason, forceIdle: Bool = false) { /* STOP_ALL row */ }
+        mutating func stopAll(_ reason: PauseReason, forceIdle: Bool = false, auditDecision: String? = nil) { /* STOP_ALL row; auditDecision == nil means auditName(reason) */ }
         mutating func newFlow(_ mode: CaptureMode, _ extra: [VoiceEffect] = []) { /* NEW_FLOW row */ }
         mutating func handleFinal(_ text: String, env: VoiceReducerEnv) { /* HANDLE_FINAL rows R50-R58 */ }
     }
@@ -986,6 +985,7 @@ the others. Put each state's rules in its own small private function (`reduceIdl
 Important details people get wrong:
 
 - `effects` ORDER matters and tests compare arrays exactly. Follow the order written in each row.
+- R02 (`featureDisabled`) is the one caller that overrides both STOP_ALL knobs: it calls `stopAll(.userStop, forceIdle: true, auditDecision: "disabled")`. Every other caller passes neither.
 - `TO_IDLE` bumps the generation (`NEW_ID`); `TO_ERROR` does NOT. After `TO_IDLE`, the timer of the old flow is stale and ignored.
 - `captureEndedByUser` is set only by `END_BY_USER`. A capture that ends by the cap timer (`END_BY_CAP`) or by the recognizer
   must never send anything to the cloud agent (rule R54).
@@ -1034,7 +1034,8 @@ private func step(_ c: VoiceContext, _ e: VoiceEvent, _ env: VoiceReducerEnv = e
 R40-R43, R50-R58, R60-R65, R70-R79, R80-R92, R95-R97, R100-R105, R110-R112, R120-R122, R130-R132) gets at least one test that
 asserts BOTH the resulting `state` (and the changed context fields named in the row) AND the full `effects` array. Where a row
 has several guards (R04, R21/R22, R60/R61/R62, R73/R74, R76/R77, R83, R84/R85, R102, R103), write one test per guard branch
-(suffix `_a`, `_b`, ...). Tests that are no-ops assert `transition.context == input` and `transition.effects.isEmpty`.
+(suffix the branch AFTER the rule ID and its underscore: `testR60_a_...`, `testR60_b_...`, never `testR60a_...`, because `check-rule-tests.sh` matches `testR60_` by prefix and `testR03a_`/`testR04a_`/`testR04b_` are real letter-suffixed IDs). Tests that are no-ops assert `transition.context == input` and `transition.effects.isEmpty`.
+R60 has two reachable branches (`.allow` for a `.t0` intent, and `.confirm` which is R61) plus R62 (`.deny`); the `.allow` rate-limit sub-branch (`tier >= .t1` then `tryConsume`) must exist in the code but is unreachable (every local intent is `.t0`, `.t2` or `.t4`) and needs no test, so write `testR60_a_...` for `.allow` of a `.t0` intent only.
 R62 and R64 are unreachable through the real router, but they ARE reachable by building the context directly, so they get tests
 like every other rule: `testR62_...` uses `ctx(.review) { $0.route = .local(.volumeSet(percent: 150)) }` (tier `.t4`, so
 `.deny(.tierT4)`), then `timerElapsed(.review, 1)`; `testR64_...` uses `ctx(.review) { $0.route = .cancelTurn }`. R74 gets a third branch
@@ -1043,10 +1044,12 @@ like every other rule: `testR62_...` uses `ctx(.review) { $0.route = .local(.vol
 
 Include these specific checks (they catch the usual mistakes):
 
-- `testR10`: `ctx(.idle)` with `counter == 0`: afterwards `counter == 1`, `generation == 1`, `state == .armed`,
+- `testR10`: use `VoiceContext()` directly (or `ctx(.idle) { $0.counter = 0; $0.generation = 0 }`, because `ctx` sets counter and generation to 1) with `counter == 0`: afterwards `counter == 1`, `generation == 1`, `state == .armed`,
   effects `[.startCapture(generation: 1, mode: .hold)]`.
 - `testR01`: a `captureStarted(generation: 99)` in `.armed` changes nothing.
 - `testR22`/`testR32`: a tap (held 0.1 s) switches `captureMode` to `.toggle` and does not end the capture.
+- `testR58_cancelTurnIsUnreachableFromHandleFinal` (R58 has no reachable behavior because HANDLE_FINAL always routes with `agentBusy: false`, which never returns `.cancelTurn`, so the test proves that instead). Context `ctx(.transcribing) { $0.captureEndedByUser = true }`, generation 1, default `env()`. (1) `finalTranscript("stop", 1)` -> state `.review`, `route == .local(.mediaPause)`, `lane == .local`. (2) `finalTranscript("cancel", 1)` -> state `.error`, `failure == .rejected(.ambiguous)`. Assert that no effect of either result is `.cancelAgentTurn` (`XCTAssertFalse(t.effects.contains(.cancelAgentTurn))`; `VoiceEffect` is `Equatable`). The reducer MUST still contain a `case .cancelTurn` branch in HANDLE_FINAL that does `TO_IDLE(prefix)`; it is defensive code and has no test of its own.
+- `testR105_a_finishDropsTheInterruptCapture` and `testR105_b_cancelDropsTheInterruptCapture` (R105 has no result row of its own; it is the DROP_INTERRUPT step inside TO_IDLE/TO_ERROR/STOP_ALL/FINISH/R83, observed through two of them). Both start from `ctx(.acting) { $0.lane = .hermes; $0.counter = 2; $0.interrupt = InterruptCapture(generation: 2, endedByUser: false) }` (so `generation == 1`, interrupt generation 2). (a) event `.agent(.finished(summary: "ok"), generation: 1)` (speech not allowed): `interrupt == nil`, state `.speaking`, effects exactly `[.cancelCapture(generation: 2), .startTimer(.replyDisplay, generation: 1, seconds: 6.0), .cue(.done), .audit(AuditDraft(kind: .execute, lane: .hermes, decision: "finished", outcome: "ok"))]`. (b) event `.cancelRequested` (R90): `interrupt == nil`, state `.idle`, effects exactly `[.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "turn")), .cancelCapture(generation: 2)]` (TO_IDLE sets `effects = extra` first and DROP_INTERRUPT appends after it).
 - `testR54`: a cap-ended capture (`END_BY_CAP`) whose final text is not a local command ends in `.error` with
   `failure == .rejected(.needsUserRelease)` and no `.submitToAgent` effect.
 - `testR63`: the `.limited` branch with `ctx.rate` pre-filled with ten recent `.t1` events (call `tryConsume` in a loop to build it, and write every call as `_ = rate.tryConsume(...)`: `tryConsume` is not `@discardableResult`, and an ignored result is an "unused result" warning that only the harness warning check would catch).
@@ -1063,14 +1066,14 @@ Include these specific checks (they catch the usual mistakes):
 ### Scenario tests
 
 `VoiceReducerScenarioTests`: feed a script of events through `reduce`, carrying the context forward, and assert
-`(state, effects)` after every step. A tiny helper keeps this readable:
+`(state, effects)` after every step. A tiny helper keeps this readable (it is called `runScript`, never `run`: XCTestCase has an instance method `run()` and an unqualified `run(...)` inside a test method would resolve to it):
 
 ```swift
-private func run(_ script: [(VoiceEvent, VoiceReducerEnv)], from start: VoiceContext = VoiceContext())
+private func runScript(_ script: [(VoiceEvent, VoiceReducerEnv)], from start: VoiceContext = VoiceContext())
     -> [VoiceTransition] { var c = start; return script.map { let t = VoiceReducer.reduce(c, $0.0, env: $0.1); c = t.context; return t } }
 ```
 
-Write these ten scenarios (names `testScenarioS1_...`). The `->` shows the state after the event; give the exact effects in
+Write these ten scenarios (names `testScenarioS1_...`). S3, S4 and S5 need R80-R92 and R100-R104 (Step 4): write the scenario file in Step 4, or expect S3-S5 to fail until then and do not stall on that. The `->` shows the state after the event; give the exact effects in
 the test according to the rule tables.
 
 | # | Script | Expected states after each event |
@@ -1088,7 +1091,9 @@ the test according to the rule tables.
 
 ## Verification (what "done" means)
 
-All commands run from the root of YOUR worktree (the directory that contains `Package.swift`).
+All commands run from the root of YOUR worktree (the directory that contains `Package.swift`). Before writing the first test run `mkdir -p Tests/DesnotchCoreTests/Voice/Logic` (git does not track empty directories, so a fresh worktree may not have it).
+
+**Sandbox note.** `swift build` also writes the SwiftPM and clang module caches under `~/Library/Caches` and `~/.cache`, and `mktemp -d` lives under `$TMPDIR`. If your tool runs in a restricted sandbox, it must allow writes to those three locations (or set `TMPDIR="$PWD/.build/tmp"` and `HARNESS_DIR`/`--scratch-path` to a folder under `$PWD/.build/`, after `mkdir -p`). The allowlist of commands in a sandbox applies to the top-level command only: the harness scripts call `tee`, `tail`, `head`, `sort`, `tr`, `cat`, `dirname`, `wc`, `ls`, `awk`, `grep` and `rg` internally.
 
 ```sh
 # 1. Compile. Must end with "Build complete!" and print NO line containing "warning:" or "error:".
@@ -1239,7 +1244,8 @@ These apply to every work package. They are not suggestions.
    (`XCTAssertEqual/True/False/Nil/NotNil/NotEqual/Greater...`, `XCTUnwrap`, `XCTAssertThrowsError`, `XCTFail`,
    `expectation`/`wait(for:)`). All test files of all packages share ONE test module: test doubles and helper types you write are
    `private`/`fileprivate` unless another test file of YOUR package must reuse them (then they are internal and use the name or
-   prefix your package doc prescribes). **File-scope (column 0) helper FUNCTIONS and constants are `private` too** (`private func step(...)`, `private let t0`): an internal helper with the same signature as a `private` one in another file of the module is an "invalid redeclaration" error, while two `private` ones coexist (WP-LOGIC's `env`, `ctx`, `step`, `run`, `t0` are `private` for that reason), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
+   prefix your package doc prescribes). **File-scope (column 0) helper FUNCTIONS and constants are `private` too** (`private func step(...)`, `private let t0`): an internal helper with the same signature as a `private` one in another file of the module is an "invalid redeclaration" error, while two `private` ones coexist (WP-LOGIC's `env`, `ctx`, `step`, `runScript`, `t0` are `private` for that reason), and before naming any type run `rg -n "class <Name>|struct <Name>" Tests` and change the name
+   **Never name a file-scope helper (or a method you add to a test class) after an `XCTestCase`/`XCTest` member** (`run`, `name`, `record`, `measure`, `wait`, `expectation`, `setUp`, `tearDown`, `invokeTest`, `addTeardownBlock`, `continueAfterFailure`): an unqualified call inside a test method resolves to the inherited instance member first and fails to compile under real XCTest ("use of 'run' refers to instance method rather than global function"), and the local stub harness cannot catch it. Use specific names (`runScript`, `env`, `ctx`, `step`, `t0`, `assertParse`, `checkCase`).
    on a collision. `Tests/DesnotchCoreTests/Voice/VoiceTestSupport.swift` (frozen) already provides `FakeVoiceClock`,
    `ScriptedRecognizer`, `RecordingExecutor`, `ScriptedBackend` and `InMemoryFileWriter`; use them as they are. A test class that
    touches a `@MainActor` type (`SystemLocalExecutor`, `VolumeDucker`, `CarbonPushToTalk`, `VoiceCuePlayer`, `NSHostingView`,
