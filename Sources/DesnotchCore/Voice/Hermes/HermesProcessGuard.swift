@@ -19,6 +19,15 @@ final class HermesProcessGuard: @unchecked Sendable {
         /// The spawned leader's start time, read right after spawn. The pid fallback in `signal`
         /// only fires while the pid still names this exact process.
         var identity: ProcessIdentity?
+        /// Whether the read above happened. Recorded-as-nil (the leader was already gone) means
+        /// the pid may name another process by now, so stop uses `killpg` only.
+        var identityRecorded = false
+
+        /// The identity `signal` checks the pid fallback against. Only a stop that wins the race
+        /// against `recordIdentity` (still inside `ensureRunning`) reads the live start time.
+        func stopIdentity(pid: Int32) -> ProcessIdentity? {
+            identityRecorded ? identity : HermesProcessGuard.identity(of: pid)
+        }
     }
 
     /// A process start time to the microsecond: a reused pid gets a different one.
@@ -102,7 +111,7 @@ final class HermesProcessGuard: @unchecked Sendable {
             transport.terminate()
             return EmergencyStopReport()
         }
-        let identity = taken.identity ?? Self.identity(of: pid)
+        let identity = taken.stopIdentity(pid: pid)
         let descendants = Self.descendants(of: pid)
         sendCancel()
         Self.pause(until: { false }, seconds: VoiceTiming.hardStopGrace)
@@ -128,7 +137,7 @@ final class HermesProcessGuard: @unchecked Sendable {
         guard let taken = takeCurrent() else { return }
         let transport = taken.transport
         if let pid = transport.processID, Self.alive(pid) {
-            let identity = taken.identity ?? Self.identity(of: pid)
+            let identity = taken.stopIdentity(pid: pid)
             _ = signal(pid, SIGTERM, identity: identity)
             Self.pause(until: { !Self.alive(pid) }, seconds: 0.5)
             // SIGKILL even when the leader has already died, so a member that ignored
@@ -313,7 +322,10 @@ final class HermesProcessGuard: @unchecked Sendable {
 
     private func recordIdentity(_ identity: ProcessIdentity?, generation token: Int) {
         lock.lock()
-        if current?.generation == token { current?.identity = identity }
+        if current?.generation == token {
+            current?.identity = identity
+            current?.identityRecorded = true
+        }
         lock.unlock()
     }
 

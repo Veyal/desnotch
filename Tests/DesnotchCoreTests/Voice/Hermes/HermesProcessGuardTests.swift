@@ -274,6 +274,51 @@ final class HermesProcessGuardTests: XCTestCase {
         XCTAssertFalse(HermesProcessGuard.mayFallBack(to: strangerPID, spawned: nil))
     }
 
+    /// The spawned process exited before its identity could be read, so none was recorded. Stop
+    /// must not read the start time of whatever holds the pid now and then signal it.
+    func testUnrecordedIdentityNeverFallsBackToAReusedPid() async throws {
+        let gone = Process()
+        gone.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try gone.run()
+        gone.waitUntilExit()
+        let transport = HermesFakeTransport()
+        transport.processID = gone.processIdentifier
+        let item = HermesProcessGuard(
+            launch: { ACPLaunch.hermes(path: URL(fileURLWithPath: "/test/hermes")) },
+            pidFileDirectory: directory, workingDirectoryRoot: directory,
+            transportFactory: { _, _ in transport },
+            killGroup: { _, _ in -1 }
+        )
+        owned.append(item)
+        _ = try item.ensureRunning()
+
+        let stranger = Process()
+        stranger.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        stranger.arguments = ["30"]
+        try stranger.run()
+        let strangerPID = stranger.processIdentifier
+        remember(strangerPID)
+        // Stand-in for pid reuse: the transport's pid now names a process desnotch did not spawn.
+        transport.processID = strangerPID
+        item.terminateNow()
+        XCTAssertTrue(HermesProcessGuard.alive(strangerPID))
+
+        let again = HermesFakeTransport()
+        again.processID = gone.processIdentifier
+        let second = HermesProcessGuard(
+            launch: { ACPLaunch.hermes(path: URL(fileURLWithPath: "/test/hermes")) },
+            pidFileDirectory: directory.appendingPathComponent("other", isDirectory: true),
+            workingDirectoryRoot: directory,
+            transportFactory: { _, _ in again },
+            killGroup: { _, _ in -1 }
+        )
+        owned.append(second)
+        _ = try second.ensureRunning()
+        again.processID = strangerPID
+        _ = await second.hardStop(sendCancel: {})
+        XCTAssertTrue(HermesProcessGuard.alive(strangerPID))
+    }
+
     /// Before `setsid` the group does not exist yet, so the pid fallback is what stops the child.
     func testPidFallbackStillStopsTheSpawnedProcess() async throws {
         let spawned = Process()
