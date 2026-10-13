@@ -172,4 +172,35 @@ final class CaptureBookTests: XCTestCase {
 
         wait(for: [exp], timeout: 2.0)
     }
+
+    func testEngineStartRunsOnlyWhileTheCaptureIsCurrent() {
+        XCTAssertEqual(SpeechDecision.afterEngineStart(isCurrent: true, endAudioCalled: false), .run)
+        XCTAssertEqual(SpeechDecision.afterEngineStart(isCurrent: true, endAudioCalled: true), .stopTap)
+        XCTAssertEqual(SpeechDecision.afterEngineStart(isCurrent: false, endAudioCalled: false), .discard)
+        XCTAssertEqual(SpeechDecision.afterEngineStart(isCurrent: false, endAudioCalled: true), .discard)
+    }
+
+    /// The recognition callback can fail and take the capture before `start` installs the tap and
+    /// starts the engine. The engine that `start` then brings up must be discarded, not left running.
+    func testCaptureTakenBeforeEngineStartIsDiscarded() {
+        var book = CaptureBook<String>()
+        let token = book.begin(payload: "capture").token
+        XCTAssertEqual(book.take(token: token), "capture")
+        let action = SpeechDecision.afterEngineStart(
+            isCurrent: book.payload(forToken: token) != nil,
+            endAudioCalled: false
+        )
+        XCTAssertEqual(action, .discard)
+    }
+
+    func testCaptureReplacedBeforeEngineStartIsDiscarded() {
+        var book = CaptureBook<String>()
+        let first = book.begin(payload: "first").token
+        _ = book.begin(payload: "second")
+        let action = SpeechDecision.afterEngineStart(
+            isCurrent: book.payload(forToken: first) != nil,
+            endAudioCalled: false
+        )
+        XCTAssertEqual(action, .discard)
+    }
 }
