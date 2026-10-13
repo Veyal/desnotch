@@ -203,6 +203,9 @@ enum VoiceAILimits {
     static let chatTimeout: TimeInterval = 60
     static let speechTimeout: TimeInterval = 30
     static let connectionTestTimeout: TimeInterval = 10
+    /// Whole-request ceiling (upload, wait and download), on top of the per-request idle
+    /// timeouts above, so a server that trickles bytes cannot keep a request open.
+    static let resourceTimeout: TimeInterval = 60
     /// JSON bodies (transcription, chat, model list) larger than this are rejected.
     static let maxJSONBytes = 1_000_000
     /// Spoken-reply audio larger than this falls back to the macOS voice.

@@ -10,6 +10,8 @@ final class AIStubURLProtocol: URLProtocol, @unchecked Sendable {
         case fail(URLError.Code)
         /// Never answers, so the caller has to cancel.
         case hang
+        /// Sends the status and these bytes, then never finishes the body.
+        case trickle(status: Int, body: Data, headers: [String: String])
     }
 
     private static let lock = NSLock()
@@ -59,6 +61,12 @@ final class AIStubURLProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didFailWithError: URLError(code))
         case .hang:
             break
+        case .trickle(let status, let body, let headers):
+            let url = request.url ?? URL(fileURLWithPath: "/")
+            if let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers) {
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            }
+            client?.urlProtocol(self, didLoad: body)
         }
     }
 

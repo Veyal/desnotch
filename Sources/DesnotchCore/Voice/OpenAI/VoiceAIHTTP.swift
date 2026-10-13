@@ -12,7 +12,9 @@ enum VoiceAIResponse: Equatable, Sendable {
 
 /// The one HTTP path of the voice feature. Ephemeral session (no cache, no cookies, nothing on
 /// disk), redirects refused (a redirect could carry the request and its key to another host),
-/// and only the URL the caller built from the configured base URL.
+/// and only the URL the caller built from the configured base URL. Every request has a whole-
+/// request ceiling (`VoiceAILimits.resourceTimeout`) and its body is read as it streams in, so
+/// an oversized body is abandoned at `maxBytes` instead of being downloaded first.
 enum VoiceAIHTTP {
     /// `protocolClasses` exists for tests (a stub `URLProtocol`); production passes nil.
     static func makeSession(protocolClasses: [AnyClass]? = nil) -> URLSession {
@@ -23,6 +25,7 @@ enum VoiceAIHTTP {
         configuration.urlCredentialStorage = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForResource = VoiceAILimits.resourceTimeout
         if let protocolClasses {
             configuration.protocolClasses = protocolClasses
         }
@@ -32,13 +35,29 @@ enum VoiceAIHTTP {
     static func send(_ request: URLRequest, session: URLSession, maxBytes: Int) async -> VoiceAIResponse {
         if Task.isCancelled { return .cancelled }
         do {
-            let (data, response) = try await session.data(for: request)
-            if Task.isCancelled { return .cancelled }
-            guard let http = response as? HTTPURLResponse else { return .failed(.badResponse) }
-            if (200...299).contains(http.statusCode) {
-                return data.count <= maxBytes ? .ok(data) : .failed(.badResponse)
+            let (bytes, response) = try await session.bytes(for: request)
+            guard !Task.isCancelled, let http = response as? HTTPURLResponse else {
+                bytes.task.cancel()
+                return Task.isCancelled ? .cancelled : .failed(.badResponse)
             }
-            return .status(http.statusCode, Data(data.prefix(maxBytes)))
+            let success = (200...299).contains(http.statusCode)
+            // A declared length over the cap is refused before a single body byte is read.
+            if success && http.expectedContentLength > Int64(maxBytes) {
+                bytes.task.cancel()
+                return .failed(.badResponse)
+            }
+            var body = Data()
+            body.reserveCapacity(min(maxBytes, max(0, Int(clamping: http.expectedContentLength))))
+            for try await byte in bytes {
+                if body.count >= maxBytes {
+                    // One byte past the cap: stop downloading. An error body keeps its prefix.
+                    bytes.task.cancel()
+                    return success ? .failed(.badResponse) : .status(http.statusCode, body)
+                }
+                body.append(byte)
+            }
+            if Task.isCancelled { return .cancelled }
+            return success ? .ok(body) : .status(http.statusCode, body)
         } catch {
             if Task.isCancelled { return .cancelled }
             return classify(error)

@@ -476,7 +476,8 @@ switch still `voiceHermesLane`) and `voiceReplyProvider` (macOS | OpenAI-compati
 coordinator picks the recognizer at capture start and the backend at submit (`VoiceAIProviders`, nil
 in tests and smoke mode); the provider lane reuses the reducer's `.hermes` lane, so the review window,
 R54, the daily cap, Stop and the audit apply unchanged. `VoiceAIHTTP` is the only network path:
-ephemeral session, redirects refused, https except loopback (`VoiceAIEndpoint`). Keys live only in
+ephemeral session, redirects refused, https except loopback (`VoiceAIEndpoint`), a whole-request
+ceiling (`VoiceAILimits.resourceTimeout`), bodies streamed and abandoned past `maxBytes`. Keys live only in
 the Keychain (`KeychainVoiceAIKeyStore`, one service per provider), bound to the `host:port` they
 were saved for (`VoiceAIEndpoint.keyBinding`, stored in `kSecAttrGeneric`; `VoiceAIReadiness` hands a
 key out only for that binding); never in `SettingsStore`, logs, export, audit or any UI text. Settings
