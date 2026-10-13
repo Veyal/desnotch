@@ -4,7 +4,8 @@ import Foundation
 /// Spoken replies via AVSpeechSynthesizer.
 /// Thread safety: pending continuations dictionary is guarded by an internal NSLock;
 /// synthesizer operations run serialized on the main dispatch queue.
-final class AppleSpeechSynthesizer: NSObject, SpeechSynthesizing, AVSpeechSynthesizerDelegate, @unchecked Sendable {
+final class AppleSpeechSynthesizer: NSObject, GatedSpeechSynthesizing, AVSpeechSynthesizerDelegate,
+    @unchecked Sendable {
     private let lock = NSLock()
     private var pending: [ObjectIdentifier: CheckedContinuation<Bool, Never>] = [:]
     private var synthesizer: AVSpeechSynthesizer?
@@ -33,6 +34,14 @@ final class AppleSpeechSynthesizer: NSObject, SpeechSynthesizing, AVSpeechSynthe
     }
 
     func speak(_ text: String, localeIdentifier: String) async -> Bool {
+        await speak(text, localeIdentifier: localeIdentifier, shouldStart: { true })
+    }
+
+    /// `shouldStart` is asked on the main queue right before speaking; false returns false
+    /// without speaking.
+    func speak(
+        _ text: String, localeIdentifier: String, shouldStart: @escaping @Sendable () -> Bool
+    ) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return false
@@ -40,7 +49,7 @@ final class AppleSpeechSynthesizer: NSObject, SpeechSynthesizing, AVSpeechSynthe
         let boundedText = String(trimmed.prefix(VoiceLimits.maxReplyCharacters))
         return await withCheckedContinuation { continuation in
             DispatchQueue.main.async { [weak self] in
-                guard let self else {
+                guard let self, shouldStart() else {
                     continuation.resume(returning: false)
                     return
                 }

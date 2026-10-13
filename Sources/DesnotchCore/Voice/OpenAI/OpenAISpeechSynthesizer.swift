@@ -11,8 +11,19 @@ enum VoicePlaybackOutcome: Equatable, Sendable {
 
 /// Plays one in-memory audio clip. A seam so the synthesizer is testable without audio output.
 protocol VoiceAudioPlaying: Sendable {
-    func play(_ data: Data) async -> VoicePlaybackOutcome
+    /// `shouldStart` is asked on the queue that starts playback, right before it starts; false
+    /// returns `.stopped` without playing. It lets a `stop()` that ran before playback actually
+    /// started win, even when it ran before `play` was called.
+    func play(_ data: Data, shouldStart: @escaping @Sendable () -> Bool) async -> VoicePlaybackOutcome
     func stop()
+}
+
+/// A synthesizer that can be told, right before it starts speaking, that the reply was stopped
+/// meanwhile. The provider's fallback uses it so a Stop is never overtaken by the fallback voice.
+protocol GatedSpeechSynthesizing: SpeechSynthesizing {
+    func speak(
+        _ text: String, localeIdentifier: String, shouldStart: @escaping @Sendable () -> Bool
+    ) async -> Bool
 }
 
 /// Spoken replies through the opt-in provider: `POST {base}/audio/speech`, the returned audio
@@ -68,7 +79,7 @@ final class OpenAISpeechSynthesizer: SpeechSynthesizing, @unchecked Sendable {
             if response == .cancelled { return false }
             return await speakWithFallback(bounded, localeIdentifier: localeIdentifier, ticket: ticket)
         }
-        switch await player.play(audio) {
+        switch await player.play(audio, shouldStart: gate(ticket)) {
         case .finished:
             return true
         case .stopped:
@@ -78,6 +89,8 @@ final class OpenAISpeechSynthesizer: SpeechSynthesizing, @unchecked Sendable {
         }
     }
 
+    /// Bumps the generation synchronously under `lock` before anything else, so a playback or
+    /// fallback whose start is still queued sees it and does not start.
     func stop() {
         let pending = invalidate()
         pending?.cancel()
@@ -87,7 +100,15 @@ final class OpenAISpeechSynthesizer: SpeechSynthesizing, @unchecked Sendable {
 
     private func speakWithFallback(_ text: String, localeIdentifier: String, ticket: UInt64) async -> Bool {
         guard isCurrent(ticket) else { return false }
+        if let gated = fallback as? GatedSpeechSynthesizing {
+            return await gated.speak(text, localeIdentifier: localeIdentifier, shouldStart: gate(ticket))
+        }
         return await fallback.speak(text, localeIdentifier: localeIdentifier)
+    }
+
+    /// True while `ticket` is still the current reply; evaluated where playback starts.
+    private func gate(_ ticket: UInt64) -> @Sendable () -> Bool {
+        { [weak self] in self?.isCurrent(ticket) ?? false }
     }
 
     // MARK: - Generation (every access under `lock`, in synchronous helpers)
@@ -135,11 +156,15 @@ final class AVAudioDataPlayer: NSObject, VoiceAudioPlaying, AVAudioPlayerDelegat
     private var player: AVAudioPlayer?
     private var continuation: CheckedContinuation<VoicePlaybackOutcome, Never>?
 
-    func play(_ data: Data) async -> VoicePlaybackOutcome {
+    func play(_ data: Data, shouldStart: @escaping @Sendable () -> Bool) async -> VoicePlaybackOutcome {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { [weak self] in
                 guard let self else {
                     continuation.resume(returning: .failed)
+                    return
+                }
+                guard shouldStart() else {
+                    continuation.resume(returning: .stopped)
                     return
                 }
                 self.finish(.stopped)
