@@ -108,7 +108,7 @@ final class VoiceAIWireTests: XCTestCase {
         XCTAssertEqual(VoiceAIReadiness.check(base: "https://api.openai.com/v1", keys: empty), .keyMissing)
         XCTAssertNil(VoiceAIReadiness.check(base: "http://localhost:1234/v1", keys: empty))
         XCTAssertEqual(VoiceAIReadiness.check(base: "http://example.com/v1", keys: AIMemoryKeyStore("k")), .endpointInvalid)
-        XCTAssertNil(VoiceAIReadiness.check(base: "https://api.openai.com/v1", keys: AIMemoryKeyStore("k")))
+        XCTAssertNil(VoiceAIReadiness.check(base: "https://api.openai.com/v1", keys: AIMemoryKeyStore("k", base: "https://api.openai.com/v1")))
         XCTAssertEqual(empty.readCount, 0, "the preflight check never reads the secret")
     }
 
@@ -166,6 +166,53 @@ final class VoiceAIWireTests: XCTestCase {
         session.invalidateAndCancel()
     }
 
+    // MARK: Bounded time and size (security review, finding 3)
+
+    func testEveryRequestHasAWholeRequestCeiling() {
+        let session = VoiceAIHTTP.makeSession()
+        XCTAssertEqual(session.configuration.timeoutIntervalForResource, VoiceAILimits.resourceTimeout)
+        XCTAssertLessThanOrEqual(VoiceAILimits.resourceTimeout, 60)
+        session.invalidateAndCancel()
+    }
+
+    func testOversizedBodyIsAbandonedBeforeItFinishes() async {
+        // The server sends more than the cap and then never finishes: reading must stop at the
+        // cap instead of waiting for (and buffering) the whole body.
+        AIStubURLProtocol.reset([.trickle(status: 200, body: Data(count: 2_000), headers: [:])])
+        let session = AIStubURLProtocol.session()
+        let response = await VoiceAIHTTP.send(OpenAIAudioWire.models(base: base, key: nil), session: session, maxBytes: 1_000)
+        XCTAssertEqual(response, .failed(.badResponse))
+        session.invalidateAndCancel()
+    }
+
+    func testDeclaredOversizedLengthIsRefusedUpFront() async {
+        // 1,000 bytes clear URLSession's content sniffing (so the response surfaces) but stay
+        // under the cap and never finish: only the declared length can end this request.
+        AIStubURLProtocol.reset([
+            .trickle(status: 200, body: Data(count: 1_000), headers: ["Content-Length": "5000000"])
+        ])
+        let session = AIStubURLProtocol.session()
+        let response = await VoiceAIHTTP.send(OpenAIAudioWire.models(base: base, key: nil), session: session, maxBytes: 2_000)
+        XCTAssertEqual(response, .failed(.badResponse))
+        session.invalidateAndCancel()
+    }
+
+    func testOversizedErrorBodyKeepsOnlyItsPrefix() async {
+        AIStubURLProtocol.reset([.trickle(status: 500, body: Data(repeating: 7, count: 2_000), headers: [:])])
+        let session = AIStubURLProtocol.session()
+        let response = await VoiceAIHTTP.send(OpenAIAudioWire.models(base: base, key: nil), session: session, maxBytes: 1_000)
+        XCTAssertEqual(response, .status(500, Data(repeating: 7, count: 1_000)))
+        session.invalidateAndCancel()
+    }
+
+    func testBodyAtExactlyTheCapIsAccepted() async {
+        AIStubURLProtocol.reset([.respond(status: 200, body: Data(count: 1_000), headers: [:])])
+        let session = AIStubURLProtocol.session()
+        let response = await VoiceAIHTTP.send(OpenAIAudioWire.models(base: base, key: nil), session: session, maxBytes: 1_000)
+        XCTAssertEqual(response, .ok(Data(count: 1_000)))
+        session.invalidateAndCancel()
+    }
+
     func testRedirectsAreRefused() async {
         AIStubURLProtocol.reset([
             .respond(status: 302, body: Data(), headers: ["Location": "https://evil.example.test/steal"])
@@ -218,7 +265,7 @@ final class VoiceAIWireTests: XCTestCase {
         let session = AIStubURLProtocol.session()
         AIStubURLProtocol.reset([AIStubURLProtocol.json(200, ["data": []])])
         let result = await VoiceAIConnectionTester.test(
-            .anthropic, config: VoiceAIConfig(), keys: AIMemoryKeyStore("ant-key"), session: session
+            .anthropic, config: VoiceAIConfig(), keys: AIMemoryKeyStore.anthropic("ant-key"), session: session
         )
         XCTAssertEqual(result, .ok)
         let request = try XCTUnwrap(AIStubURLProtocol.requests.first)

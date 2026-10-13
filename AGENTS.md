@@ -476,9 +476,12 @@ switch still `voiceHermesLane`) and `voiceReplyProvider` (macOS | OpenAI-compati
 coordinator picks the recognizer at capture start and the backend at submit (`VoiceAIProviders`, nil
 in tests and smoke mode); the provider lane reuses the reducer's `.hermes` lane, so the review window,
 R54, the daily cap, Stop and the audit apply unchanged. `VoiceAIHTTP` is the only network path:
-ephemeral session, redirects refused, https except loopback (`VoiceAIEndpoint`). Keys live only in
-the Keychain (`KeychainVoiceAIKeyStore`, one service per provider); never in `SettingsStore`, logs,
-export, audit or any UI text. A cloud capture is uploaded only when the user ended it (a cap-ended one
+ephemeral session, redirects refused, https except loopback (`VoiceAIEndpoint`), a whole-request
+ceiling (`VoiceAILimits.resourceTimeout`), bodies streamed and abandoned past `maxBytes`. Keys live only in
+the Keychain (`KeychainVoiceAIKeyStore`, one service per provider), bound to the `host:port` they
+were saved for (`VoiceAIEndpoint.keyBinding`, stored in `kSecAttrGeneric`; `VoiceAIReadiness` hands a
+key out only for that binding); never in `SettingsStore`, logs, export, audit or any UI text. Settings
+text fields commit on Return/blur (`VoiceAICommittedTextField`), never per keystroke. A cloud capture is uploaded only when the user ended it (a cap-ended one
 fails `needsUserRelease`), its final watchdog is stretched to `VoiceAILimits.transcriptionWatchdog`,
 and `VoiceSessionModel.cloudActivity` drives the cloud mark.
 

@@ -128,6 +128,23 @@ enum VoiceAIEndpoint {
         }
     }
 
+    /// What a stored key is bound to: the lowercased host and the effective port
+    /// (`api.openai.com:443`). Path changes keep the binding; host, port or scheme-default port
+    /// changes break it.
+    static func keyBinding(_ url: URL) -> String? {
+        guard let host = url.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]")),
+              !host.isEmpty
+        else { return nil }
+        let port = url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)
+        return "\(host):\(port)"
+    }
+
+    /// The binding of a configured base URL, or nil when the URL is not acceptable.
+    static func keyBinding(base raw: String) -> String? {
+        guard case .success(let url) = validate(raw) else { return nil }
+        return keyBinding(url)
+    }
+
     static func isLoopback(host: String) -> Bool {
         let bare = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         return bare == "localhost" || bare == "127.0.0.1" || bare == "::1"
@@ -154,7 +171,8 @@ enum VoiceAIReadiness {
         case .failure(let failure):
             return .failure(failure)
         case .success(let base):
-            let key = keys.readKey()
+            // Only a key saved for this exact host:port; a key bound elsewhere is never sent.
+            let key = VoiceAIEndpoint.keyBinding(base).flatMap { keys.readKey(for: $0) }
             let local = VoiceAIEndpoint.isLoopback(host: base.host ?? "")
             if key == nil && !local { return .failure(.keyMissing) }
             return .success(Ready(base: base, key: key))
@@ -168,7 +186,8 @@ enum VoiceAIReadiness {
             return failure
         case .success(let base):
             let local = VoiceAIEndpoint.isLoopback(host: base.host ?? "")
-            return keys.hasKey() || local ? nil : .keyMissing
+            let bound = VoiceAIEndpoint.keyBinding(base).map { keys.hasKey(for: $0) } ?? false
+            return bound || local ? nil : .keyMissing
         }
     }
 }
@@ -189,6 +208,9 @@ enum VoiceAILimits {
     static let chatTimeout: TimeInterval = 60
     static let speechTimeout: TimeInterval = 30
     static let connectionTestTimeout: TimeInterval = 10
+    /// Whole-request ceiling (upload, wait and download), on top of the per-request idle
+    /// timeouts above, so a server that trickles bytes cannot keep a request open.
+    static let resourceTimeout: TimeInterval = 60
     /// JSON bodies (transcription, chat, model list) larger than this are rejected.
     static let maxJSONBytes = 1_000_000
     /// Spoken-reply audio larger than this falls back to the macOS voice.

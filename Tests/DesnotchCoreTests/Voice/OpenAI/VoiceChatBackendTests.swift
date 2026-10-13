@@ -13,7 +13,7 @@ final class VoiceChatBackendTests: XCTestCase {
         let config = VoiceAIConfigBox(VoiceAIConfig(chatProvider: kind, baseURL: base))
         return VoiceChatBackend(config: config, providers: [
             OpenAIChatProvider(keys: AIMemoryKeyStore(openAIKey), session: session),
-            AnthropicChatProvider(keys: AIMemoryKeyStore(anthropicKey), session: session)
+            AnthropicChatProvider(keys: AIMemoryKeyStore.anthropic(anthropicKey), session: session)
         ])
     }
 

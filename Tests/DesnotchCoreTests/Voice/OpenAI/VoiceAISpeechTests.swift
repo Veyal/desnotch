@@ -244,6 +244,50 @@ final class VoiceAISpeechTests: XCTestCase {
         session.invalidateAndCancel()
     }
 
+    // MARK: Stop is never overtaken by a queued start (security review, finding 2)
+
+    func testStopBeforePlaybackStartsWins() async {
+        let mp3 = Data([0x49, 0x44, 0x33, 0x04])
+        AIStubURLProtocol.reset([.respond(status: 200, body: mp3, headers: ["Content-Type": "audio/mpeg"])])
+        let session = AIStubURLProtocol.session()
+        let player = AIFakePlayer(outcome: .finished)
+        let fallback = AIGatedFallback()
+        let tts = OpenAISpeechSynthesizer(
+            config: VoiceAIConfigBox(VoiceAIConfig(baseURL: base)), keys: AIMemoryKeyStore("sk-test"),
+            session: session, player: player, fallback: fallback
+        )
+        // Stop lands after `speak` decided to play but before the main queue starts playback.
+        player.beforeStart = { tts.stop() }
+        let finished = await tts.speak("a reply", localeIdentifier: "en-US")
+        XCTAssertFalse(finished)
+        XCTAssertTrue(player.played.isEmpty, "a stopped reply never starts playing")
+        XCTAssertTrue(fallback.spoken.isEmpty)
+        session.invalidateAndCancel()
+    }
+
+    func testStopBeforeTheFallbackVoiceStartsWins() async {
+        AIStubURLProtocol.reset([])
+        let session = AIStubURLProtocol.session()
+        let fallback = AIGatedFallback()
+        let tts = OpenAISpeechSynthesizer(
+            config: VoiceAIConfigBox(VoiceAIConfig()), keys: AIMemoryKeyStore(),
+            session: session, player: AIFakePlayer(outcome: .finished), fallback: fallback
+        )
+        fallback.beforeStart = { tts.stop() }
+        let finished = await tts.speak("a reply", localeIdentifier: "en-US")
+        XCTAssertFalse(finished)
+        XCTAssertTrue(fallback.spoken.isEmpty, "the macOS voice does not start after Stop")
+        XCTAssertEqual(fallback.attempts, 1)
+        session.invalidateAndCancel()
+    }
+
+    func testRealPlayersRefuseAStartAfterStop() async {
+        let outcome = await AVAudioDataPlayer().play(Data([1, 2, 3]), shouldStart: { false })
+        XCTAssertEqual(outcome, .stopped)
+        let spoke = await AppleSpeechSynthesizer().speak("Halo", localeIdentifier: "en-US", shouldStart: { false })
+        XCTAssertFalse(spoke)
+    }
+
     /// Yields until the stub has seen a request (bounded).
     private func waitForRequest() async {
         for _ in 0..<2_000 where AIStubURLProtocol.requests.isEmpty {
@@ -253,6 +297,29 @@ final class VoiceAISpeechTests: XCTestCase {
             }
         }
         XCTAssertFalse(AIStubURLProtocol.requests.isEmpty)
+    }
+
+    func testSpeechStepsDoNotSendAKeyBoundToAnotherHost() async {
+        AIStubURLProtocol.reset([])
+        let session = AIStubURLProtocol.session()
+        let audio = AIFakeAudioCapture()
+        let moved = OpenAISpeechRecognizer(
+            config: VoiceAIConfigBox(VoiceAIConfig(baseURL: "https://api.other.test/v1")),
+            keys: AIMemoryKeyStore("sk-test"), session: session, audio: audio, microphoneAuthorized: { true }
+        )
+        let events = await collect(moved.start(localeIdentifier: "en-US", contextualStrings: []))
+        XCTAssertEqual(events, [.failed(.provider(.keyMissing))])
+        XCTAssertEqual(audio.startCount, 0)
+        let fallback = CoordRecordingSynth()
+        fallback.gated = false
+        let tts = OpenAISpeechSynthesizer(
+            config: VoiceAIConfigBox(VoiceAIConfig(baseURL: "https://api.other.test/v1")),
+            keys: AIMemoryKeyStore("sk-test"), session: session, player: AIFakePlayer(outcome: .finished), fallback: fallback
+        )
+        _ = await tts.speak("Halo", localeIdentifier: "id-ID")
+        XCTAssertEqual(fallback.spoken.map(\.text), ["Halo"])
+        XCTAssertTrue(AIStubURLProtocol.requests.isEmpty)
+        session.invalidateAndCancel()
     }
 }
 
@@ -298,6 +365,7 @@ final class AIFakePlayer: VoiceAudioPlaying, @unchecked Sendable {
     private let outcome: VoicePlaybackOutcome
     private var data: [Data] = []
     private var stops = 0
+    private var hook: (@Sendable () -> Void)?
 
     init(outcome: VoicePlaybackOutcome) {
         self.outcome = outcome
@@ -306,7 +374,15 @@ final class AIFakePlayer: VoiceAudioPlaying, @unchecked Sendable {
     var played: [Data] { lock.lock(); defer { lock.unlock() }; return data }
     var stopCount: Int { lock.lock(); defer { lock.unlock() }; return stops }
 
-    func play(_ data: Data) async -> VoicePlaybackOutcome {
+    /// Runs where the real player hops to the main queue, before `shouldStart` is asked.
+    var beforeStart: (@Sendable () -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return hook }
+        set { lock.lock(); hook = newValue; lock.unlock() }
+    }
+
+    func play(_ data: Data, shouldStart: @escaping @Sendable () -> Bool) async -> VoicePlaybackOutcome {
+        beforeStart?()
+        guard shouldStart() else { return .stopped }
         record(data)
         return outcome
     }
@@ -320,4 +396,39 @@ final class AIFakePlayer: VoiceAudioPlaying, @unchecked Sendable {
         if outcome != .failed { data.append(clip) }
         lock.unlock()
     }
+}
+
+/// A fallback voice that honours the start gate like `AppleSpeechSynthesizer`.
+/// Thread safety: `lock`.
+final class AIGatedFallback: GatedSpeechSynthesizing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var texts: [String] = []
+    private var tries = 0
+    private var hook: (@Sendable () -> Void)?
+
+    var spoken: [String] { lock.lock(); defer { lock.unlock() }; return texts }
+    var attempts: Int { lock.lock(); defer { lock.unlock() }; return tries }
+    var beforeStart: (@Sendable () -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return hook }
+        set { lock.lock(); hook = newValue; lock.unlock() }
+    }
+
+    func speak(_ text: String, localeIdentifier: String) async -> Bool {
+        await speak(text, localeIdentifier: localeIdentifier, shouldStart: { true })
+    }
+
+    func speak(
+        _ text: String, localeIdentifier: String, shouldStart: @escaping @Sendable () -> Bool
+    ) async -> Bool {
+        countAttempt()
+        beforeStart?()
+        guard shouldStart() else { return false }
+        record(text)
+        return true
+    }
+
+    func stop() {}
+
+    private func countAttempt() { lock.lock(); tries += 1; lock.unlock() }
+    private func record(_ text: String) { lock.lock(); texts.append(text); lock.unlock() }
 }
