@@ -865,8 +865,25 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertEqual(t.effects, [
             .stopAgentHard, .cue(.error),
             .audit(AuditDraft(kind: .tripwire, lane: .hermes, tier: .t3,
-                              decision: "tripwire", outcome: "terminal"))
+                              decision: "tripwire", outcome: "tool.t3"))
         ])
+    }
+
+    /// The tool label comes from the model (ACP `tool_call.title`); the persisted audit record must
+    /// carry only a desnotch-authored code, while the in-memory pause card keeps the label.
+    func testR83_e_auditOutcomeNeverCarriesTheToolLabel() {
+        var c = ctx(.thinking)
+        c.lane = .hermes
+        let label = "send_mail.to-alice"
+        let t = step(c, .agent(.toolActivity(kind: label), generation: 1))
+        XCTAssertEqual(t.context.pauseReason, .tripwire(label))
+        let outcomes = t.effects.compactMap { effect -> String? in
+            if case .audit(let draft) = effect { return draft.outcome }
+            return nil
+        }
+        XCTAssertEqual(outcomes.count, 1)
+        XCTAssertFalse(outcomes.contains { $0.contains("send_mail") })
+        XCTAssertEqual(outcomes.first, "tool.t3")
     }
 
     func testR83_b_tripwireOnUnknownTool() {

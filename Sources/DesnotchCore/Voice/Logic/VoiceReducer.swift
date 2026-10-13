@@ -784,8 +784,10 @@ enum VoiceReducer {
             let label = String(kind.prefix(40))
             effects.append(.stopAgentHard)
             effects.append(.cue(.error))
+            // The tool label is model-authored (ACP `tool_call.title`), so the persisted audit
+            // record gets a desnotch-authored code; the label stays in memory for the pause card.
             effects.append(.audit(AuditDraft(kind: .tripwire, lane: .hermes, tier: tier,
-                                             decision: "tripwire", outcome: label)))
+                                             decision: "tripwire", outcome: "tool.t\(tier.rawValue)")))
             dropInterrupt()
             newID()
             clearFlow()

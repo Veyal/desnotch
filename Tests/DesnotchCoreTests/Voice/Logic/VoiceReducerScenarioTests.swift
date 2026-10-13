@@ -121,7 +121,7 @@ final class VoiceReducerScenarioTests: XCTestCase {
         XCTAssertEqual(results[0].effects, [
             .stopAgentHard, .cue(.error),
             .audit(AuditDraft(kind: .tripwire, lane: .hermes, tier: .t3, decision: "tripwire",
-                              outcome: "terminal"))
+                              outcome: "tool.t3"))
         ])
     }
 
