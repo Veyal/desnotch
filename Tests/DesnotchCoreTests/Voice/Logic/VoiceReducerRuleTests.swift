@@ -1157,7 +1157,8 @@ final class VoiceReducerRuleTests: XCTestCase {
     func testR102_a_releaseEndsInterrupt() {
         let t = step(interruptContext(), .talkReleased(heldSeconds: 0.8))
         XCTAssertEqual(t.context.interrupt?.endedByUser, true)
-        XCTAssertEqual(t.effects, [.endCapture(generation: 2), .cue(.captureEnd)])
+        XCTAssertEqual(t.effects, [.endCapture(generation: 2), .cue(.captureEnd),
+                                   .startTimer(.finalWatchdog, generation: 2, seconds: 5.0)])
     }
 
     func testR102_b_shortReleaseCancelsInterrupt() {
@@ -1202,7 +1203,20 @@ final class VoiceReducerRuleTests: XCTestCase {
     func testR104_b_listenCapEndsInterrupt() {
         let t = step(interruptContext(), .timerElapsed(.listenCap, generation: 2))
         XCTAssertNotNil(t.context.interrupt)
-        XCTAssertEqual(t.effects, [.endCapture(generation: 2)])
+        XCTAssertEqual(t.effects, [.endCapture(generation: 2),
+                                   .startTimer(.finalWatchdog, generation: 2, seconds: 5.0)])
+    }
+
+    /// An interrupt capture whose final transcript never arrives must not stay open for the rest of
+    /// the turn (R100 needs `interrupt == nil` to start another one).
+    func testR104_c_finalWatchdogClearsInterrupt() {
+        let released = step(interruptContext(), .talkReleased(heldSeconds: 0.8))
+        let t = step(released.context, .timerElapsed(.finalWatchdog, generation: 2))
+        XCTAssertNil(t.context.interrupt)
+        XCTAssertEqual(t.context.state, released.context.state)
+        XCTAssertEqual(t.effects, [.cancelCapture(generation: 2)])
+        let stale = step(released.context, .timerElapsed(.finalWatchdog, generation: 1))
+        XCTAssertNotNil(stale.context.interrupt)
     }
 
     func testR105_a_finishDropsTheInterruptCapture() {

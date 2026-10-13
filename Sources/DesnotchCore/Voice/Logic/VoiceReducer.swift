@@ -100,6 +100,8 @@ enum VoiceReducer {
                 b.context.interrupt?.endedByUser = true
                 b.effects.append(.endCapture(generation: interrupt.generation))
                 b.effects.append(.cue(.captureEnd))
+                b.effects.append(.startTimer(.finalWatchdog, generation: interrupt.generation,
+                                             seconds: VoiceTiming.finalWatchdog))
             } else {
                 b.effects.append(.cancelCapture(generation: interrupt.generation))
                 b.context.interrupt = nil
@@ -128,6 +130,13 @@ enum VoiceReducer {
         case .timerElapsed(.listenCap, let generation): // R104
             guard generation == interrupt.generation else { return false }
             b.effects.append(.endCapture(generation: generation))
+            b.effects.append(.startTimer(.finalWatchdog, generation: generation,
+                                         seconds: VoiceTiming.finalWatchdog))
+            return true
+        case .timerElapsed(.finalWatchdog, let generation): // R104: no final transcript arrived
+            guard generation == interrupt.generation else { return false }
+            b.context.interrupt = nil
+            b.effects.append(.cancelCapture(generation: generation))
             return true
         default:
             return false
