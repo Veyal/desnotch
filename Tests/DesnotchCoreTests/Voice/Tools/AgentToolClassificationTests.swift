@@ -337,6 +337,14 @@ import XCTest
             let proposal = await writeProposal(content)
             XCTAssertEqual(proposal.tier, .t4, content.debugDescription)
         }
+        for scalar: UInt32 in [0xE0041, 0xE0001, 0xE007F, 0x3164, 0x115F, 0x1160, 0xFFA0, 0x034F, 0x180E, 0x2061, 0xFE0F] {
+            let invisible = String(Character(Unicode.Scalar(scalar) ?? " "))
+            XCTAssertTrue(AgentProposals.contentCard(header: [], content: "a\(invisible)b").hidden, String(scalar, radix: 16))
+            let proposal = await writeProposal("a\(invisible)b")
+            XCTAssertEqual(proposal.tier, .t4, String(scalar, radix: 16))
+            XCTAssertTrue(CommandRiskScanner.scan("ls a\(invisible)b").flags.contains(.hiddenCharacters), String(scalar, radix: 16))
+        }
+        XCTAssertFalse(AgentProposals.contentCard(header: [], content: "plain é ü 日本 text").hidden)
         let tabs = await writeProposal("a\tb\nc")
         XCTAssertEqual(tabs.tier, .t2)
     }

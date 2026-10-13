@@ -71,6 +71,13 @@ enum CommandRiskScanner {
                  0x2060...0x2064, 0x2066...0x2069, 0xFEFF:
                 flags.insert(.hiddenCharacters)
             default:
+                // Every other invisible: Unicode Default_Ignorable_Code_Point (tag characters,
+                // Hangul fillers, the combining grapheme joiner, variation selectors...) and
+                // format characters (Cf).
+                if scalar.properties.isDefaultIgnorableCodePoint || scalar.properties.generalCategory == .format {
+                    flags.insert(.hiddenCharacters)
+                    continue
+                }
                 sanitized.unicodeScalars.append(scalar)
             }
         }
