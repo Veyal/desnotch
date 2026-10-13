@@ -1268,6 +1268,7 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertTrue(finished.effects.isEmpty)
         let timer = step(c, .timerElapsed(.replyDisplay, generation: 1))
         XCTAssertEqual(timer.context.state, .idle)
+        XCTAssertEqual(timer.effects, [.stopSpeaking])
     }
 
     func testR111_talkPressedStopsSpeakingAndStartsFlow() {

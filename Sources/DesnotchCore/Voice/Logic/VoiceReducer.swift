@@ -337,8 +337,10 @@ enum VoiceReducer {
     private static func reduceSpeaking(_ b: inout Builder, _ event: VoiceEvent,
                                        env: VoiceReducerEnv) {
         switch event {
-        case .speechFinished, .timerElapsed(.replyDisplay, _): // R110
+        case .speechFinished: // R110
             b.toIdle([])
+        case .timerElapsed(.replyDisplay, _): // R110: the backstop also silences the synthesizer
+            b.toIdle([.stopSpeaking])
         case .talkPressed: // R111
             if b.canStartFlow(env: env) { b.newFlow(.hold, [.stopSpeaking]) }
         case .toggleTalk: // R111

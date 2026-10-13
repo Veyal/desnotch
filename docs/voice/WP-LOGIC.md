@@ -919,7 +919,7 @@ Only those phrases are honored; every other transcript is ignored.
 
 | ID | Event [guard] | Result |
 |---|---|---|
-| R110 | `speechFinished` or `timerElapsed(.replyDisplay)` | `TO_IDLE([])` |
+| R110 | `speechFinished` or `timerElapsed(.replyDisplay)` | `speechFinished`: `TO_IDLE([])`. `timerElapsed(.replyDisplay)`: `TO_IDLE([.stopSpeaking])`, so audio cannot outlive the state when the backstop fires. |
 | R111 | `talkPressed` [`env.voiceEnabled && !env.screenLocked`] / `toggleTalk` (same guard) | `NEW_FLOW(.hold or .toggle, [.stopSpeaking])` |
 | R112 | `cancelRequested` | `TO_IDLE([.stopSpeaking])` |
 
