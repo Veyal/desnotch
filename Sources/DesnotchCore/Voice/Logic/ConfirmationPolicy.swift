@@ -92,7 +92,7 @@ enum AgentToolStep {
     static let searchFiles = "Search files"
     static let searchFilesApproved = "Search files (approved)"
     static let readClipboardApproved = "Read clipboard (approved)"
-    static let copyToClipboard = "Copy to clipboard"
+    static let copyToClipboardApproved = "Copy to clipboard (approved)"
     static let fetchPage = "Fetch page"
     static let fetchPageApproved = "Fetch page (approved)"
     static let writeFileApproved = "Write file (approved)"
@@ -110,7 +110,6 @@ enum AgentToolStep {
         listFolder: .t1,
         readFile: .t1,
         searchFiles: .t1,
-        copyToClipboard: .t1,
         fetchPage: .t1,
         volumeApproved: .t2,
         openLinkApproved: .t2,
@@ -118,6 +117,7 @@ enum AgentToolStep {
         readFileApproved: .t2,
         searchFilesApproved: .t2,
         readClipboardApproved: .t2,
+        copyToClipboardApproved: .t2,
         fetchPageApproved: .t2,
         writeFileApproved: .t2,
         runShortcutApproved: .t2,

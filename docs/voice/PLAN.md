@@ -151,7 +151,7 @@ are T3; a plain public URL is T1; a query, credentials or more than 200 characte
 | `get_system_info` (time, battery, disk free, frontmost app, now playing) | T1 | |
 | `list_dir`, `read_file`, `search_files` (names only; bounded walk) | T1 | T2 outside the read scope, T4 protected |
 | `clipboard_read` | T2 | (password-manager markers are refused) |
-| `clipboard_write` | T1 | |
+| `clipboard_write` | T2 (full text on the card or Approve disabled, like `write_file`) | T4 control, bidi or zero-width characters |
 | `web_fetch` (GET, text only, 1 MB read, redirects not followed, public addresses only after DNS) | T1 | as `open_url` |
 | `write_file` | T2; the card shows path, size and the WHOLE content, and Approve is disabled (`isTruncated`) when it does not fit in 240 characters / 6 lines | T3 outside the write scope, T4 protected or content with control, bidi or zero-width characters (anything but newline and tab) |
 | `run_shortcut` (`shortcuts run <name>`) | T2 | T4 protected name |

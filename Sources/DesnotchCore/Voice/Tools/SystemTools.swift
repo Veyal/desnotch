@@ -278,24 +278,28 @@ struct ClipboardReadTool: AgentTool {
     }
 }
 
-/// `clipboard_write`: puts plain text on the clipboard. T1, capped.
+/// `clipboard_write`: puts plain text on the clipboard. T2: text the user may paste into a
+/// terminal is shown in full on the card, or the card cannot be approved; control, bidi and
+/// zero-width characters are refused (T4).
 struct ClipboardWriteTool: AgentTool {
     let system: AgentSystemServing
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(
             name: "clipboard_write",
-            description: "Copy plain text to the clipboard.",
+            description: "Copy plain text to the clipboard. The user must approve.",
             inputSchemaJSON: #"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}"#
         )
     }
 
     func propose(_ args: AgentToolArgs) async -> ChatToolProposal {
         guard let text = args.string("text"), !text.isEmpty, text.utf8.count <= AgentToolLimits.writeBytes else {
-            return AgentProposals.invalid("tool.clipboard_write", label: AgentToolStep.copyToClipboard, "text is required (at most 64 KB)")
+            return AgentProposals.invalid("tool.clipboard_write", label: AgentToolStep.copyToClipboardApproved, "text is required (at most 64 KB)")
         }
+        let card = AgentProposals.contentCard(header: ["Copy \(text.count) characters:"], content: text)
         return ChatToolProposal(
-            tier: .t1, stepLabel: AgentToolStep.copyToClipboard, summary: "Copy text to the clipboard",
+            tier: card.hidden ? .t4 : .t2, stepLabel: AgentToolStep.copyToClipboardApproved,
+            summary: "Copy text to the clipboard", literal: card.literal, isTruncated: card.isTruncated,
             auditCode: "tool.clipboard_write"
         )
     }
