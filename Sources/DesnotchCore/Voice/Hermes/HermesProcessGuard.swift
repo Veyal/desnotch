@@ -16,6 +16,15 @@ final class HermesProcessGuard: @unchecked Sendable {
     private struct Current {
         var transport: ACPTransport
         var generation: Int
+        /// The spawned leader's start time, read right after spawn. The pid fallback in `signal`
+        /// only fires while the pid still names this exact process.
+        var identity: ProcessIdentity?
+    }
+
+    /// A process start time to the microsecond: a reused pid gets a different one.
+    struct ProcessIdentity: Equatable {
+        var seconds: UInt64
+        var microseconds: UInt64
     }
 
     private let lock = NSLock()
@@ -64,6 +73,7 @@ final class HermesProcessGuard: @unchecked Sendable {
             transport.terminate()
             throw HermesGuardError.spawnFailed
         }
+        recordIdentity(transport.processID.flatMap(Self.identity(of:)), generation: token)
         writePidFile(for: transport)
         return transport
     }
@@ -81,22 +91,24 @@ final class HermesProcessGuard: @unchecked Sendable {
     }
 
     func hardStop(sendCancel: @Sendable () -> Void) async -> EmergencyStopReport {
-        let transport = takeCurrent()
-        guard let transport else {
+        let taken = takeCurrent()
+        guard let taken else {
             sendCancel()
             return EmergencyStopReport()
         }
+        let transport = taken.transport
         guard let pid = transport.processID else {
             sendCancel()
             transport.terminate()
             return EmergencyStopReport()
         }
+        let identity = taken.identity ?? Self.identity(of: pid)
         let descendants = Self.descendants(of: pid)
         sendCancel()
         Self.pause(until: { false }, seconds: VoiceTiming.hardStopGrace)
-        _ = signal(pid, SIGTERM)
+        _ = signal(pid, SIGTERM, identity: identity)
         Self.pause(until: { false }, seconds: 0.5)
-        _ = signal(pid, SIGKILL)
+        _ = signal(pid, SIGKILL, identity: identity)
         Self.pause(until: { !descendants.contains(where: Self.alive) }, seconds: 0.5)
         let survivors = descendants.filter(Self.alive).map(Self.processName)
         transport.terminate()
@@ -113,13 +125,15 @@ final class HermesProcessGuard: @unchecked Sendable {
     }
 
     func terminateNow() {
-        guard let transport = takeCurrent() else { return }
+        guard let taken = takeCurrent() else { return }
+        let transport = taken.transport
         if let pid = transport.processID, Self.alive(pid) {
-            _ = signal(pid, SIGTERM)
+            let identity = taken.identity ?? Self.identity(of: pid)
+            _ = signal(pid, SIGTERM, identity: identity)
             Self.pause(until: { !Self.alive(pid) }, seconds: 0.5)
             // SIGKILL even when the leader has already died, so a member that ignored
             // SIGTERM does not outlive Stop. A pid that was already dead is left alone.
-            _ = signal(pid, SIGKILL)
+            _ = signal(pid, SIGKILL, identity: identity)
             transport.terminate()
             deletePidFile(matching: pid)
             return
@@ -127,11 +141,28 @@ final class HermesProcessGuard: @unchecked Sendable {
         transport.terminate()
     }
 
-    /// `killpg` is ESRCH until the perl launcher has called `setsid`. Fall back to the pid.
-    private func signal(_ pid: Int32, _ code: Int32) -> Int32 {
+    /// `killpg` is ESRCH until the perl launcher has called `setsid`. Fall back to the pid, but
+    /// only while it is still the process desnotch spawned: `killpg` cannot hit a reused pid
+    /// (the kernel does not hand out a pid that is still a live group id), `kill(pid)` can once
+    /// the group is gone and the leader was reaped.
+    private func signal(_ pid: Int32, _ code: Int32, identity: ProcessIdentity?) -> Int32 {
         let grouped = killGroup(pid, code)
-        if grouped != 0 { return Darwin.kill(pid, code) }
-        return grouped
+        if grouped == 0 { return grouped }
+        guard Self.mayFallBack(to: pid, spawned: identity) else { return grouped }
+        return Darwin.kill(pid, code)
+    }
+
+    static func mayFallBack(to pid: Int32, spawned: ProcessIdentity?) -> Bool {
+        guard let spawned, alive(pid) else { return false }
+        return identity(of: pid) == spawned
+    }
+
+    static func identity(of pid: Int32) -> ProcessIdentity? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.stride)
+        let read = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size)
+        if read <= 0 { return nil }
+        return ProcessIdentity(seconds: info.pbi_start_tvsec, microseconds: info.pbi_start_tvusec)
     }
 
     func shutdown() async {
@@ -272,12 +303,18 @@ final class HermesProcessGuard: @unchecked Sendable {
         deletePidFile(matching: pid)
     }
 
-    private func takeCurrent() -> ACPTransport? {
+    private func takeCurrent() -> Current? {
         lock.lock()
-        let transport = current?.transport
+        let taken = current
         current = nil
         lock.unlock()
-        return transport
+        return taken
+    }
+
+    private func recordIdentity(_ identity: ProcessIdentity?, generation token: Int) {
+        lock.lock()
+        if current?.generation == token { current?.identity = identity }
+        lock.unlock()
     }
 
     private func drop(generation token: Int) {

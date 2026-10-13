@@ -234,6 +234,69 @@ final class HermesProcessGuardTests: XCTestCase {
         XCTAssertEqual(signals.values.filter { $0.0 == pid && $0.1 == SIGKILL }.count, 1)
     }
 
+    /// When the group is gone (`killpg` fails) the pid fallback must not signal a different
+    /// process that has since been given the spawned leader's pid.
+    func testPidFallbackNeverSignalsAReusedPid() async throws {
+        let spawned = Process()
+        spawned.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        spawned.arguments = ["30"]
+        try spawned.run()
+        remember(spawned.processIdentifier)
+        let transport = HermesFakeTransport()
+        transport.processID = spawned.processIdentifier
+        let item = HermesProcessGuard(
+            launch: { ACPLaunch.hermes(path: URL(fileURLWithPath: "/test/hermes")) },
+            pidFileDirectory: directory, workingDirectoryRoot: directory,
+            transportFactory: { _, _ in transport },
+            killGroup: { _, _ in -1 }
+        )
+        owned.append(item)
+        _ = try item.ensureRunning()
+        spawned.terminate()
+        spawned.waitUntilExit()
+
+        let stranger = Process()
+        stranger.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        stranger.arguments = ["30"]
+        try stranger.run()
+        let strangerPID = stranger.processIdentifier
+        remember(strangerPID)
+        // Stand-in for pid reuse: the transport's pid now names a process desnotch did not spawn.
+        transport.processID = strangerPID
+        item.terminateNow()
+        XCTAssertTrue(HermesProcessGuard.alive(strangerPID))
+        XCTAssertFalse(HermesProcessGuard.mayFallBack(
+            to: strangerPID, spawned: HermesProcessGuard.ProcessIdentity(seconds: 1, microseconds: 0)
+        ))
+        XCTAssertTrue(HermesProcessGuard.mayFallBack(
+            to: strangerPID, spawned: HermesProcessGuard.identity(of: strangerPID)
+        ))
+        XCTAssertFalse(HermesProcessGuard.mayFallBack(to: strangerPID, spawned: nil))
+    }
+
+    /// Before `setsid` the group does not exist yet, so the pid fallback is what stops the child.
+    func testPidFallbackStillStopsTheSpawnedProcess() async throws {
+        let spawned = Process()
+        spawned.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        spawned.arguments = ["30"]
+        try spawned.run()
+        let pid = spawned.processIdentifier
+        remember(pid)
+        let transport = HermesFakeTransport()
+        transport.processID = pid
+        let item = HermesProcessGuard(
+            launch: { ACPLaunch.hermes(path: URL(fileURLWithPath: "/test/hermes")) },
+            pidFileDirectory: directory, workingDirectoryRoot: directory,
+            transportFactory: { _, _ in transport },
+            killGroup: { _, _ in -1 }
+        )
+        owned.append(item)
+        _ = try item.ensureRunning()
+        item.terminateNow()
+        spawned.waitUntilExit()
+        XCTAssertFalse(HermesProcessGuard.alive(pid))
+    }
+
     func testProcessTransportSendAfterTheChildExitedThrowsAndTheProcessSurvives() async {
         let transport = ProcessACPTransport(
             launch: .command("exit 0"), workingDirectoryRoot: FileManager.default.temporaryDirectory
