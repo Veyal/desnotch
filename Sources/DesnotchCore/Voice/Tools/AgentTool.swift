@@ -144,6 +144,30 @@ enum AgentProposals {
         ChatToolProposal(tier: .t3, stepLabel: "Unknown tool", summary: "Unknown tool", auditCode: "tool.unknown")
     }
 
+    /// A card that shows model-authored content (a file to write, text to copy). Approve stays
+    /// enabled only when the WHOLE content fits on the card (`VoiceCardLayout`: 240 characters,
+    /// 6 lines, header included); otherwise the card shows a preview and `isTruncated` disables
+    /// Approve. `hidden` is true when the content carries control, bidi or zero-width characters
+    /// (anything but newline and tab), which could make the card show something else than what
+    /// would be written: such content is refused (T4).
+    static func contentCard(header: [String], content: String) -> (literal: String, isTruncated: Bool, hidden: Bool) {
+        let controls = content.unicodeScalars.contains { scalar in
+            let value = scalar.value
+            return (value < 0x20 && value != 0x0A && value != 0x09) || (0x7F...0x9F).contains(value)
+        }
+        let hidden = controls || CommandRiskScanner.scan(content).flags.contains(.hiddenCharacters)
+        let shown = content.replacingOccurrences(of: "\t", with: "  ")
+        let full = (header + [shown]).joined(separator: "\n")
+        if !hidden && VoiceCardLayout.isLiteralReviewable(full) {
+            return (full, false, hidden)
+        }
+        let flat = shown.split(whereSeparator: { $0.isNewline }).joined(separator: " ")
+        var preview = String(flat.prefix(AgentToolLimits.writePreviewCharacters))
+        if flat.count > preview.count { preview += "\u{2026}" }
+        let safePreview = AgentProposals.scanned(preview).sanitized.replacingOccurrences(of: "\u{23CE}", with: " ")
+        return ((header + [safePreview]).joined(separator: "\n"), true, hidden)
+    }
+
     /// The display form of a model-authored literal: control, bidi and zero-width characters
     /// removed by the command scanner, with its flags.
     static func scanned(_ literal: String) -> CommandRisk {

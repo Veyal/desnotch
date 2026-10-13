@@ -204,20 +204,17 @@ struct WriteFileTool: AgentTool {
         }
         let exists = FileManager.default.fileExists(atPath: verdict.url.path)
         let lines = content.isEmpty ? 0 : content.components(separatedBy: "\n").count
-        let flat = content.split(whereSeparator: { $0.isNewline }).joined(separator: " ")
-        var preview = String(flat.prefix(AgentToolLimits.writePreviewCharacters))
-        if flat.count > preview.count { preview += "\u{2026}" }
         let pathText = AgentToolPaths.display(verdict.url, context: paths)
         let detail = "\(exists ? "Replace" : "Create"), \(lines) lines, \(content.utf8.count) bytes"
         let shown = AgentProposals.scanned(pathText)
-        let previewText = AgentProposals.scanned(preview).sanitized.replacingOccurrences(of: "\u{23CE}", with: " ")
+        let card = AgentProposals.contentCard(header: [shown.sanitized, detail], content: content)
         return ChatToolProposal(
-            tier: verdict.tier,
+            tier: card.hidden ? .t4 : verdict.tier,
             stepLabel: AgentToolStep.writeFileApproved,
             summary: exists ? "Replace a file" : "Create a file",
-            literal: [shown.sanitized, detail, previewText].filter { !$0.isEmpty }.joined(separator: "\n"),
+            literal: card.literal,
             risk: shown.flags.intersection(.hiddenCharacters),
-            isTruncated: shown.wasTruncated,
+            isTruncated: shown.wasTruncated || card.isTruncated,
             auditCode: "tool.write_file"
         )
     }
