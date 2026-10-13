@@ -27,12 +27,18 @@ enum CommandRiskScanner {
         static let variableExpansion = #"\$[a-z_0-9@*#?!$-]"#
         static let processSubstitution = #"[<>]\("#
         static let sourceBuiltin = #"(?:^|[;&|(\n])\s*(?:source|\.)\s"#
-        static let alwaysInterpreter = #"^(osascript|osacompile|awk|gawk|nawk|mawk)$"#
+        static let alwaysInterpreter = #"^(osascript|osacompile|awk|gawk|nawk|mawk|sqlite3|jsc|dc|vim|vi|nvim|view|ex|ed|emacs|expect|gdb|lldb)$"#
         static let inlineInterpreter = #"^(python[0-9.]*|perl[0-9.]*|ruby|irb|node|nodejs|deno|bun|php|swift|lua|tclsh|jshell|pwsh|sh|bash|zsh|dash|ksh|fish)$"#
-        static let inlineCodeFlag = #"^(-[a-z]*[cerp]|--eval|--print|--command|--exec|-)$"#
-        static let appleScriptTerminal = #"\b(do\s+script|write\s+text|keystroke|key\s+code)\b|\bapp(lication)?\s+(id\s+)?"?[^"]*(terminal|iterm|warp|ghostty|kitty|alacritty|wezterm|hyper|tabby)"#
+        static let inlineCodeFlag = #"^(-[a-z]*[cerp].*|--eval.*|--print.*|--command.*|--exec.*|-)$"#
+        static let escapingPrinter = #"^(printf|echo|print)$"#
+        static let escapeSequence = #"\\(x[0-9a-f]|u[0-9a-f]|[0-7])"#
+        static let terminalLaunchTarget = #"(\.command|\.tool|\.terminal)$|^(terminal|iterm|iterm2|warp|ghostty|kitty|alacritty|wezterm|hyper|tabby)(\.app)?$"#
+        static let appleScriptTerminal = #"\.(command|tool|terminal)\b|\b(do\s+script|write\s+text|keystroke|key\s+code)\b|\bapp(lication)?\s+(id\s+)?"?[^"]*(terminal|iterm|warp|ghostty|kitty|alacritty|wezterm|hyper|tabby)"#
         static let appleScriptShell = #"\b(do\s+shell\s+script|run\s+script|load\s+script|character\s+id|ascii\s+character)\b"#
     }
+
+    /// Shared with the shell sandbox (`AgentShellSandbox`), which denies these markers under home.
+    static var protectedMarkers: [String] { protectedPaths }
 
     private static let protectedPaths: [String] = [
         ".hermes",
@@ -153,13 +159,29 @@ enum CommandRiskScanner {
     /// argument, `-`, a `<` redirect) or in a heredoc can assemble a protected path or a network
     /// call at run time, out of the scanner's sight, so it is refused (T4). The AppleScript runner
     /// and awk are refused in any form: AppleScript goes through `run_applescript`, and an awk
-    /// program is always inline. Running a script FILE (`python3 tool.py`) stays a T2 card.
+    /// program is always inline, as are sqlite3, jsc, dc, editors (vim, emacs, ed...), expect and
+    /// debuggers. Also refused: printf/echo/print with `\x`, `\0`-`\7` or `\u` escapes, `git -c`,
+    /// and terminal launch targets (`open -a Terminal`, `.command`/`.tool`/`.terminal` files).
+    /// Running a script FILE (`python3 tool.py`) stays a T2 card. This is layer 1 only: the
+    /// enforcement boundary is the shell sandbox (`AgentShellSandbox`).
     static func inlineInterpreter(_ command: String) -> Bool {
-        let folded = fold(command.lowercased())
+        let lowered = command.lowercased()
+        let folded = fold(lowered)
         let words = folded.split { $0.isWhitespace || ";&|()".contains($0) }.map(String.init)
         for (index, word) in words.enumerated() {
             let name = word.split(separator: "/").last.map(String.init) ?? word
             if matches(Pat.alwaysInterpreter, name) { return true }
+            // A printer that decodes escapes (`\x2e`, `\0..`, `\u..`) can spell any path.
+            if matches(Pat.escapingPrinter, name) && matches(Pat.escapeSequence, lowered) { return true }
+            // Terminal launch targets: `open -a Terminal`, `x.command`, `.tool`, `.terminal`.
+            if word.hasSuffix(".command") || word.hasSuffix(".tool") || word.hasSuffix(".terminal") { return true }
+            if name == "open", words.dropFirst(index + 1).contains(where: { matches(Pat.terminalLaunchTarget, $0) }) {
+                return true
+            }
+            // `git -c alias.x='!cmd'` (and any -c/--config-env) runs a configured command.
+            if name == "git", words.dropFirst(index + 1).contains(where: { $0 == "-c" || $0.hasPrefix("--config-env") }) {
+                return true
+            }
             guard matches(Pat.inlineInterpreter, name) else { continue }
             let rest = words.dropFirst(index + 1)
             if rest.isEmpty || folded.contains("<<") { return true }

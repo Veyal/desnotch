@@ -201,6 +201,28 @@ import XCTest
         }
     }
 
+    func testMoreInlineCodeVariantsAreRefused() async {
+        let refused = [
+            "perl -Mstrict -e1", "perl -e'print 1'", "python3 -c'import os'", "ruby -rnet/http x.rb",
+            #"printf '/Users/x/\x2essh/id_\x72sa' | xargs cat"#, #"echo '\056ssh'"#, #"print '\u002essh'"#,
+            "sqlite3 notes.db .shell", "sqlite3 :memory:", "jsc -e 1", "dc -e '!ls'", "vim -c ':!ls'", "nvim", "emacs --batch",
+            "git -c alias.x='!ls' x", "git --config-env=core.pager=X log", "expect -c 'spawn ls'", "gdb -batch", "lldb",
+            "open -a Terminal x.command", "open run.command", "open -a iTerm", "open -b com.apple.terminal x", "open x.tool"
+        ]
+        for command in refused {
+            let proposal = await propose("run_shell", ChatJSON.string(["command": command]))
+            XCTAssertEqual(proposal.tier, .t4, command)
+        }
+        for command in ["git status", "git log -n 3", "echo hello", "printf 'a b'", "open ."] {
+            let proposal = await propose("run_shell", ChatJSON.string(["command": command]))
+            XCTAssertLessThanOrEqual(proposal.tier, .t2, command)
+        }
+        let finder = await propose("run_applescript", ChatJSON.string(["script": #"tell application "Finder" to open POSIX file "/tmp/x.command""#]))
+        XCTAssertEqual(finder.tier, .t4)
+        let launcher = await propose("write_file", ChatJSON.string(["path": "~/Documents/run.command", "content": "ls"]))
+        XCTAssertEqual(launcher.tier, .t4)
+    }
+
     func testScannerChecksTheStrippedTextForEveryPattern() {
         XCTAssertEqual(CommandRiskScanner.scan("c\\url x.example").tier, .t3)
         XCTAssertEqual(CommandRiskScanner.scan("cu\\\\rl x.example").tier, .t3, "unescaped until stable")

@@ -211,8 +211,9 @@ struct WriteFileTool: AgentTool {
         let detail = "\(exists ? "Replace" : "Create"), \(lines) lines, \(content.utf8.count) bytes"
         let shown = AgentProposals.scanned(pathText)
         let card = AgentProposals.contentCard(header: [shown.sanitized, detail], content: content)
+        let launchable = [".command", ".tool", ".terminal"].contains { verdict.url.lastPathComponent.lowercased().hasSuffix($0) }
         return ChatToolProposal(
-            tier: card.hidden ? .t4 : verdict.tier,
+            tier: card.hidden || launchable ? .t4 : verdict.tier,
             stepLabel: AgentToolStep.writeFileApproved,
             summary: exists ? "Replace a file" : "Create a file",
             literal: card.literal,
