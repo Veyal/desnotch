@@ -53,6 +53,15 @@ final class PillStackBudgetTests: XCTestCase {
         XCTAssertEqual(PillRowCaps.full.clipboard, PillLimits.clipboardRows)
     }
 
+    func testTalkRowAddsOneSlimSectionAndDivider() {
+        let without = PillStackEstimate(topInset: 38, hasMedia: true)
+        let with = PillStackEstimate(topInset: 38, hasMedia: true, hasTalk: true)
+        XCTAssertEqual(
+            with.height(caps: .full) - without.height(caps: .full),
+            PillStackEstimate.privacyHeight + PillStackEstimate.dividerHeight
+        )
+    }
+
     func testVoiceHeightEstimateIsIncluded() {
         let idle = PillStackEstimate(topInset: 38)
         let listening = PillStackEstimate(topInset: 38, hasVoice: true, voiceState: .listening)

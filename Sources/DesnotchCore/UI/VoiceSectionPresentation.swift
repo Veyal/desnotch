@@ -59,7 +59,7 @@ struct VoiceChipSpec: Equatable {
 }
 
 enum VoiceButtonRole: Equatable {
-    case stop, cancel, resume, deny, approveClick, approveHold
+    case stop, finish, cancel, resume, deny, approveClick, approveHold
 }
 
 struct VoiceButtonSpec: Equatable {
@@ -190,7 +190,11 @@ struct VoiceSectionPresentation: Equatable {
                 )
             bodyLines = [VoiceBodyLine(text: "Esc cancels", lineLimit: 1, emphasis: .caption)]
             showsMeter = true
-            buttons = [VoiceSectionPresentation.stopButton()]
+            buttons = [
+                VoiceButtonSpec(role: .cancel, title: "Cancel", glyph: .cancel, isEnabled: true, nonce: nil),
+                VoiceButtonSpec(role: .finish, title: "Done", glyph: .checkmark, isEnabled: true, nonce: nil),
+                VoiceSectionPresentation.stopButton()
+            ]
             wingRight = .meter
         case .transcribing:
             title = "Transcribing…"

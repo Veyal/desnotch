@@ -44,6 +44,8 @@ Tests/DesnotchCoreTests/Voice/Logic/VoiceReducerScenarioTests.swift	WP-LOGIC
 Sources/DesnotchCore/UI/VoiceSectionPresentation.swift	WP-UI
 Sources/DesnotchCore/UI/VoiceSectionView.swift	WP-UI
 Sources/DesnotchCore/UI/NotchPillView+Voice.swift	WP-UI
+Sources/DesnotchCore/UI/TalkRowPresentation.swift	WP-UI
+Sources/DesnotchCore/UI/NotchPillView+TalkAction.swift	WP-UI
 Sources/DesnotchCore/UI/VoiceCuePlayer.swift	WP-UI
 Sources/DesnotchCore/UI/VoiceSettingsSection.swift	WP-UI
 Sources/DesnotchCore/UI/PillMotion.swift	WP-UI
@@ -62,6 +64,7 @@ Sources/DesnotchCore/App/SettingsView.swift	WP-UI
 Sources/DesnotchCore/App/WindowCoordinator.swift	WP-UI
 Tests/DesnotchCoreTests/Voice/UI/VoiceSectionPresentationTests.swift	WP-UI
 Tests/DesnotchCoreTests/Voice/UI/VoiceSectionRenderTests.swift	WP-UI
+Tests/DesnotchCoreTests/Voice/UI/TalkRowPresentationTests.swift	WP-UI
 Tests/DesnotchCoreTests/Voice/UI/VoiceWingSelectionTests.swift	WP-UI
 Tests/DesnotchCoreTests/Voice/UI/VoiceHoverPolicyTests.swift	WP-UI
 Tests/DesnotchCoreTests/Voice/UI/VoiceStatusMenuTextTests.swift	WP-UI

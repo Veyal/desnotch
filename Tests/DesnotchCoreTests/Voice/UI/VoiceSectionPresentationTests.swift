@@ -40,7 +40,7 @@ final class VoiceSectionPresentationTests: XCTestCase {
             VoiceBodyLine(text: "Esc cancels", lineLimit: 1, emphasis: .caption)
         ])
         XCTAssertTrue(presentation.showsMeter)
-        XCTAssertEqual(presentation.buttons.map(\.role), [.stop])
+        XCTAssertEqual(presentation.buttons.map(\.role), [.cancel, .finish, .stop])
         XCTAssertEqual(presentation.wingLeft, .mic)
         XCTAssertEqual(presentation.wingRight, .meter)
         XCTAssertEqual(presentation.tint, .neutral)
@@ -50,7 +50,8 @@ final class VoiceSectionPresentationTests: XCTestCase {
         let presentation = present(.init(state: .listening))
         XCTAssertEqual(presentation.title, "Listening…")
         XCTAssertTrue(presentation.showsMeter)
-        XCTAssertEqual(presentation.buttons.map(\.role), [.stop])
+        XCTAssertEqual(presentation.buttons.map(\.role), [.cancel, .finish, .stop])
+        XCTAssertEqual(presentation.buttons.first { $0.role == .finish }?.title, "Done")
     }
 
     func testTranscribingShowsEllipsisAndStop() {
@@ -205,13 +206,12 @@ final class VoiceSectionPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.bodyLines.map(\.text), ["5 still running: a, b, c, +2"])
     }
 
-    func testPausedHasNoStopButtonAndListeningHasNoCancelButton() {
+    func testPausedHasNoStopButtonAndListeningOffersCancelDoneAndStop() {
         let paused = present(.init(state: .paused))
         XCTAssertFalse(paused.buttons.contains { $0.role == .stop })
         XCTAssertEqual(paused.buttons.map(\.role), [.resume])
         let listening = present(.init(state: .listening, partialTranscript: "hello"))
-        XCTAssertFalse(listening.buttons.contains { $0.role == .cancel })
-        XCTAssertEqual(listening.buttons.map(\.role), [.stop])
+        XCTAssertEqual(listening.buttons.map(\.role), [.cancel, .finish, .stop])
     }
 
     func testTitleLineLimitPerState() {

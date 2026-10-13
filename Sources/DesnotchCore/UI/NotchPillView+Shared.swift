@@ -23,7 +23,8 @@ extension NotchPillView {
             trayEnabled: settings.trayEnabled,
             tray: tray.items.count,
             hasVoice: hasVoice,
-            voiceState: voiceState
+            voiceState: voiceState,
+            hasTalk: hasTalkAction
         )
     }
 
@@ -55,6 +56,7 @@ extension NotchPillView {
         case .reminders: return showReminderSection
         case .battery: return showBatteryRow && battery.state != nil
         case .clipboard: return hasClipboard
+        case .talk: return hasTalkAction
         case .privacy: return true
         case .tray: return settings.trayEnabled
         }
@@ -97,7 +99,7 @@ extension NotchPillView {
     }
 
     var hasContentBeforePrivacyAction: Bool {
-        hasVoice || hasNotification || hasMiddleSection
+        hasVoice || hasNotification || hasMiddleSection || hasTalkAction
     }
 
     /// Blank sensitive strings while privacy mode is on (screen sharing/recording).

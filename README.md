@@ -164,7 +164,8 @@ Off by default. In Settings, turn on "Voice control", then hold the shortcut and
 default shortcut is Option-Command-V. While Finder is frontmost that chord is also Finder's
 "Move Item Here". Settings offers two other choices, Shift-Option-Command-V and
 Option-Command-J, which avoid it. A short review window runs before anything happens, and you
-can cancel it.
+can cancel it. You can also click the Talk row in the expanded notch, which starts a listening
+session without the shortcut; click Done to send it.
 
 Local commands have to match the whole utterance. They cover play, pause, next, and previous;
 volume up, down, mute, unmute, or a percent (above 70% asks for a click); opening a catalogued

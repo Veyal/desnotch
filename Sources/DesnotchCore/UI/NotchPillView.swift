@@ -20,6 +20,7 @@ private struct PillStructuralAnimationState: Equatable {
     let clipboardEntryIDs: [UUID]
     let hasVoice: Bool
     let voiceCardShown: Bool
+    let hasTalk: Bool
 }
 
 /// The single live-activity pill: always rendered as a (real or synthetic) notch shape,
@@ -65,6 +66,8 @@ public struct NotchPillView: View {
     public let voice: VoiceSessionModel
 
     @State var voiceState: VoiceState
+    @State var voicePermissions: VoicePermissionStatus
+    @State var voiceHotkeyStatus: PushToTalkStatus
 
     @ObservedObject public var presentation: NotchPillPresentation
 
@@ -127,6 +130,8 @@ public struct NotchPillView: View {
         self.notificationMirror = notificationMirror
         self.voice = voice
         _voiceState = State(initialValue: MainActor.assumeIsolated { voice.state })
+        _voicePermissions = State(initialValue: MainActor.assumeIsolated { voice.permissions })
+        _voiceHotkeyStatus = State(initialValue: MainActor.assumeIsolated { voice.hotkeyStatus })
         self.presentation = presentation
         self.hasPhysicalNotch = hasPhysicalNotch
         self.notchSize = notchSize
@@ -303,7 +308,8 @@ public struct NotchPillView: View {
             trayItems: tray.items,
             clipboardEntryIDs: clipboard.entries.map(\.id),
             hasVoice: hasVoice,
-            voiceCardShown: voiceState == .awaitingApproval
+            voiceCardShown: voiceState == .awaitingApproval,
+            hasTalk: hasTalkAction
         )
     }
 
@@ -348,6 +354,8 @@ public struct NotchPillView: View {
             .onReceive(voice.$state.removeDuplicates()) { newState in
                 voiceState = newState
             }
+            .onReceive(voice.$permissions.removeDuplicates()) { voicePermissions = $0 }
+            .onReceive(voice.$hotkeyStatus.removeDuplicates()) { voiceHotkeyStatus = $0 }
             .modifier(VoiceAnnouncementModifier(state: voiceState, model: voice))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             // The pill renders on an always-dark surface; force a dark color scheme so
@@ -930,6 +938,12 @@ public struct NotchPillView: View {
                     revealDivider(.clipboard)
                 }
                 reveal(.clipboard) { clipboardSection }
+            }
+            if hasTalkAction {
+                if hasVoice || hasNotification || hasMiddleSection {
+                    revealDivider(.talk)
+                }
+                reveal(.talk) { talkAction }
             }
             if hasContentBeforePrivacyAction {
                 revealDivider(.privacy)

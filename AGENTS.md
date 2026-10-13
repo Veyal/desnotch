@@ -468,6 +468,11 @@ process), `SystemLocalExecutor` for the closed local grammar, or, when the secon
 is what the pill, wings, status menu, and Settings read. The flow, tiers, and rule table are
 `docs/voice/PLAN.md`.
 
+The expanded pill also has a **Talk row** (`TalkRowPresentation`, `NotchPillView+TalkAction.swift`, `PillSectionKind.talk`):
+shown only while voice is enabled, idle, and `voice.actions.toggleTalk` is installed (never in smoke-test mode); it calls
+`toggleTalk()` (R11/R33), or `requestPermissions()` while access is `.notDetermined`. The listening card carries Cancel, Done
+(`toggleTalk`) and Stop. Keep the row non-activating and hidden whenever the voice section is up.
+
 `Contracts/` is frozen. The other folders are `Logic/` (reducer, router, tiers), `Platform/`
 (speech, hotkey, permissions, audit), `Coordinator/`, and `Hermes/` (preflight, ACP, process
 guard). Put a change in the folder that already owns that layer.
