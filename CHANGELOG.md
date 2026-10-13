@@ -13,6 +13,16 @@
   base URLs must be https (plain http only to this Mac), audio is uploaded from memory only after
   you end the capture, a cloud mark shows in the notch while audio or text is sent, and nothing
   is saved. "Test Connection" checks the endpoint without showing the key.
+- **Let the agent control this Mac (optional, off by default):** with OpenAI-compatible or Claude
+  answers, the voice agent can open apps and links, control media, volume and the timer, read
+  system info, list, read and search files in your home folder, fetch public web pages, use the
+  clipboard, write files, and run shell commands, AppleScript or Shortcuts. desnotch runs every
+  tool itself and checks it before it starts: harmless actions run at once (reads and lookups rate-limited), risky
+  ones wait for you to hold Approve on a card that shows the exact command, path or link, and
+  network commands, credentials, engagement folders and local-network addresses are always
+  refused. Commands run in a private scratch folder with a clean environment, a 30-second limit
+  and capped output, and Stop kills them. The app now declares Apple Events use for the approved
+  AppleScript tool.
 
 ## v0.12.0 — 2026-10-13
 

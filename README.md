@@ -211,8 +211,27 @@ When you choose a provider for a step:
 - desnotch saves no audio, transcript, or reply. The provider's own retention policy applies.
 - Provider settings, including the base URLs, are never exported or imported.
 - Answers keep every agent-lane rule: the 1.5-second review window, the daily limit, Stop, and the
-  rule that nothing goes to the cloud unless you ended the capture. Answers are short, spoken
-  style, and use no tools. If the spoken-reply request fails, the macOS voice reads the reply.
+  rule that nothing goes to the cloud unless you ended the capture. Answers are short and spoken
+  style, and use no tools unless you turn on machine control (below). If the spoken-reply request
+  fails, the macOS voice reads the reply.
+
+### Let the agent control this Mac (optional)
+
+With the OpenAI-compatible or Claude answers, a second switch, "Let the agent control this Mac"
+(off by default), lets the model use desnotch's own tools. desnotch runs each tool itself and
+checks it before it starts:
+
+| Runs on its own | Waits for you to hold Approve on the card | Always refused |
+|---|---|---|
+| open an app, open a plain web link, play/pause/next/previous, volume up to 70%, the focus timer, system info (time, battery, disk, frontmost app, now playing), list/read/search files in your home folder (not hidden folders or `~/Library`), copy text to the clipboard, fetch a plain public web page | run a shell command, an AppleScript or a Shortcut, write a file in your home folder, read the clipboard, volume above 70%, a link or page whose address has a query, read a file outside the quiet scope | network commands (`curl`, `ssh`, `git push`...), `sudo`, piping into an interpreter, command substitution, anything touching `.ssh`, `.hermes`, keychains, credentials or engagement/evidence/pentest folders, writes outside your home folder's ordinary folders, local-network or tailnet addresses, unknown tools |
+
+The card shows the exact command, path or link (hidden while Privacy mode is on, and then it
+cannot be approved). Saying "yes" never approves. Commands run in
+`~/Library/Application Support/desnotch/agent-scratch` with a clean environment, a 30-second limit
+and capped output, and Stop kills them. What a tool returns (file contents, web pages, command
+output) is sent to your AI provider and treated as data, never as instructions. The audit log
+records only which tool ran, its tier and outcome. The first AppleScript that controls an app makes
+macOS ask for Automation permission. Computer use (screenshots, clicks) is not included.
 
 The Hermes agent is one of the "Answers" choices. The agent
 lane needs a locked Hermes profile. You create it; desnotch only reads it. The file is

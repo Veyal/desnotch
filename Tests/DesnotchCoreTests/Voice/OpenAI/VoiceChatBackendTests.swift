@@ -113,6 +113,22 @@ final class VoiceChatBackendTests: XCTestCase {
         session.invalidateAndCancel()
     }
 
+    func testToolHandlerIsIgnoredWhileTheSettingIsOff() async {
+        let provider = AIScriptedChatProvider([
+            .response(ChatResponse(
+                content: [.text("I can only answer."), .toolUse(id: "t1", name: "weather", inputJSON: "{}")],
+                stopReason: .toolUse, inputTokens: 0, outputTokens: 0
+            ))
+        ])
+        let tools = AIRecordingToolHandler()
+        let backend = VoiceChatBackend(config: VoiceAIConfigBox(), providers: [provider], toolHandler: tools)
+        let events = await collect(backend.submit("do it"))
+        XCTAssertEqual(events, [.status("started"), .finished(summary: "I can only answer.")])
+        XCTAssertEqual(provider.requests.first?.tools, [])
+        XCTAssertEqual(provider.requests.first?.system, VoiceChatBackend.systemPrompt)
+        XCTAssertTrue(tools.calls.isEmpty)
+    }
+
     func testWithoutAToolHandlerNoToolIsOfferedAndToolCallsAreIgnored() async {
         let provider = AIScriptedChatProvider([
             .response(ChatResponse(
@@ -136,7 +152,9 @@ final class VoiceChatBackendTests: XCTestCase {
             .response(ChatResponse(content: [.text("31 degrees.")], stopReason: .endTurn, inputTokens: 9, outputTokens: 3))
         ])
         let tools = AIRecordingToolHandler()
-        let backend = VoiceChatBackend(config: VoiceAIConfigBox(), providers: [provider], toolHandler: tools)
+        let backend = VoiceChatBackend(
+            config: VoiceAIConfigBox(VoiceAIConfig(agentToolsEnabled: true)), providers: [provider], toolHandler: tools
+        )
         let events = await collect(backend.submit("weather?"))
         XCTAssertEqual(events, [
             .status("started"),
@@ -151,7 +169,7 @@ final class VoiceChatBackendTests: XCTestCase {
         XCTAssertEqual(second.messages.count, 3)
         XCTAssertEqual(second.messages[1].role, .assistant)
         XCTAssertEqual(second.messages[2], ChatMessage(role: .user, content: [
-            .toolResult(toolUseID: "t1", content: "31C", isError: false)
+            .toolResult(toolUseID: "t1", content: AgentToolOutput.wrap(tool: "weather", "31C"), isError: false)
         ]))
     }
 
@@ -160,7 +178,10 @@ final class VoiceChatBackendTests: XCTestCase {
             content: [.toolUse(id: "t", name: "weather", inputJSON: "{}")], stopReason: .toolUse, inputTokens: 0, outputTokens: 0
         ))
         let provider = AIScriptedChatProvider(Array(repeating: call, count: VoiceChatBackend.maxToolRounds + 3))
-        let backend = VoiceChatBackend(config: VoiceAIConfigBox(), providers: [provider], toolHandler: AIRecordingToolHandler())
+        let backend = VoiceChatBackend(
+            config: VoiceAIConfigBox(VoiceAIConfig(agentToolsEnabled: true)), providers: [provider],
+            toolHandler: AIRecordingToolHandler()
+        )
         let events = await collect(backend.submit("loop"))
         XCTAssertEqual(events.last, .failed(.stepBudgetExceeded))
         XCTAssertEqual(provider.requests.count, VoiceChatBackend.maxToolRounds + 1)
@@ -204,7 +225,11 @@ final class AIRecordingToolHandler: ChatToolHandling, @unchecked Sendable {
         [ChatToolDefinition(name: "weather", description: "Weather", inputSchemaJSON: #"{"type":"object"}"#)]
     }
 
-    func run(name: String, inputJSON: String) async -> ChatToolOutcome {
+    func propose(name: String, inputJSON: String) async -> ChatToolProposal {
+        ChatToolProposal(tier: .t0, stepLabel: name, summary: "Weather", auditCode: "tool.\(name)")
+    }
+
+    func run(name: String, inputJSON: String, approvedTier: VoiceTier) async -> ChatToolOutcome {
         record("\(name) \(inputJSON)")
         return ChatToolOutcome(content: "31C", isError: false)
     }

@@ -11,5 +11,10 @@
          Applied only to the main executable and the app bundle, and only when HARDENED_RUNTIME=1. -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
+    <!-- Hardened runtime denies sending Apple Events unless this is present: the opt-in voice
+         agent's approved AppleScript tool controls other apps through Automation.
+         Applied only to the main executable and the app bundle, and only when HARDENED_RUNTIME=1. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
 </dict>
 </plist>

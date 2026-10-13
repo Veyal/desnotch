@@ -219,5 +219,6 @@ extension SettingsStore {
         voiceAILanguage = ""
         voiceAnthropicBaseURL = Self.defaultVoiceAnthropicBaseURL
         voiceAnthropicModel = Self.defaultVoiceAnthropicModel
+        voiceAgentToolsEnabled = false
     }
 }

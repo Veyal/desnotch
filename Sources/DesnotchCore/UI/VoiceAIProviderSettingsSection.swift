@@ -38,6 +38,14 @@ enum VoiceAISettingsWords {
     static let keyNote = "Stored in your Keychain. Never shown, exported or logged. Optional for a server on this Mac."
     static let languageNote = "Leave empty to auto-detect (best for mixed Indonesian and English)."
     static let speakRepliesOffNote = "Turn on Speak replies to hear answers."
+    static let agentToolsTitle = "Let the agent control this Mac"
+    static let agentToolsNote = "Off by default. When on, the AI can open apps and links, control media, volume and the timer, read files in your home folder, search file names and fetch public web pages on its own (rate-limited). Writing files, running shell commands, AppleScript or Shortcuts, reading the clipboard, and anything unusual wait for you to hold Approve on a card that shows the exact command, path or link. Network, credential and engagement locations are always refused. File contents and command output are sent to the AI provider."
+    static let automationNote = "The first AppleScript that controls an app makes macOS ask for Automation permission."
+
+    /// The machine-control switch exists only for the OpenAI-compatible and Claude answers.
+    static func showsAgentTools(_ choice: VoiceAnswersChoice) -> Bool {
+        choice == .openAICompatible || choice == .anthropic
+    }
 
     static func speechLabel(_ provider: VoiceSpeechProvider) -> String {
         switch provider {
@@ -125,6 +133,14 @@ struct VoiceAIProviderSettingsSection: View {
             }
             if answers != .off {
                 SettingsNote(VoiceSettingsWords.laneStatusText(model.hermesLaneStatus))
+            }
+            if VoiceAISettingsWords.showsAgentTools(answers) {
+                Toggle(VoiceAISettingsWords.agentToolsTitle, isOn: $settings.voiceAgentToolsEnabled)
+                    .font(.system(size: 11))
+                SettingsNote(VoiceAISettingsWords.agentToolsNote, warning: settings.voiceAgentToolsEnabled)
+                if settings.voiceAgentToolsEnabled {
+                    SettingsNote(VoiceAISettingsWords.automationNote)
+                }
             }
             pickerRow("Spoken replies", selection: $settings.voiceReplyProvider, options: VoiceReplyProvider.allCases) {
                 VoiceAISettingsWords.replyLabel($0)

@@ -25,6 +25,7 @@ done
 /usr/libexec/PlistBuddy -c "Print :NSRemindersFullAccessUsageDescription" "$PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Print :NSSpeechRecognitionUsageDescription" "$PLIST" >/dev/null
+/usr/libexec/PlistBuddy -c "Print :NSAppleEventsUsageDescription" "$PLIST" >/dev/null
 plutil -lint "$PLIST"
 
 archs="$(lipo -archs "$EXECUTABLE")"
@@ -44,6 +45,8 @@ if [[ "$signed_info" == *flags=*runtime* ]]; then
     || { echo "error: hardened-runtime app lacks the calendars entitlement" >&2; exit 1; }
   [[ "$signed_entitlements" == *com.apple.security.device.audio-input* ]] \
     || { echo "error: hardened-runtime app lacks the audio-input entitlement" >&2; exit 1; }
+  [[ "$signed_entitlements" == *com.apple.security.automation.apple-events* ]] \
+    || { echo "error: hardened-runtime app lacks the apple-events entitlement" >&2; exit 1; }
 fi
 
 # A previously crashed app must not leave the adapter owned by launchd. Only

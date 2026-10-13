@@ -155,7 +155,7 @@ final class SettingsStoreTests: XCTestCase {
             "voiceEnabled", "voiceLocale", "voiceHermesLane", "voiceTTSEnabled", "voiceDuckMedia",
             "voiceHotkey", "voiceSpeechProvider", "voiceAnswersProvider", "voiceReplyProvider",
             "voiceAIBaseURL", "voiceAISTTModel", "voiceAIChatModel", "voiceAITTSModel", "voiceAITTSVoice",
-            "voiceAILanguage", "voiceAnthropicBaseURL", "voiceAnthropicModel"
+            "voiceAILanguage", "voiceAnthropicBaseURL", "voiceAnthropicModel", "voiceAgentToolsEnabled"
         ]
         XCTAssertEqual(Set(SettingsStore.Key.allCases.map(\.rawValue)), expected)
     }

@@ -137,6 +137,7 @@ public final class SettingsStore: ObservableObject {
         case voiceSpeechProvider, voiceAnswersProvider, voiceReplyProvider
         case voiceAIBaseURL, voiceAISTTModel, voiceAIChatModel, voiceAITTSModel, voiceAITTSVoice, voiceAILanguage
         case voiceAnthropicBaseURL, voiceAnthropicModel
+        case voiceAgentToolsEnabled
 
         /// Value used when nothing is stored (only meaningful for boolean keys). Feature
         /// toggles default ON; permission-triggering or privacy-sensitive opt-ins default OFF.
@@ -145,7 +146,7 @@ public final class SettingsStore: ObservableObject {
             case .remindersEnabled, .clipboardHistoryEnabled, .privacyModeEnabled,
                  .agentTaskTitlesEnabled, .notificationMirrorEnabled, .dismissSystemBanners,
                  .hasSeenOnboarding, .globalHotkeyEnabled,
-                 .voiceEnabled, .voiceHermesLane, .voiceTTSEnabled:
+                 .voiceEnabled, .voiceHermesLane, .voiceTTSEnabled, .voiceAgentToolsEnabled:
                 return false
             default:
                 return true
@@ -296,6 +297,10 @@ public final class SettingsStore: ObservableObject {
     @Published public var voiceAILanguage: String {
         didSet { normalizeAndSet(\.voiceAILanguage, .voiceAILanguage, Self.normalizedVoiceAILanguage) }
     }
+    /// "Let the agent control this Mac": the OpenAI-compatible or Claude answers model may use
+    /// desnotch's machine-control tools (`Voice/Tools`), each gated by its tier. Off by default;
+    /// never exported; the Hermes lane ignores it.
+    @Published public var voiceAgentToolsEnabled: Bool { didSet { set(.voiceAgentToolsEnabled, voiceAgentToolsEnabled) } }
 
     /// One-time product guide state. The guide is always reopenable from the status menu.
     @Published public var hasSeenOnboarding: Bool { didSet { set(.hasSeenOnboarding, hasSeenOnboarding) } }
@@ -408,6 +413,7 @@ public final class SettingsStore: ObservableObject {
         voiceAnthropicModel = Self.normalizedVoiceAIModel(
             Self.string(defaults, .voiceAnthropicModel) ?? Self.defaultVoiceAnthropicModel
         )
+        voiceAgentToolsEnabled = Self.bool(defaults, .voiceAgentToolsEnabled)
 
         pillMode = Self.string(defaults, .pillMode).flatMap(PillVisibilityMode.init(rawValue:)) ?? Self.defaultPillMode
         musicIndicatorStyle = Self.string(defaults, .musicIndicatorStyle)

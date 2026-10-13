@@ -10,8 +10,14 @@ struct VoiceAIProviders {
     let chatBackend: AgentBackend
 
     /// Production wiring: Keychain keys, the real microphone and player, and `fallback` (the
-    /// macOS voice) behind the cloud reply voice.
-    static func live(fallbackSynthesizer: SpeechSynthesizing) -> VoiceAIProviders {
+    /// macOS voice) behind the cloud reply voice. `tools` (the machine-control catalog) is
+    /// offered to the answers model only while `voiceAgentToolsEnabled` is on; `audit` receives
+    /// one metadata-only record per tool call.
+    static func live(
+        fallbackSynthesizer: SpeechSynthesizing,
+        tools: ChatToolHandling? = nil,
+        audit: AuditLogging? = nil
+    ) -> VoiceAIProviders {
         let config = VoiceAIConfigBox()
         let session = VoiceAIHTTP.makeSession()
         let openAIKeys = KeychainVoiceAIKeyStore()
@@ -30,7 +36,9 @@ struct VoiceAIProviders {
                 providers: [
                     OpenAIChatProvider(keys: openAIKeys, session: session),
                     AnthropicChatProvider(keys: anthropicKeys, session: session)
-                ]
+                ],
+                toolHandler: tools,
+                audit: audit
             )
         )
     }

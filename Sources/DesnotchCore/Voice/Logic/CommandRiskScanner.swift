@@ -33,7 +33,9 @@ enum CommandRiskScanner {
         ".gnupg",
         "interseptor",
         "vault",
-        "engagements",
+        "engagement",
+        "evidence",
+        "pentest",
         "sudoers",
         "/etc/shadow"
     ]
@@ -106,6 +108,15 @@ enum CommandRiskScanner {
             tier = .t2
         }
         return CommandRisk(flags: flags, sanitized: sanitized, wasTruncated: wasTruncated, tier: tier)
+    }
+
+    /// True when a path (or any text) names a protected location. The machine-control file
+    /// tools use this for every path they touch and every entry a search returns, so the tools
+    /// and the command scanner share one protected-path list.
+    static func mentionsProtectedPath(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let folded = fold(lowered)
+        return mentionsProtected(lowered) || mentionsProtected(folded) || globHitsProtected(folded)
     }
 
     private static func matches(_ pattern: String, _ text: String) -> Bool {

@@ -679,6 +679,16 @@ final class VoiceCoordinator {
                 }
             }
             .store(in: &cancellables)
+        settings.$voiceAgentToolsEnabled
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] value in
+                MainActor.assumeIsolated {
+                    self?.applyAgentTools(value)
+                }
+            }
+            .store(in: &cancellables)
         settings.$voiceHotkey
             .removeDuplicates()
             .dropFirst()
@@ -736,6 +746,17 @@ final class VoiceCoordinator {
         model.setAgentName(agentName)
         if laneEnabled && voiceEnabledState {
             runLaneCheck()
+        }
+    }
+
+    /// Turning "Let the agent control this Mac" off ends a provider turn in flight, so a turn
+    /// that started with tools cannot keep using them (it hard-stops any running tool).
+    private func applyAgentTools(_ enabled: Bool) {
+        guard !stopped, !enabled else { return }
+        let providerTurn = settings.voiceAnswersProvider != .hermes && context.lane == .hermes
+            && (context.state.isAgentBusy || context.state == .review)
+        if providerTurn {
+            dispatch(.stopAllRequested)
         }
     }
 

@@ -35,6 +35,8 @@ struct VoiceAIConfig: Equatable, Sendable {
     var language: String
     var anthropicBaseURL: String
     var anthropicModel: String
+    /// "Let the agent control this Mac": offer the `Voice/Tools` catalog to the answers model.
+    var agentToolsEnabled: Bool
 
     init(
         chatProvider: VoiceChatProviderKind = .openAICompatible,
@@ -45,7 +47,8 @@ struct VoiceAIConfig: Equatable, Sendable {
         ttsVoice: String = VoiceAIDefaults.ttsVoice,
         language: String = "",
         anthropicBaseURL: String = VoiceAIDefaults.anthropicBaseURL,
-        anthropicModel: String = VoiceAIDefaults.anthropicModel
+        anthropicModel: String = VoiceAIDefaults.anthropicModel,
+        agentToolsEnabled: Bool = false
     ) {
         self.chatProvider = chatProvider
         self.baseURL = baseURL.isEmpty ? VoiceAIDefaults.baseURL : baseURL
@@ -56,6 +59,7 @@ struct VoiceAIConfig: Equatable, Sendable {
         self.language = language
         self.anthropicBaseURL = anthropicBaseURL.isEmpty ? VoiceAIDefaults.anthropicBaseURL : anthropicBaseURL
         self.anthropicModel = anthropicModel.isEmpty ? VoiceAIDefaults.anthropicModel : anthropicModel
+        self.agentToolsEnabled = agentToolsEnabled
     }
 
     /// An empty field in Settings means "use the default".
@@ -70,7 +74,8 @@ struct VoiceAIConfig: Equatable, Sendable {
             ttsVoice: settings.voiceAITTSVoice,
             language: settings.voiceAILanguage,
             anthropicBaseURL: settings.voiceAnthropicBaseURL,
-            anthropicModel: settings.voiceAnthropicModel
+            anthropicModel: settings.voiceAnthropicModel,
+            agentToolsEnabled: settings.voiceAgentToolsEnabled
         )
     }
 }
@@ -190,4 +195,7 @@ enum VoiceAILimits {
     static let maxSpeechBytes = 8_000_000
     /// Upper bound of the chat answer; the reducer also caps the reply at 400 characters.
     static let maxReplyTokens = 200
+    /// Upper bound of one model round while tools are on: a tool call carries its arguments
+    /// (a command, a file's content), so it needs more room than the spoken answer.
+    static let maxToolTurnTokens = 1_024
 }
