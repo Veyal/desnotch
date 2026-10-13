@@ -203,6 +203,9 @@ import XCTest
 
     func testScannerChecksTheStrippedTextForEveryPattern() {
         XCTAssertEqual(CommandRiskScanner.scan("c\\url x.example").tier, .t3)
+        XCTAssertEqual(CommandRiskScanner.scan("cu\\\\rl x.example").tier, .t3, "unescaped until stable")
+        XCTAssertEqual(CommandRiskScanner.scan(#"cat ~/.s\\\\sh/config"#).tier, .t4, "a doubly escaped .ssh")
+        XCTAssertEqual(CommandRiskScanner.scan(#"cat ~/.s\\sh/config"#).tier, .t4)
         XCTAssertTrue(CommandRiskScanner.scan("r\"m\" -rf old").flags.contains(.destructive))
         XCTAssertEqual(CommandRiskScanner.scan("s'u'do ls").tier, .t4)
         XCTAssertEqual(CommandRiskScanner.scan("ls -la").tier, .t2)
@@ -218,7 +221,17 @@ import XCTest
             #"load script file "x""#,
             #"set c to character id 99"#,
             #"set c to ASCII character 99"#,
-            #"set p to "a" & "b""#
+            #"set p to "a" & "b""#,
+            #"tell application "Terminal" to do script "cu\\rl x.example""#,
+            #"tell application "Terminal" to do script "ls""#,
+            #"tell app "iTerm2" to tell current session of current window to write text "ls""#,
+            #"tell application id "com.googlecode.iterm2" to activate"#,
+            #"tell application "Warp" to activate"#,
+            #"tell application "Ghostty" to activate"#,
+            #"tell application "kitty" to activate"#,
+            #"tell application "Alacritty" to activate"#,
+            #"tell application "WezTerm" to activate"#,
+            #"tell application "System Events" to keystroke "ls""#
         ]
         for script in scripts {
             let proposal = await propose("run_applescript", ChatJSON.string(["script": script]))

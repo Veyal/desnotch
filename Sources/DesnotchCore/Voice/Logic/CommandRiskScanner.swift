@@ -30,6 +30,7 @@ enum CommandRiskScanner {
         static let alwaysInterpreter = #"^(osascript|osacompile|awk|gawk|nawk|mawk)$"#
         static let inlineInterpreter = #"^(python[0-9.]*|perl[0-9.]*|ruby|irb|node|nodejs|deno|bun|php|swift|lua|tclsh|jshell|pwsh|sh|bash|zsh|dash|ksh|fish)$"#
         static let inlineCodeFlag = #"^(-[a-z]*[cerp]|--eval|--print|--command|--exec|-)$"#
+        static let appleScriptTerminal = #"\b(do\s+script|write\s+text|keystroke|key\s+code)\b|\bapp(lication)?\s+(id\s+)?"?[^"]*(terminal|iterm|warp|ghostty|kitty|alacritty|wezterm|hyper|tabby)"#
         static let appleScriptShell = #"\b(do\s+shell\s+script|run\s+script|load\s+script|character\s+id|ascii\s+character)\b"#
     }
 
@@ -162,12 +163,15 @@ enum CommandRiskScanner {
 
     /// Stricter check for desnotch's own `run_applescript` tool only: an AppleScript that can reach
     /// a shell or build a string at run time (`do shell script`, `run script`, `load script`,
-    /// `character id`, `ASCII character`, or `&` concatenation) is refused (T4), so shell
-    /// commands only ever run through `run_shell`, where the card shows them literally.
+    /// `character id`, `ASCII character`, or `&` concatenation), or that drives a terminal app
+    /// (Terminal's `do script`, iTerm's `write text`, typed keystrokes, or any `tell application`
+    /// naming Terminal, iTerm, Warp, Ghostty, kitty, Alacritty, WezTerm, Hyper or Tabby) is refused
+    /// (T4), so shell commands only ever run through `run_shell`, where the card shows them literally.
     static func appleScriptReachesShell(_ script: String) -> Bool {
         let collapsed = script.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-        return collapsed.contains("&") || matches(Pat.appleScriptShell, collapsed)
-            || matches(Pat.appleScriptShell, fold(collapsed))
+        let folded = fold(collapsed)
+        return collapsed.contains("&")
+            || [Pat.appleScriptShell, Pat.appleScriptTerminal].contains { matches($0, collapsed) || matches($0, folded) }
     }
 
     /// True when a path (or any text) names a protected location. The machine-control file
@@ -183,8 +187,19 @@ enum CommandRiskScanner {
         text.range(of: pattern, options: .regularExpression) != nil
     }
 
-    /// Drops quotes and backslashes so `$HOME/.h""ermes` still contains `.hermes`.
+    /// Drops quotes and backslashes so `$HOME/.h""ermes` still contains `.hermes`, repeating until
+    /// nothing changes (bounded), so a doubly escaped `cu\\rl` folds to `curl` as well.
     private static func fold(_ text: String) -> String {
+        var current = text
+        for _ in 0..<8 {
+            let next = foldOnce(current)
+            if next == current { break }
+            current = next
+        }
+        return current
+    }
+
+    private static func foldOnce(_ text: String) -> String {
         var out = String.UnicodeScalarView()
         var escaped = false
         for scalar in text.unicodeScalars {
