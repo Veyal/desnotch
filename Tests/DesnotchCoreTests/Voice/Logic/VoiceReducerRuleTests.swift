@@ -865,8 +865,25 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertEqual(t.effects, [
             .stopAgentHard, .cue(.error),
             .audit(AuditDraft(kind: .tripwire, lane: .hermes, tier: .t3,
-                              decision: "tripwire", outcome: "terminal"))
+                              decision: "tripwire", outcome: "tool.t3"))
         ])
+    }
+
+    /// The tool label comes from the model (ACP `tool_call.title`); the persisted audit record must
+    /// carry only a desnotch-authored code, while the in-memory pause card keeps the label.
+    func testR83_e_auditOutcomeNeverCarriesTheToolLabel() {
+        var c = ctx(.thinking)
+        c.lane = .hermes
+        let label = "send_mail.to-alice"
+        let t = step(c, .agent(.toolActivity(kind: label), generation: 1))
+        XCTAssertEqual(t.context.pauseReason, .tripwire(label))
+        let outcomes = t.effects.compactMap { effect -> String? in
+            if case .audit(let draft) = effect { return draft.outcome }
+            return nil
+        }
+        XCTAssertEqual(outcomes.count, 1)
+        XCTAssertFalse(outcomes.contains { $0.contains("send_mail") })
+        XCTAssertEqual(outcomes.first, "tool.t3")
     }
 
     func testR83_b_tripwireOnUnknownTool() {
@@ -952,7 +969,9 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertEqual(t.context.state, .speaking)
         XCTAssertEqual(t.context.reply, "It is sunny")
         XCTAssertEqual(t.effects, [
-            .speak("It is sunny", generation: 1), .cue(.done),
+            .speak("It is sunny", generation: 1),
+            .startTimer(.replyDisplay, generation: 1, seconds: 6.0 + Double("It is sunny".count) / 10),
+            .cue(.done),
             .audit(AuditDraft(kind: .execute, lane: .hermes, decision: "finished", outcome: "ok"))
         ])
     }
@@ -1046,7 +1065,9 @@ final class VoiceReducerRuleTests: XCTestCase {
                      env(speech: true))
         XCTAssertEqual(t.context.state, .speaking)
         XCTAssertEqual(t.effects, [
-            .speak("Volume 30", generation: 1), .cue(.done),
+            .speak("Volume 30", generation: 1),
+            .startTimer(.replyDisplay, generation: 1, seconds: 6.0 + Double("Volume 30".count) / 10),
+            .cue(.done),
             .audit(AuditDraft(kind: .execute, lane: .local, decision: "finished", outcome: "ok"))
         ])
     }
@@ -1153,7 +1174,8 @@ final class VoiceReducerRuleTests: XCTestCase {
     func testR102_a_releaseEndsInterrupt() {
         let t = step(interruptContext(), .talkReleased(heldSeconds: 0.8))
         XCTAssertEqual(t.context.interrupt?.endedByUser, true)
-        XCTAssertEqual(t.effects, [.endCapture(generation: 2), .cue(.captureEnd)])
+        XCTAssertEqual(t.effects, [.endCapture(generation: 2), .cue(.captureEnd),
+                                   .startTimer(.finalWatchdog, generation: 2, seconds: 5.0)])
     }
 
     func testR102_b_shortReleaseCancelsInterrupt() {
@@ -1198,7 +1220,20 @@ final class VoiceReducerRuleTests: XCTestCase {
     func testR104_b_listenCapEndsInterrupt() {
         let t = step(interruptContext(), .timerElapsed(.listenCap, generation: 2))
         XCTAssertNotNil(t.context.interrupt)
-        XCTAssertEqual(t.effects, [.endCapture(generation: 2)])
+        XCTAssertEqual(t.effects, [.endCapture(generation: 2),
+                                   .startTimer(.finalWatchdog, generation: 2, seconds: 5.0)])
+    }
+
+    /// An interrupt capture whose final transcript never arrives must not stay open for the rest of
+    /// the turn (R100 needs `interrupt == nil` to start another one).
+    func testR104_c_finalWatchdogClearsInterrupt() {
+        let released = step(interruptContext(), .talkReleased(heldSeconds: 0.8))
+        let t = step(released.context, .timerElapsed(.finalWatchdog, generation: 2))
+        XCTAssertNil(t.context.interrupt)
+        XCTAssertEqual(t.context.state, released.context.state)
+        XCTAssertEqual(t.effects, [.cancelCapture(generation: 2)])
+        let stale = step(released.context, .timerElapsed(.finalWatchdog, generation: 1))
+        XCTAssertNotNil(stale.context.interrupt)
     }
 
     func testR105_a_finishDropsTheInterruptCapture() {
@@ -1233,6 +1268,7 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertTrue(finished.effects.isEmpty)
         let timer = step(c, .timerElapsed(.replyDisplay, generation: 1))
         XCTAssertEqual(timer.context.state, .idle)
+        XCTAssertEqual(timer.effects, [.stopSpeaking])
     }
 
     func testR111_talkPressedStopsSpeakingAndStartsFlow() {

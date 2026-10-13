@@ -100,6 +100,8 @@ enum VoiceReducer {
                 b.context.interrupt?.endedByUser = true
                 b.effects.append(.endCapture(generation: interrupt.generation))
                 b.effects.append(.cue(.captureEnd))
+                b.effects.append(.startTimer(.finalWatchdog, generation: interrupt.generation,
+                                             seconds: VoiceTiming.finalWatchdog))
             } else {
                 b.effects.append(.cancelCapture(generation: interrupt.generation))
                 b.context.interrupt = nil
@@ -128,6 +130,13 @@ enum VoiceReducer {
         case .timerElapsed(.listenCap, let generation): // R104
             guard generation == interrupt.generation else { return false }
             b.effects.append(.endCapture(generation: generation))
+            b.effects.append(.startTimer(.finalWatchdog, generation: generation,
+                                         seconds: VoiceTiming.finalWatchdog))
+            return true
+        case .timerElapsed(.finalWatchdog, let generation): // R104: no final transcript arrived
+            guard generation == interrupt.generation else { return false }
+            b.context.interrupt = nil
+            b.effects.append(.cancelCapture(generation: generation))
             return true
         default:
             return false
@@ -328,8 +337,10 @@ enum VoiceReducer {
     private static func reduceSpeaking(_ b: inout Builder, _ event: VoiceEvent,
                                        env: VoiceReducerEnv) {
         switch event {
-        case .speechFinished, .timerElapsed(.replyDisplay, _): // R110
+        case .speechFinished: // R110
             b.toIdle([])
+        case .timerElapsed(.replyDisplay, _): // R110: the backstop also silences the synthesizer
+            b.toIdle([.stopSpeaking])
         case .talkPressed: // R111
             if b.canStartFlow(env: env) { b.newFlow(.hold, [.stopSpeaking]) }
         case .toggleTalk: // R111
@@ -540,6 +551,11 @@ enum VoiceReducer {
             context.state = .speaking
             if env.speechAllowed && !context.reply.isEmpty {
                 effects.append(.speak(context.reply, generation: generation))
+                // Backstop: `speaking` otherwise ends only on `speechFinished`, which a stuck or
+                // silently failing synthesizer may never send (R110 ends the state either way).
+                effects.append(.startTimer(.replyDisplay, generation: generation,
+                                           seconds: VoiceTiming.replyDisplay
+                                               + Double(context.reply.count) / 10))
             } else {
                 effects.append(.startTimer(.replyDisplay, generation: generation,
                                            seconds: VoiceTiming.replyDisplay))
@@ -770,8 +786,10 @@ enum VoiceReducer {
             let label = String(kind.prefix(40))
             effects.append(.stopAgentHard)
             effects.append(.cue(.error))
+            // The tool label is model-authored (ACP `tool_call.title`), so the persisted audit
+            // record gets a desnotch-authored code; the label stays in memory for the pause card.
             effects.append(.audit(AuditDraft(kind: .tripwire, lane: .hermes, tier: tier,
-                                             decision: "tripwire", outcome: label)))
+                                             decision: "tripwire", outcome: "tool.t\(tier.rawValue)")))
             dropInterrupt()
             newID()
             clearFlow()

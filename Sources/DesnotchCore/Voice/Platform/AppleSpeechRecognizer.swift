@@ -55,6 +55,22 @@ enum SpeechDecision {
         return nil
     }
 
+    /// What `start` does once the engine is running. The capture is registered before the tap and the
+    /// engine exist, so a recognition callback, `cancel()`, or `endAudio()` can act on it first.
+    enum EngineStartAction: Equatable {
+        /// Still the current capture: record the tap and the task so teardown stops them.
+        case run
+        /// Still current, but `endAudio()` already ran: stop the engine and remove the tap now.
+        case stopTap
+        /// The capture already ended: stop the engine, remove the tap, and cancel the task.
+        case discard
+    }
+
+    static func afterEngineStart(isCurrent: Bool, endAudioCalled: Bool) -> EngineStartAction {
+        guard isCurrent else { return .discard }
+        return endAudioCalled ? .stopTap : .run
+    }
+
     /// true for `.final` and `.failed`: the capture is over, tear down and finish the stream.
     static func isTerminal(_ event: SpeechEvent) -> Bool {
         switch event {
@@ -157,12 +173,7 @@ final class AppleSpeechRecognizer: SpeechRecognizing, @unchecked Sendable {
         let replacedState = beginResult.replaced
 
         if let replaced = replacedState {
-            replaced.task?.cancel()
-            if replaced.tapInstalled {
-                replaced.engine.stop()
-                replaced.engine.inputNode.removeTap(onBus: 0)
-            }
-            replaced.continuation.finish()
+            teardown(replaced, flags: Self.flags(of: replaced, locked: lock))
         }
 
         continuation.onTermination = { [weak self] _ in
@@ -196,6 +207,7 @@ final class AppleSpeechRecognizer: SpeechRecognizing, @unchecked Sendable {
                             cont = taken.continuation
                             eng = taken.engine
                             shouldRemoveTap = taken.tapInstalled
+                            taken.tapInstalled = false
                         }
                     } else {
                         if case .partial(let partialText) = event {
@@ -218,7 +230,6 @@ final class AppleSpeechRecognizer: SpeechRecognizing, @unchecked Sendable {
                 }
             }
         }
-        state.task = task
 
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             guard let self else { return }
@@ -262,7 +273,6 @@ final class AppleSpeechRecognizer: SpeechRecognizing, @unchecked Sendable {
                 }
             }
         }
-        state.tapInstalled = true
 
         do {
             try engine.start()
@@ -280,7 +290,26 @@ final class AppleSpeechRecognizer: SpeechRecognizing, @unchecked Sendable {
                 cont.yield(.failed(.unavailable(.recognizer)))
                 cont.finish()
             }
+            return stream
         }
+
+        // The tap and the task only become visible to teardown here, under the lock, and only if
+        // this capture is still current. Otherwise it already ended (an immediate recognition
+        // failure, `cancel()`, or a newer `start`) and nobody else will stop this engine.
+        lock.lock()
+        let action = SpeechDecision.afterEngineStart(
+            isCurrent: book.payload(forToken: token) === state,
+            endAudioCalled: state.endAudioCalled
+        )
+        if action != .discard { state.task = task }
+        if action == .run { state.tapInstalled = true }
+        lock.unlock()
+
+        if action != .run {
+            engine.stop()
+            inputNode.removeTap(onBus: 0)
+        }
+        if action == .discard { task.cancel() }
 
         return stream
     }
@@ -317,12 +346,7 @@ final class AppleSpeechRecognizer: SpeechRecognizing, @unchecked Sendable {
         lock.unlock()
 
         guard let state = stateToClean else { return }
-        state.task?.cancel()
-        if state.tapInstalled {
-            state.engine.stop()
-            state.engine.inputNode.removeTap(onBus: 0)
-        }
-        state.continuation.finish()
+        teardown(state, flags: Self.flags(of: state, locked: lock))
     }
 
     private func cancel(token: UInt64) {
@@ -333,8 +357,25 @@ final class AppleSpeechRecognizer: SpeechRecognizing, @unchecked Sendable {
         lock.unlock()
 
         guard let state = stateToClean else { return }
-        state.task?.cancel()
-        if state.tapInstalled {
+        teardown(state, flags: Self.flags(of: state, locked: lock))
+    }
+
+    /// Reads and clears a taken capture's task and tap flag under the lock, so a teardown and the
+    /// end of `start` never both stop the engine and never race on the fields.
+    private static func flags(
+        of state: CaptureState,
+        locked lock: NSLock
+    ) -> (task: SFSpeechRecognitionTask?, tapInstalled: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        let flags = (state.task, state.tapInstalled)
+        state.tapInstalled = false
+        return flags
+    }
+
+    private func teardown(_ state: CaptureState, flags: (task: SFSpeechRecognitionTask?, tapInstalled: Bool)) {
+        flags.task?.cancel()
+        if flags.tapInstalled {
             state.engine.stop()
             state.engine.inputNode.removeTap(onBus: 0)
         }

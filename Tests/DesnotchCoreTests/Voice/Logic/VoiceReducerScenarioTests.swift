@@ -121,7 +121,7 @@ final class VoiceReducerScenarioTests: XCTestCase {
         XCTAssertEqual(results[0].effects, [
             .stopAgentHard, .cue(.error),
             .audit(AuditDraft(kind: .tripwire, lane: .hermes, tier: .t3, decision: "tripwire",
-                              outcome: "terminal"))
+                              outcome: "tool.t3"))
         ])
     }
 
@@ -135,7 +135,8 @@ final class VoiceReducerScenarioTests: XCTestCase {
         ], from: start)
         XCTAssertEqual(results.map { $0.context.state }, [.acting, .acting, .acting, .paused])
         XCTAssertEqual(results[0].effects, [.startCapture(generation: 2, mode: .hold)])
-        XCTAssertEqual(results[2].effects, [.endCapture(generation: 2), .cue(.captureEnd)])
+        XCTAssertEqual(results[2].effects, [.endCapture(generation: 2), .cue(.captureEnd),
+                                            .startTimer(.finalWatchdog, generation: 2, seconds: 5.0)])
         XCTAssertEqual(results[3].effects, [
             .stopAgentHard,
             .audit(AuditDraft(kind: .stop, lane: .hermes, decision: "spoken_abort",

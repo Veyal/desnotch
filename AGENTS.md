@@ -288,9 +288,10 @@ rejected because `proc_pidinfo` cannot read root-owned processes from a user ses
   Only banners this app actually mirrored are dismissed (muted apps keep their normal
   system banner); Notification Center history is never touched.
 
-Compact wing priority when several things are active (`WingSelection`): left = media > focus timer >
-stuck-process > calendar > urgent reminder; right = agents > timer displaced by media >
-notification > displaced stuck-process/calendar/reminder. Everything else is one hover away.
+Compact wing priority when several things are active (`WingSelection`): left = voice > volume > media >
+focus timer > stuck-process > calendar > urgent reminder; right = voice (only while listening or
+awaiting approval) > volume > agents > timer displaced by media > notification > displaced
+stuck-process/calendar/reminder. Everything else is one hover away.
 
 Wing and stack sizing: `WingMetrics` (`WingIndicator.swift`) grows BOTH wings by `extraWidth` when the
 timer's ring + "25m" label or a two-digit agent count would sit within `minimumInset` of an edge, and adds

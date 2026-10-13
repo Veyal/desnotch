@@ -52,7 +52,10 @@ final class HermesProcessGuardTests: XCTestCase {
         let survivor = try XCTUnwrap(Int32(line.split(separator: " ").last.map(String.init) ?? ""))
         remember(survivor)
         let report = await item.hardStop(sendCancel: {})
-        XCTAssertEqual(report.survivors, ["perl"])
+        // `/usr/bin/perl` is a version shim on some macOS releases (macOS 14 execs `perl5.34`),
+        // and the report carries the kernel's process name, so match the family, not the suffix.
+        XCTAssertEqual(report.survivors.count, 1)
+        XCTAssertTrue(report.survivors.allSatisfy { $0.hasPrefix("perl") }, "\(report.survivors)")
         XCTAssertEqual(Darwin.kill(survivor, 0), 0)
         XCTAssertFalse(isDeadOrZombie(survivor))
     }
@@ -229,6 +232,114 @@ final class HermesProcessGuardTests: XCTestCase {
         second.terminateNow()
         XCTAssertEqual(signals.values.filter { $0.0 == pid && $0.1 == SIGTERM }.count, 1)
         XCTAssertEqual(signals.values.filter { $0.0 == pid && $0.1 == SIGKILL }.count, 1)
+    }
+
+    /// When the group is gone (`killpg` fails) the pid fallback must not signal a different
+    /// process that has since been given the spawned leader's pid.
+    func testPidFallbackNeverSignalsAReusedPid() async throws {
+        let spawned = Process()
+        spawned.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        spawned.arguments = ["30"]
+        try spawned.run()
+        remember(spawned.processIdentifier)
+        let transport = HermesFakeTransport()
+        transport.processID = spawned.processIdentifier
+        let item = HermesProcessGuard(
+            launch: { ACPLaunch.hermes(path: URL(fileURLWithPath: "/test/hermes")) },
+            pidFileDirectory: directory, workingDirectoryRoot: directory,
+            transportFactory: { _, _ in transport },
+            killGroup: { _, _ in -1 }
+        )
+        owned.append(item)
+        _ = try item.ensureRunning()
+        spawned.terminate()
+        spawned.waitUntilExit()
+
+        let stranger = Process()
+        stranger.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        stranger.arguments = ["30"]
+        try stranger.run()
+        let strangerPID = stranger.processIdentifier
+        remember(strangerPID)
+        // Stand-in for pid reuse: the transport's pid now names a process desnotch did not spawn.
+        transport.processID = strangerPID
+        item.terminateNow()
+        XCTAssertTrue(HermesProcessGuard.alive(strangerPID))
+        XCTAssertFalse(HermesProcessGuard.mayFallBack(
+            to: strangerPID, spawned: HermesProcessGuard.ProcessIdentity(seconds: 1, microseconds: 0)
+        ))
+        XCTAssertTrue(HermesProcessGuard.mayFallBack(
+            to: strangerPID, spawned: HermesProcessGuard.identity(of: strangerPID)
+        ))
+        XCTAssertFalse(HermesProcessGuard.mayFallBack(to: strangerPID, spawned: nil))
+    }
+
+    /// The spawned process exited before its identity could be read, so none was recorded. Stop
+    /// must not read the start time of whatever holds the pid now and then signal it.
+    func testUnrecordedIdentityNeverFallsBackToAReusedPid() async throws {
+        let gone = Process()
+        gone.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try gone.run()
+        gone.waitUntilExit()
+        let transport = HermesFakeTransport()
+        transport.processID = gone.processIdentifier
+        let item = HermesProcessGuard(
+            launch: { ACPLaunch.hermes(path: URL(fileURLWithPath: "/test/hermes")) },
+            pidFileDirectory: directory, workingDirectoryRoot: directory,
+            transportFactory: { _, _ in transport },
+            killGroup: { _, _ in -1 }
+        )
+        owned.append(item)
+        _ = try item.ensureRunning()
+
+        let stranger = Process()
+        stranger.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        stranger.arguments = ["30"]
+        try stranger.run()
+        let strangerPID = stranger.processIdentifier
+        remember(strangerPID)
+        // Stand-in for pid reuse: the transport's pid now names a process desnotch did not spawn.
+        transport.processID = strangerPID
+        item.terminateNow()
+        XCTAssertTrue(HermesProcessGuard.alive(strangerPID))
+
+        let again = HermesFakeTransport()
+        again.processID = gone.processIdentifier
+        let second = HermesProcessGuard(
+            launch: { ACPLaunch.hermes(path: URL(fileURLWithPath: "/test/hermes")) },
+            pidFileDirectory: directory.appendingPathComponent("other", isDirectory: true),
+            workingDirectoryRoot: directory,
+            transportFactory: { _, _ in again },
+            killGroup: { _, _ in -1 }
+        )
+        owned.append(second)
+        _ = try second.ensureRunning()
+        again.processID = strangerPID
+        _ = await second.hardStop(sendCancel: {})
+        XCTAssertTrue(HermesProcessGuard.alive(strangerPID))
+    }
+
+    /// Before `setsid` the group does not exist yet, so the pid fallback is what stops the child.
+    func testPidFallbackStillStopsTheSpawnedProcess() async throws {
+        let spawned = Process()
+        spawned.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        spawned.arguments = ["30"]
+        try spawned.run()
+        let pid = spawned.processIdentifier
+        remember(pid)
+        let transport = HermesFakeTransport()
+        transport.processID = pid
+        let item = HermesProcessGuard(
+            launch: { ACPLaunch.hermes(path: URL(fileURLWithPath: "/test/hermes")) },
+            pidFileDirectory: directory, workingDirectoryRoot: directory,
+            transportFactory: { _, _ in transport },
+            killGroup: { _, _ in -1 }
+        )
+        owned.append(item)
+        _ = try item.ensureRunning()
+        item.terminateNow()
+        spawned.waitUntilExit()
+        XCTAssertFalse(HermesProcessGuard.alive(pid))
     }
 
     func testProcessTransportSendAfterTheChildExitedThrowsAndTheProcessSurvives() async {

@@ -278,11 +278,13 @@ final class HermesFakeTransport: ACPTransport, @unchecked Sendable {
 
     func send(line: Data) throws {
         if isTerminated() { throw ACPTransportError.terminated }
-        record(line)
+        // Recording the line and parking a gated reply happen under one lock, so a test that
+        // sees the method in `sentMethods()` can always `releaseGated` it.
+        let reply = recordAndHold(line, reply: automaticReply(to: line))
         let hook = copySendHook()
         hook?(line)
         if isTerminated() { throw ACPTransportError.terminated }
-        considerReply(line)
+        if let reply { continuation.yield(reply) }
     }
 
     func terminate() {
@@ -341,37 +343,34 @@ final class HermesFakeTransport: ACPTransport, @unchecked Sendable {
         return terminated
     }
 
-    private func record(_ line: Data) {
+    /// Records `line` and, for a gated method, parks `reply` in the same critical section.
+    /// Returns the reply to deliver now, or nil when there is none or it was parked.
+    private func recordAndHold(_ line: Data, reply: (method: String, data: Data)?) -> Data? {
         lock.lock()
+        defer { lock.unlock() }
         sent.append(line)
-        lock.unlock()
+        guard let reply else { return nil }
+        guard gated.contains(reply.method) else { return reply.data }
+        if !terminated { held[reply.method] = reply.data }
+        return nil
     }
 
-    private func considerReply(_ line: Data) {
+    private func automaticReply(to line: Data) -> (method: String, data: Data)? {
         guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let method = object["method"] as? String,
-              let id = object["id"] else { return }
-        let version = protocolVersion
-        let automatic = autoReply
-        let hold = gatedMethods.contains(method)
+              let id = object["id"] else { return nil }
         let result: [String: Any]
         if method == "initialize" {
-            result = ["protocolVersion": version]
+            result = ["protocolVersion": protocolVersion]
         } else if method == "session/new" {
             result = ["sessionId": "s1"]
         } else {
-            return
+            return nil
         }
-        guard automatic else { return }
+        guard autoReply else { return nil }
         let body: [String: Any] = ["jsonrpc": "2.0", "id": id, "result": result]
-        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
-        if hold {
-            lock.lock()
-            if !terminated { held[method] = data }
-            lock.unlock()
-            return
-        }
-        continuation.yield(data)
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+        return (method, data)
     }
 
     private func takeHeld(_ method: String) -> Data? {
