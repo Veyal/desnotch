@@ -952,7 +952,9 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertEqual(t.context.state, .speaking)
         XCTAssertEqual(t.context.reply, "It is sunny")
         XCTAssertEqual(t.effects, [
-            .speak("It is sunny", generation: 1), .cue(.done),
+            .speak("It is sunny", generation: 1),
+            .startTimer(.replyDisplay, generation: 1, seconds: 6.0 + Double("It is sunny".count) / 10),
+            .cue(.done),
             .audit(AuditDraft(kind: .execute, lane: .hermes, decision: "finished", outcome: "ok"))
         ])
     }
@@ -1046,7 +1048,9 @@ final class VoiceReducerRuleTests: XCTestCase {
                      env(speech: true))
         XCTAssertEqual(t.context.state, .speaking)
         XCTAssertEqual(t.effects, [
-            .speak("Volume 30", generation: 1), .cue(.done),
+            .speak("Volume 30", generation: 1),
+            .startTimer(.replyDisplay, generation: 1, seconds: 6.0 + Double("Volume 30".count) / 10),
+            .cue(.done),
             .audit(AuditDraft(kind: .execute, lane: .local, decision: "finished", outcome: "ok"))
         ])
     }

@@ -540,6 +540,11 @@ enum VoiceReducer {
             context.state = .speaking
             if env.speechAllowed && !context.reply.isEmpty {
                 effects.append(.speak(context.reply, generation: generation))
+                // Backstop: `speaking` otherwise ends only on `speechFinished`, which a stuck or
+                // silently failing synthesizer may never send (R110 ends the state either way).
+                effects.append(.startTimer(.replyDisplay, generation: generation,
+                                           seconds: VoiceTiming.replyDisplay
+                                               + Double(context.reply.count) / 10))
             } else {
                 effects.append(.startTimer(.replyDisplay, generation: generation,
                                            seconds: VoiceTiming.replyDisplay))
