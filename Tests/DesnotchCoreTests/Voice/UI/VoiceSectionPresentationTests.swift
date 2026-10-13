@@ -600,7 +600,9 @@ final class VoiceSectionPresentationTests: XCTestCase {
             .configNotLocked: "profile not locked",
             .mcpConfigured: "MCP configured",
             .protocolMismatch: "protocol mismatch",
-            .notImplemented: "not available"
+            .notImplemented: "not available",
+            .providerEndpointInvalid: "check the provider URL (https)",
+            .providerKeyMissing: "no API key saved"
         ]
         XCTAssertEqual(Set(PreflightFailure.allCases), Set(expected.keys))
         for failure in PreflightFailure.allCases {

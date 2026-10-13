@@ -24,7 +24,7 @@ What to expect from the Hermes lane (by design, not a defect): the `voice` profi
 ## 2. Non-goals (explicit)
 
 - No wake word and no always-on microphone. Push-to-talk only.
-- No cloud speech recognition and no audio leaving the process. No whisper.cpp/Piper/AEC/barge-in/VAD endpointing (a later phase).
+- No cloud speech recognition and no audio leaving the process **by default**. The one exception is the opt-in AI provider (amendment, section 14 rule 1): when the user picks an OpenAI-compatible provider for speech-to-text, the captured audio goes to that endpoint only. No whisper.cpp/Piper/AEC/barge-in/VAD endpointing (a later phase).
 - No new SPM target, no new package dependency, no new permission beyond Microphone and Speech Recognition (no Accessibility, Automation, Screen Recording, Full Disk Access).
 - No `cua-driver`/computer-use, no Shortcuts verb, no focus-app verb, no AppleScript, no shell from the local lane.
 - No `hermes serve`, no WebSocket, no tokens: the only Hermes transport is ACP over the stdio of a child process desnotch owns.
@@ -55,7 +55,7 @@ the feature (section 17).
 
 | Decision | Value |
 |---|---|
-| Speech-to-text | On-device `SFSpeechRecognizer` (`requiresOnDeviceRecognition = true`); a locale without on-device support fails, never falls back to a server |
+| Speech-to-text | On-device `SFSpeechRecognizer` (`requiresOnDeviceRecognition = true`) by default; a locale without on-device support fails, never falls back to a server. Opt-in amendment: `voiceSpeechProvider = openAICompatible` uses `OpenAISpeechRecognizer` (`Voice/OpenAI/`), an explicit user choice, never a fallback |
 | Hermes transport | ACP over stdio (`hermes -p voice acp`), own process group; `hermes serve` is not used |
 | `voice` Hermes profile | Created and locked (`chflags uchg`) by the human later; desnotch only runs a preflight on every spawn and every session and refuses the Hermes lane until it passes; desnotch does not create it |
 | MVP order | Local lane first, then Hermes lane code |
@@ -477,6 +477,13 @@ SettingsStore keys (stored names are final): `voiceEnabled` (false), `voiceLocal
 `voiceTTSEnabled` (false), `voiceDuckMedia` (true), `voiceHotkey` (`optionCommandV`, a `VoiceHotkeyChoice`). They are never exported or imported; `resetToDefaults()` switches
 them off.
 
+**Amendment: opt-in AI provider.** Added keys, all defaulting to today's behavior and never exported or imported: `voiceSpeechProvider` (`onDevice`), `voiceAnswersProvider`
+(`hermes`; also `openAICompatible`, `anthropic`; the lane switch stays `voiceHermesLane`), `voiceReplyProvider` (`system`), `voiceAIBaseURL` (`https://api.openai.com/v1`),
+`voiceAISTTModel`, `voiceAIChatModel`, `voiceAITTSModel`, `voiceAITTSVoice`, `voiceAILanguage` (empty = auto-detect), `voiceAnthropicBaseURL` (`https://api.anthropic.com`),
+`voiceAnthropicModel`. API keys are Keychain-only (`com.desnotch.app.voice-ai`, `com.desnotch.app.voice-ai.anthropic`). Contract additions (additive): `ProviderFailure`,
+`VoiceFailure.provider`, `PreflightFailure.providerEndpointInvalid`/`providerKeyMissing`, `VoiceSessionModel.cloudActivity`/`agentName`/`refreshAgentLane`. The provider answers
+backend (`VoiceChatBackend`) runs in the reducer's `.hermes` lane, so every agent-lane rule (R54-R56, R63, R86-R90, the daily cap, Stop) applies to it unchanged.
+
 **Contract amendments.** If a package finds a contract gap it implements the literal spec, works around it inside its own files, and reports `AMENDMENT REQUEST: ...`. The plan
 owner applies additive amendments directly to `feat/voice` and tells the other worktrees to merge it. Breaking changes need a new plan review.
 
@@ -560,6 +567,10 @@ generated from this table). `Package.swift` is not changed by anyone.
 | `Tests/DesnotchCoreTests/Voice/UI/VoiceStatusMenuTextTests.swift` | new | WP-UI |  |
 | `Tests/DesnotchCoreTests/Voice/UI/VoiceCuePlayerTests.swift` | new | WP-UI |  |
 | `Tests/DesnotchCoreTests/Voice/UI/VoiceAccessibilityTextTests.swift` | new | WP-UI |  |
+| `Sources/DesnotchCore/UI/VoiceAIProviderSettingsSection.swift` | new | WP-UI | amendment: opt-in AI provider Settings |
+| `Sources/DesnotchCore/Voice/OpenAI/*.swift` | new | WP-PLATFORM | amendment: opt-in AI providers (one row per file in `ownership.tsv`) |
+| `Tests/DesnotchCoreTests/Voice/OpenAI/*.swift` | new | WP-PLATFORM | amendment: opt-in AI provider tests |
+| `Tests/DesnotchCoreTests/Voice/Coordinator/VoiceCoordinatorAITests.swift` | new | WP-HERMES | amendment: provider routing through the coordinator |
 | `Tests/DesnotchCoreTests/PillInteractionPolicyTests.swift` | changed | WP-UI | only what the API change requires (plus any other existing UI test it breaks) |
 | `Tests/DesnotchCoreTests/PillSectionMotionTests.swift` | changed | WP-UI | only what the API change requires (plus any other existing UI test it breaks) |
 | `Tests/DesnotchCoreTests/WingMetricsTests.swift` | changed | WP-UI | only what the API change requires (plus any other existing UI test it breaks) |
@@ -792,7 +803,9 @@ rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/Comm
 # pass 2b: the scanner must contain none of the other banned patterns. Must print nothing.
 rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|hermes pause|AXIsProcessTrusted' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift
 # pass 3: safety invariants (no audio file, no URL recognition, no network API, no voice processing, no session/always approvals, no AppleScript, no Accessibility API). Whole Voice tree INCLUDING the scanner. Must print nothing.
-rg -n 'AVAudioFile|SFSpeechURLRecognitionRequest|URLSession|setVoiceProcessingEnabled|allow_session|allow_always|deny_always|NSAppleScript|AXUIElement' Sources/DesnotchCore/Voice
+rg -n 'AVAudioFile|SFSpeechURLRecognitionRequest|URLSession|setVoiceProcessingEnabled|allow_session|allow_always|deny_always|NSAppleScript|AXUIElement' --glob '!**/Voice/OpenAI/**' Sources/DesnotchCore/Voice
+# pass 3b (opt-in AI provider amendment): Voice/OpenAI/ is the only place a network API may appear, and even there no audio file, URL recognition or voice processing. Must print nothing.
+rg -n 'AVAudioFile|SFSpeechURLRecognitionRequest|setVoiceProcessingEnabled|NSAppleScript|AXUIElement|write\(to:|FileManager' Sources/DesnotchCore/Voice/OpenAI
 rg -n 'accessibilityAction|textCase' Sources/DesnotchCore/UI/VoiceSectionView.swift Sources/DesnotchCore/UI/VoiceSettingsSection.swift Sources/DesnotchCore/UI/NotchPillView+Voice.swift   # no accessibility shortcut may approve an agent card, no uppercase modifier: must print nothing
 rg -n '\.combine\b|\.ignore\b' Sources/DesnotchCore/UI/VoiceSectionView.swift          # the Deny/Approve/Stop/Cancel/Resume buttons must stay separate accessibility elements (WP-UI 2.3): must print nothing
 rg -c 'accessibilityElement\(children: \.contain\)' Sources/DesnotchCore/UI/VoiceSectionView.swift   # POSITIVE check, after WP-UI: must print 1
@@ -907,12 +920,12 @@ These are not numbered rules, so section numbers and cross-references elsewhere 
 
 ## 14. Privacy and safety invariants (WP-HERMES summarises the load-bearing ones in `AGENTS.md` and links this section; it does not paste all twelve)
 
-1. Audio is never written to disk and never leaves the process. Recognition is on-device only; a locale without on-device support fails instead of falling back to a server.
+1. Audio is never written to disk. By default it never leaves the process: recognition is on-device and a locale without on-device support fails instead of falling back to a server. **Amendment (opt-in AI provider):** only when the user explicitly picks an AI provider for a step does that step's data leave the Mac: the captured audio for speech-to-text (encoded as a WAV in memory and uploaded only after the user ended the capture; a cap-ended capture is discarded), the utterance for answers (after the review window, R54 unchanged), the reply text for spoken replies. It goes only to the configured base URL (https, or plain http to loopback; redirects refused), a cloud mark shows in the voice card and on the voice wing while it happens (`VoiceSessionModel.usesCloud`), and nothing is persisted by desnotch. API keys live only in the Keychain and never reach UserDefaults, logs, export, the audit log or any UI text.
 2. The pill shows state words plus bounded, `privacyRedacted` transcript/reply/command text only while a session is active; nothing is persisted and everything clears when the session returns to idle.
 3. The audit log (`~/Library/Application Support/desnotch/voice/voice-audit.jsonl`, mode 0600, hash-chained, size-rotated) stores metadata only: timestamp, kind, lane, tier, decision/outcome codes, a SHA-256 of the transcript, counters. No audio, no utterance text, no command text.
 4. Utterance, reply and command text is never announced to VoiceOver, never put in the status menu (local approvals show a desnotch-authored summary), and never logged.
-5. Permissions: Microphone and Speech Recognition only, requested only after the user enables voice and presses Allow. No Accessibility, Automation, Screen Recording or Full Disk Access for this feature.
-6. No network listener and no token. The only network path is the optional Hermes lane: a child process spoken to over stdio.
+5. Permissions: Microphone and Speech Recognition only (cloud speech-to-text needs only the Microphone), requested only after the user enables voice and presses Allow. No Accessibility, Automation, Screen Recording or Full Disk Access for this feature.
+6. No network listener and no token. The network paths are the optional Hermes lane (a child process spoken to over stdio) and, when opted in, HTTPS requests from `Voice/OpenAI/` (`VoiceAIHTTP`, an ephemeral session) to the user's configured provider base URL and nowhere else. The fixed recognizer hint list is never sent.
 7. Approvals are visual only, bound to a random nonce, answered `once` or `deny` only. No spoken confirmation. T3 is denied in the MVP; T4 never has a voice path.
 8. Voice is OFF by default and inert in smoke-test mode. The cloud lane is a second opt-in that is re-checked (preflight) on every spawn and every session, and it additionally requires the global Stop chord to be registered (`hotkeyStatus == .active`).
 9. Nothing from a transcript, screen, web page or tool result can raise a tier or satisfy an approval. Unknown tools are T3 and trip the tripwire.
@@ -959,6 +972,6 @@ Nothing in this section gates an import, a commit or the completion of an agent 
 
 One flag stops everything at runtime (`voiceEnabled`). To remove the feature from the source tree in one commit:
 
-1. `git rm -r Sources/DesnotchCore/Voice Tests/DesnotchCoreTests/Voice scripts/voice-harness docs/voice Sources/DesnotchCore/UI/VoiceSectionView.swift Sources/DesnotchCore/UI/VoiceSectionPresentation.swift Sources/DesnotchCore/UI/VoiceSettingsSection.swift Sources/DesnotchCore/UI/VoiceCuePlayer.swift Sources/DesnotchCore/UI/NotchPillView+Voice.swift`.
+1. `git rm -r Sources/DesnotchCore/Voice Tests/DesnotchCoreTests/Voice scripts/voice-harness docs/voice Sources/DesnotchCore/UI/VoiceSectionView.swift Sources/DesnotchCore/UI/VoiceSectionPresentation.swift Sources/DesnotchCore/UI/VoiceSettingsSection.swift Sources/DesnotchCore/UI/VoiceCuePlayer.swift Sources/DesnotchCore/UI/NotchPillView+Voice.swift Sources/DesnotchCore/UI/VoiceAIProviderSettingsSection.swift`.
 2. Revert the edits outside those folders (all listed in section 9 as `changed`): the voice keys in `SettingsStore.swift` and `SettingsTransfer.swift` and its test; the `voice` parameter in `AppComposition.swift`, `NotchWindowController.swift`, `NotchPillView.swift`; the section, wing, hover, flash and haptic additions in the UI files; the status-menu and Settings additions; the `PermissionSnapshot` fields and their test; the microphone/speech strings, entitlement and smoke assertions in `scripts/`; the voice entry in `CHANGELOG.md`; and the scattered voice-control edits in `AGENTS.md` and `README.md` (the `voiceActive` pill-visibility input and its references, the microphone/speech permission notes, the app-wiring/agent-lane lines, and each file's `## Voice control` section). This pass removes only voice-control text: leave the unrelated VoiceOver and accessibility notes in both files untouched.
 3. `swift build` and the full test suite. The stored `voice*` UserDefaults keys are harmless; the audit folder `~/Library/Application Support/desnotch/voice/` can be deleted by hand.

@@ -208,5 +208,16 @@ extension SettingsStore {
         voiceTTSEnabled = false
         voiceDuckMedia = true
         voiceHotkey = Self.defaultVoiceHotkey
+        voiceSpeechProvider = .onDevice
+        voiceAnswersProvider = .hermes
+        voiceReplyProvider = .system
+        voiceAIBaseURL = Self.defaultVoiceAIBaseURL
+        voiceAISTTModel = Self.defaultVoiceAISTTModel
+        voiceAIChatModel = Self.defaultVoiceAIChatModel
+        voiceAITTSModel = Self.defaultVoiceAITTSModel
+        voiceAITTSVoice = Self.defaultVoiceAITTSVoice
+        voiceAILanguage = ""
+        voiceAnthropicBaseURL = Self.defaultVoiceAnthropicBaseURL
+        voiceAnthropicModel = Self.defaultVoiceAnthropicModel
     }
 }

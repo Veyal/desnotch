@@ -62,12 +62,13 @@ final class AppComposition {
         if !smokeTestMode {
             let backend = HermesAgentBackend()
             hermesBackend = backend
+            let systemVoice = AppleSpeechSynthesizer()
             voiceCoordinator = VoiceCoordinator(
                 model: voiceModel,
                 settings: SettingsStore.shared,
                 clock: SystemVoiceClock(),
                 recognizer: AppleSpeechRecognizer(),
-                synthesizer: AppleSpeechSynthesizer(),
+                synthesizer: systemVoice,
                 executor: SystemLocalExecutor(
                     nowPlaying: nowPlayingController,
                     focusTimer: focusTimerController
@@ -87,6 +88,9 @@ final class AppComposition {
                 timers: RunLoopTimerScheduler(),
                 dailyTurns: DailyTurnCounter(defaults: .standard),
                 isPrivacyMode: { SettingsStore.shared.privacyModeEnabled },
+                // Built always, used only for the functions the user switched to a provider.
+                // Constructing it opens nothing and sends nothing.
+                ai: VoiceAIProviders.live(fallbackSynthesizer: systemVoice),
                 debugTypingEnabled: ProcessInfo.processInfo.environment["DESNOTCH_VOICE_DEBUG"] == "1"
             )
             voiceCoordinator?.start()

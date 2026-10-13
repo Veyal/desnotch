@@ -20,7 +20,7 @@ struct VoiceSettingsSection: View {
     private var settingsRows: some View {
         SettingsHeader("Voice control", symbol: "mic.fill")
         Toggle("Voice control", isOn: $settings.voiceEnabled)
-        SettingsNote("Off by default. Hold the shortcut to speak. Uses the microphone and on-device speech recognition; audio is never saved.")
+        SettingsNote("Off by default. Hold the shortcut to speak. Uses the microphone and on-device speech recognition unless you choose an AI provider below; audio is never saved.")
         if settings.voiceEnabled {
             permissionRow("Microphone", state: model.permissions.microphone)
             permissionRow("Speech Recognition", state: model.permissions.speech)
@@ -71,12 +71,8 @@ struct VoiceSettingsSection: View {
             Toggle("Speak replies", isOn: $settings.voiceTTSEnabled)
             SettingsNote("Silent in Privacy mode")
             Toggle("Lower other audio while listening", isOn: $settings.voiceDuckMedia)
-            Toggle("Send other requests to the Hermes agent (cloud)", isOn: $settings.voiceHermesLane)
-            SettingsNote(
-                "Anything that is not a built-in command is sent to the cloud-routed Hermes agent. Requires the locked 'voice' Hermes profile.",
-                warning: true
-            )
-            SettingsNote(VoiceSettingsWords.laneStatusText(model.hermesLaneStatus))
+            SettingsNote("Answers: anything that is not a built-in command can go to the agent chosen below (cloud).")
+            VoiceAIProviderSettingsSection(model: model)
         }
     }
 

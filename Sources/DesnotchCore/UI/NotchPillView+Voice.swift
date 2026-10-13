@@ -22,10 +22,7 @@ extension NotchPillView {
     @ViewBuilder
     func voiceWingGlyph(for state: VoiceState) -> some View {
         if let glyph = VoiceGlyph.wing(for: state) {
-            Image(systemName: glyph.rawValue)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(voiceWingColor(for: state))
-                .frame(width: 16, height: 16)
+            VoiceWingGlyphHost(model: voice, glyph: glyph, color: voiceWingColor(for: state))
         } else {
             EmptyView()
         }
@@ -38,6 +35,32 @@ extension NotchPillView {
         case .armed, .transcribing: return PillPalette.mist.color
         default: return .white
         }
+    }
+}
+
+/// The left voice wing: the state glyph, plus a small cloud mark whenever this flow's audio or
+/// text goes to a cloud service (the agent lane, or the opt-in AI provider for speech or the
+/// reply voice). Static, no animation.
+@MainActor
+struct VoiceWingGlyphHost: View {
+    @ObservedObject var model: VoiceSessionModel
+    let glyph: VoiceGlyph
+    let color: Color
+
+    var body: some View {
+        Image(systemName: glyph.rawValue)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 16, height: 16)
+            .overlay(alignment: .topTrailing) {
+                if model.usesCloud {
+                    Image(systemName: VoiceGlyph.cloud.rawValue)
+                        .font(.system(size: 6, weight: .bold))
+                        .foregroundStyle(PillPalette.mist.color)
+                        .offset(x: 4, y: -2)
+                        .accessibilityHidden(true)
+                }
+            }
     }
 }
 

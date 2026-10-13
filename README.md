@@ -175,11 +175,46 @@ Notion); and starting or cancelling a timer of 1 to 120 minutes. English and Ind
 are both accepted. The recognition locales are English (US) and Bahasa Indonesia; Indonesian
 needs the on-device dictation asset, and a locale without on-device recognition fails closed.
 
-Audio stays in memory and is never saved. Recognition stays on this Mac. Transcripts, replies,
-and commands are not logged, not announced to VoiceOver, and not put in the status menu. They
-clear when the session returns to idle.
+Audio stays in memory and is never saved. By default recognition stays on this Mac.
+Transcripts, replies, and commands are not logged, not announced to VoiceOver, and not put in
+the status menu. They clear when the session returns to idle.
 
-The agent lane is a second toggle, "Send other requests to the Hermes agent (cloud)". The agent
+### AI provider (optional)
+
+Settings > Voice control > AI provider chooses, step by step, what stays on this Mac:
+
+| Step | Default | Opt-in |
+|---|---|---|
+| Speech-to-text | On this Mac | OpenAI-compatible (`POST {base}/audio/transcriptions`) |
+| Answers (anything that is not a built-in command) | Off | Hermes agent, OpenAI-compatible (`{base}/chat/completions`), or Claude (`{base}/v1/messages`) |
+| Spoken replies (with "Speak replies" on) | macOS voice | OpenAI-compatible (`{base}/audio/speech`) |
+
+"OpenAI-compatible" means any service with the OpenAI API shape: OpenAI
+(`https://api.openai.com/v1`, the default), Groq, OpenRouter, or a server on this Mac such as LM
+Studio, Ollama, or a whisper server. Claude answers questions only; Anthropic has no speech API,
+so speech and spoken replies stay on this Mac or use the OpenAI-compatible provider. Leave the
+language hint empty to auto-detect, which suits mixed Indonesian and English.
+
+When you choose a provider for a step:
+
+- That step's audio (speech-to-text) or text (answers, spoken replies) goes only to the base URL
+  you entered, and only when the step runs. Audio is captured into memory, encoded as a WAV in
+  memory, and uploaded only after you end the capture (release the key or press Done; a capture
+  the 30-second cap ends is discarded). There are no partial transcripts; the notch shows
+  "Transcribing…".
+- A cloud mark shows on the voice wing and in the voice card while that happens.
+- Base URLs must use https. Plain http is accepted only for `localhost`, `127.0.0.1`, or `::1`.
+  Redirects are refused.
+- API keys are saved only in your Keychain (`com.desnotch.app.voice-ai`, and
+  `com.desnotch.app.voice-ai.anthropic` for Claude). They are never shown, logged, exported, or
+  written to the audit log. A server on this Mac may run without a key.
+- desnotch saves no audio, transcript, or reply. The provider's own retention policy applies.
+- Provider settings, including the base URLs, are never exported or imported.
+- Answers keep every agent-lane rule: the 1.5-second review window, the daily limit, Stop, and the
+  rule that nothing goes to the cloud unless you ended the capture. Answers are short, spoken
+  style, and use no tools. If the spoken-reply request fails, the macOS voice reads the reply.
+
+The Hermes agent is one of the "Answers" choices. The agent
 lane needs a locked Hermes profile. You create it; desnotch only reads it. The file is
 `~/.hermes/profiles/voice/config.yaml`. After writing it, lock that file with `chflags uchg`.
 A profile that passes the preflight looks like this:

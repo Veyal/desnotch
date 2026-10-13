@@ -110,6 +110,8 @@ struct VoiceSectionSnapshot: Equatable {
     var usesCloud: Bool = false
     var interruptListening: Bool = false
     var survivors: [String] = []
+    /// Name of the agent lane's backend ("Hermes", "AI provider", "Claude").
+    var agentName: String = "Hermes"
 }
 
 extension VoiceSectionSnapshot {
@@ -133,7 +135,8 @@ extension VoiceSectionSnapshot {
             lane: model.lane,
             usesCloud: model.usesCloud,
             interruptListening: model.interruptListening,
-            survivors: model.survivors
+            survivors: model.survivors,
+            agentName: model.agentName
         )
     }
 }
@@ -142,6 +145,9 @@ struct VoiceSectionPresentation: Equatable {
     var title: String
     var titleLineLimit: Int
     var showsCloudBadge: Bool
+    /// The badge's word: the agent's name on the agent lane, else "Cloud" (speech or reply
+    /// voice sent to the AI provider).
+    var cloudBadgeLabel: String
     var bodyLines: [VoiceBodyLine]
     var chips: [VoiceChipSpec]
     var showsMeter: Bool
@@ -287,6 +293,7 @@ struct VoiceSectionPresentation: Equatable {
         self.title = title
         self.titleLineLimit = VoiceSectionPresentation.titleLineLimit(for: state)
         self.showsCloudBadge = state == .idle ? false : showsCloudBadge
+        self.cloudBadgeLabel = snapshot.lane == .hermes ? snapshot.agentName : VoiceSectionPresentation.cloudWord
         self.bodyLines = bodyLines
         self.chips = chips
         self.showsMeter = showsMeter
@@ -312,6 +319,8 @@ struct VoiceSectionPresentation: Equatable {
         default: return 1
         }
     }
+
+    static let cloudWord = "Cloud"
 
     private static func stopButton() -> VoiceButtonSpec {
         VoiceButtonSpec(role: .stop, title: "Stop", glyph: .stop, isEnabled: true, nonce: nil)
@@ -403,11 +412,15 @@ struct VoiceSectionPresentation: Equatable {
             parts.append("Voice: \(word)")
         }
         if showsCloudBadge {
-            parts.append(
-                state == .review
-                    ? "goes to the Hermes cloud agent"
-                    : "sent to the Hermes cloud agent"
-            )
+            if snapshot.lane == .hermes {
+                parts.append(
+                    state == .review
+                        ? "goes to the \(snapshot.agentName) cloud agent"
+                        : "sent to the \(snapshot.agentName) cloud agent"
+                )
+            } else {
+                parts.append("uses the cloud AI provider")
+            }
         }
         let showsRoute = state == .review || (state == .acting && snapshot.lane == .local)
         if showsRoute, let route = snapshot.routeSummary {
@@ -516,7 +529,7 @@ enum VoiceRiskWords {
 
 enum VoiceSettingsWords {
     static let shortcutShadowNote = "⌥⌘V also moves items in Finder; choose another shortcut if you use that."
-    static let updateCheckNote = "Asks GitHub once a day whether a newer release exists. The update check is the only network request desnotch makes on its own; the optional Hermes agent lane (Voice control) sends requests to your configured agent. You still download and install updates yourself."
+    static let updateCheckNote = "Asks GitHub once a day whether a newer release exists. The update check is the only network request desnotch makes on its own; the optional Hermes agent lane and AI provider (Voice control) send requests only to the agent or endpoint you configure. You still download and install updates yourself."
     static let privacyModeNote = "Privacy mode hides song titles, agent task titles, event and reminder names, clipboard previews, and tray filenames — for screen sharing. Voice transcripts and replies are hidden and agent approvals are blocked."
 
     static func hotkeyLabel(_ choice: VoiceHotkeyChoice) -> String {
@@ -565,6 +578,8 @@ enum VoiceSettingsWords {
         case .mcpConfigured: return "MCP configured"
         case .protocolMismatch: return "protocol mismatch"
         case .notImplemented: return "not available"
+        case .providerEndpointInvalid: return "check the provider URL (https)"
+        case .providerKeyMissing: return "no API key saved"
         }
     }
 }
