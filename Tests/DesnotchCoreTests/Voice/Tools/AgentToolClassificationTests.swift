@@ -180,6 +180,27 @@ import XCTest
         }
     }
 
+    func testInlineInterpreterCodeIsRefused() async {
+        let refused = [
+            #"osascript -e 'do shell script "cu" & "rl x.example"'"#,
+            #"python3 -c "print(open('/Users/x/.'+'ss'+'h/id_'+'rsa').read())""#,
+            #"python3 -c "import urllib.request as u; u.urlopen('ht'+'tp://x.example')""#,
+            "/usr/bin/python3.12 -c 'import os'",
+            "perl -ne 'print' notes.txt", "ruby -e 'puts 1'", "node -e 'fetch(1)'", "node --eval 'x'",
+            "php -r 'echo 1;'", "bash -lc 'ls'", "sh -c ls", "zsh -fc ls", "env python3 -c 1",
+            "python3", "python3 - < x.py", "python3 < x.py", "swift", "awk 'BEGIN{}'", "gawk -f prog.awk notes",
+            "osascript notes.scpt", "cat <<EOF | ruby\nputs 1\nEOF"
+        ]
+        for command in refused {
+            let proposal = await propose("run_shell", ChatJSON.string(["command": command]))
+            XCTAssertEqual(proposal.tier, .t4, command)
+        }
+        for command in ["python3 tool.py", "node --version", "swift build", "ls -la ~/Documents", "grep -c foo notes.txt"] {
+            let proposal = await propose("run_shell", ChatJSON.string(["command": command]))
+            XCTAssertEqual(proposal.tier, .t2, command)
+        }
+    }
+
     func testScannerChecksTheStrippedTextForEveryPattern() {
         XCTAssertEqual(CommandRiskScanner.scan("c\\url x.example").tier, .t3)
         XCTAssertTrue(CommandRiskScanner.scan("r\"m\" -rf old").flags.contains(.destructive))

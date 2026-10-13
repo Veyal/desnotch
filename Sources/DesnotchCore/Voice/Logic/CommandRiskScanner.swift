@@ -27,6 +27,9 @@ enum CommandRiskScanner {
         static let variableExpansion = #"\$[a-z_0-9@*#?!$-]"#
         static let processSubstitution = #"[<>]\("#
         static let sourceBuiltin = #"(?:^|[;&|(\n])\s*(?:source|\.)\s"#
+        static let alwaysInterpreter = #"^(osascript|osacompile|awk|gawk|nawk|mawk)$"#
+        static let inlineInterpreter = #"^(python[0-9.]*|perl[0-9.]*|ruby|irb|node|nodejs|deno|bun|php|swift|lua|tclsh|jshell|pwsh|sh|bash|zsh|dash|ksh|fish)$"#
+        static let inlineCodeFlag = #"^(-[a-z]*[cerp]|--eval|--print|--command|--exec|-)$"#
         static let appleScriptShell = #"\b(do\s+shell\s+script|run\s+script|load\s+script|character\s+id|ascii\s+character)\b"#
     }
 
@@ -135,6 +138,26 @@ enum CommandRiskScanner {
         ]
         return lowered.contains("$(") || lowered.contains("`")
             || patterns.contains { matches($0, lowered) || matches($0, fold(lowered)) }
+    }
+
+    /// Stricter check for desnotch's own `run_shell` tool only: a script interpreter given its
+    /// code inline (`-e`, `-c`, `-E`, `--eval`, combined flags such as `-lc`/`-ne`), on stdin (no
+    /// argument, `-`, a `<` redirect) or in a heredoc can assemble a protected path or a network
+    /// call at run time, out of the scanner's sight, so it is refused (T4). The AppleScript runner
+    /// and awk are refused in any form: AppleScript goes through `run_applescript`, and an awk
+    /// program is always inline. Running a script FILE (`python3 tool.py`) stays a T2 card.
+    static func inlineInterpreter(_ command: String) -> Bool {
+        let folded = fold(command.lowercased())
+        let words = folded.split { $0.isWhitespace || ";&|()".contains($0) }.map(String.init)
+        for (index, word) in words.enumerated() {
+            let name = word.split(separator: "/").last.map(String.init) ?? word
+            if matches(Pat.alwaysInterpreter, name) { return true }
+            guard matches(Pat.inlineInterpreter, name) else { continue }
+            let rest = words.dropFirst(index + 1)
+            if rest.isEmpty || folded.contains("<<") { return true }
+            if rest.contains(where: { matches(Pat.inlineCodeFlag, $0) || $0.hasPrefix("<") }) { return true }
+        }
+        return false
     }
 
     /// Stricter check for desnotch's own `run_applescript` tool only: an AppleScript that can reach

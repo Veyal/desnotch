@@ -109,7 +109,10 @@ struct RunShellTool: AgentTool {
         }
         let risk = CommandRiskScanner.scan(command)
         var tier = ProcessTools.tier(risk)
-        if folder.tier >= .t4 || CommandRiskScanner.shellEvasion(command) { tier = .t4 }
+        if folder.tier >= .t4 || CommandRiskScanner.shellEvasion(command)
+            || CommandRiskScanner.inlineInterpreter(command) {
+            tier = .t4
+        }
         var literal = risk.sanitized
         if args.text("cwd") != nil {
             literal = "cd \(CommandRiskScanner.scan(AgentToolPaths.display(folder.url, context: paths)).sanitized)\n" + literal
