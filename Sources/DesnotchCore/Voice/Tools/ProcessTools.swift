@@ -86,8 +86,10 @@ enum ProcessTools {
     }
 }
 
-/// `run_shell`: `/bin/zsh -f -c <command>` (no rc files). The card shows the exact command and,
-/// when it is not the scratch folder, the working directory.
+/// `run_shell`: `/bin/zsh -f -c <command>` (no rc files) inside `AgentShellSandbox`, which is
+/// the enforcement boundary (the static checks in `propose` are layer 1 only). The card shows the
+/// exact command and, when it is not the scratch folder, the working directory. Without a working
+/// sandbox nothing runs: the call classifies T3, and a profile that fails to load is refused.
 struct RunShellTool: AgentTool {
     let paths: AgentPathContext
     let runner: AgentProcessRunning
@@ -113,6 +115,10 @@ struct RunShellTool: AgentTool {
             || CommandRiskScanner.inlineInterpreter(command) {
             tier = .t4
         }
+        if tier < .t3, !AgentShellSandbox.isAvailable
+            || AgentShellSandbox.profile(paths: paths, temporaryDirectory: FileManager.default.temporaryDirectory) == nil {
+            tier = .t3
+        }
         var literal = risk.sanitized
         if args.text("cwd") != nil {
             literal = "cd \(CommandRiskScanner.scan(AgentToolPaths.display(folder.url, context: paths)).sanitized)\n" + literal
@@ -130,9 +136,25 @@ struct RunShellTool: AgentTool {
         else {
             return ChatToolOutcome(content: "Invalid command or folder.", isError: true)
         }
+        guard AgentShellSandbox.isAvailable,
+              let profile = AgentShellSandbox.profile(paths: paths, temporaryDirectory: FileManager.default.temporaryDirectory)
+        else {
+            return ChatToolOutcome(content: "Refused: the command sandbox is not available on this Mac, so nothing ran.", isError: true)
+        }
+        // The profile must load before the real command starts; a profile that fails to compile
+        // must never leave the command running unsandboxed.
+        let check = await runner.run(
+            executable: AgentShellSandbox.executable, arguments: ["-p", profile, "/usr/bin/true"], cwd: folder.url,
+            input: nil, timeout: 5
+        )
+        guard case .finished(0, _, _) = check else {
+            return ChatToolOutcome(content: "Refused: the command sandbox did not load, so nothing ran.", isError: true)
+        }
         let result = await runner.run(
-            executable: ProcessTools.shellExecutable, arguments: ["-f", "-c", command], cwd: folder.url,
-            input: nil, timeout: AgentToolLimits.processTimeout
+            executable: AgentShellSandbox.executable,
+            arguments: ["-p", profile, "/usr/bin/env", "HOME=\(AgentToolPaths.canonical(paths.home).path)",
+                        ProcessTools.shellExecutable, "-f", "-c", command],
+            cwd: folder.url, input: nil, timeout: AgentToolLimits.processTimeout
         )
         return ProcessTools.outcome(result)
     }

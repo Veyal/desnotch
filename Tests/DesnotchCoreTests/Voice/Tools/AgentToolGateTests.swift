@@ -71,7 +71,11 @@ import XCTest
         XCTAssertEqual(log.cards.first?.source, .hermes)
         XCTAssertEqual(log.cards.first?.canApprove, true)
         XCTAssertEqual(log.steps, [AgentToolStep.runCommandApproved], "the start is reported after the approval")
-        XCTAssertEqual(runner.runs, [["/bin/zsh", "-f", "-c", "ls -la"]])
+        XCTAssertEqual(runner.runs.count, 2, "a sandbox load check, then the command")
+        XCTAssertEqual(runner.runs.first?.first, AgentShellSandbox.executable)
+        XCTAssertEqual(runner.runs.first?.last, "/usr/bin/true")
+        XCTAssertEqual(runner.runs.last?.first, AgentShellSandbox.executable)
+        XCTAssertEqual(Array(runner.runs.last?.suffix(4) ?? []), ["/bin/zsh", "-f", "-c", "ls -la"])
         XCTAssertTrue(content(result).0.contains("trust=\"untrusted\""))
     }
 

@@ -173,3 +173,5 @@ Tests/DesnotchCoreTests/Voice/Tools/AgentToolLoopTests.swift	WP-PLATFORM
 Tests/DesnotchCoreTests/Voice/Tools/AgentToolTestSupport.swift	WP-PLATFORM
 Tests/DesnotchCoreTests/Voice/Logic/VoiceReducerToolRuleTests.swift	WP-LOGIC
 Sources/DesnotchCore/Clipboard/ClipboardController.swift	WP-PLATFORM
+Sources/DesnotchCore/Voice/Tools/AgentShellSandbox.swift	WP-PLATFORM
+Tests/DesnotchCoreTests/Voice/Tools/AgentShellSandboxTests.swift	WP-PLATFORM
