@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.12.0 — 2026-10-13
+
 - **Voice control (experimental, off by default):** hold a shortcut to run a closed set of local
   commands (media, volume, a catalogued app, the focus timer) with on-device speech recognition.
   Anything else can go to an optional cloud Hermes agent lane, which is a second opt-in. Microphone
