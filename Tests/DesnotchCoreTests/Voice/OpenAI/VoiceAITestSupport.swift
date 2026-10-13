@@ -88,37 +88,47 @@ final class AIStubURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
-/// In-memory key store for tests. Thread safety: guarded by `lock`.
+/// In-memory key store for tests, with the same endpoint binding as the Keychain store.
+/// Thread safety: guarded by `lock`.
 final class AIMemoryKeyStore: VoiceAIKeyStoring, @unchecked Sendable {
+    static let exampleBase = "https://api.example.test/v1"
+
     private let lock = NSLock()
     private var key: String?
+    private var binding: String?
     private var reads = 0
 
-    init(_ key: String? = nil) {
+    /// A key saved for `base` (by default the example endpoint the tests use).
+    init(_ key: String? = nil, base: String = AIMemoryKeyStore.exampleBase) {
         self.key = key
+        self.binding = key == nil ? nil : VoiceAIEndpoint.keyBinding(base: base)
+    }
+
+    static func anthropic(_ key: String?) -> AIMemoryKeyStore {
+        AIMemoryKeyStore(key, base: VoiceAIDefaults.anthropicBaseURL)
     }
 
     var readCount: Int { lock.lock(); defer { lock.unlock() }; return reads }
 
-    func readKey() -> String? {
+    func readKey(for binding: String) -> String? {
         lock.lock(); defer { lock.unlock() }
         reads += 1
-        return key
+        return binding == self.binding ? key : nil
     }
 
-    func hasKey() -> Bool {
+    func boundEndpoint() -> String? {
         lock.lock(); defer { lock.unlock() }
-        return key != nil
+        return key == nil ? nil : binding
     }
 
-    func saveKey(_ key: String) -> Bool {
-        guard let normalized = VoiceAIKeyFormat.normalized(key) else { return false }
-        lock.lock(); self.key = normalized; lock.unlock()
+    func saveKey(_ key: String, for binding: String) -> Bool {
+        guard let normalized = VoiceAIKeyFormat.normalized(key), !binding.isEmpty else { return false }
+        lock.lock(); self.key = normalized; self.binding = binding; lock.unlock()
         return true
     }
 
     func deleteKey() -> Bool {
-        lock.lock(); key = nil; lock.unlock()
+        lock.lock(); key = nil; binding = nil; lock.unlock()
         return true
     }
 }

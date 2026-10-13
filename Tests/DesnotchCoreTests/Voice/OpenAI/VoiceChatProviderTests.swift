@@ -200,7 +200,7 @@ final class VoiceChatProviderTests: XCTestCase {
 
     func testAnthropicErrorMapping() async {
         let session = AIStubURLProtocol.session()
-        let provider = AnthropicChatProvider(keys: AIMemoryKeyStore("ant-key"), session: session)
+        let provider = AnthropicChatProvider(keys: AIMemoryKeyStore.anthropic("ant-key"), session: session)
         let cases: [(AIStubURLProtocol.Reply, ChatResult)] = [
             (AIStubURLProtocol.json(401, ["type": "error"]), .failed(.unauthorized)),
             (AIStubURLProtocol.json(529, ["type": "error"]), .failed(.rateLimited)),
@@ -217,7 +217,7 @@ final class VoiceChatProviderTests: XCTestCase {
 
     func testKeysNeverCrossProviders() async throws {
         let openAIKeys = AIMemoryKeyStore("sk-openai-secret")
-        let anthropicKeys = AIMemoryKeyStore("ant-secret")
+        let anthropicKeys = AIMemoryKeyStore.anthropic("ant-secret")
         let session = AIStubURLProtocol.session()
         let ok = AIStubURLProtocol.json(200, ["content": [["type": "text", "text": "Hi."]], "stop_reason": "end_turn"])
         AIStubURLProtocol.reset([ok])
@@ -236,6 +236,52 @@ final class VoiceChatProviderTests: XCTestCase {
         for body in AIStubURLProtocol.requestBodies {
             XCTAssertNil(String(decoding: body, as: UTF8.self).range(of: "secret"), "a key never goes in a body")
         }
+        session.invalidateAndCancel()
+    }
+
+    // MARK: Key bound to the endpoint (security review, finding 1)
+
+    func testKeyBindingIsNormalizedHostAndPort() {
+        XCTAssertEqual(VoiceAIEndpoint.keyBinding(base: "https://API.OpenAI.com/v1"), "api.openai.com:443")
+        XCTAssertEqual(VoiceAIEndpoint.keyBinding(base: "https://api.openai.com/other/path"), "api.openai.com:443")
+        XCTAssertEqual(VoiceAIEndpoint.keyBinding(base: "https://api.openai.com:8443/v1"), "api.openai.com:8443")
+        XCTAssertEqual(VoiceAIEndpoint.keyBinding(base: "http://localhost:1234/v1"), "localhost:1234")
+        XCTAssertEqual(VoiceAIEndpoint.keyBinding(base: "http://[::1]:8080/v1"), "::1:8080")
+        XCTAssertNil(VoiceAIEndpoint.keyBinding(base: "http://api.openai.com/v1"))
+    }
+
+    func testOpenAIKeyIsNotSentAfterTheBaseURLChanges() async throws {
+        let session = AIStubURLProtocol.session()
+        let keys = AIMemoryKeyStore("sk-bound-secret")
+        let provider = OpenAIChatProvider(keys: keys, session: session)
+        AIStubURLProtocol.reset([])
+        let elsewhere = await provider.complete(plainRequest(), config: VoiceAIConfig(baseURL: "https://api.exarnple.test/v1"))
+        XCTAssertEqual(elsewhere, .failed(.keyMissing))
+        XCTAssertTrue(AIStubURLProtocol.requests.isEmpty, "a typo in the host sends nothing")
+        AIStubURLProtocol.reset([AIStubURLProtocol.json(200, ["choices": [["message": ["content": "Hi."]]]])])
+        _ = await provider.complete(plainRequest(), config: VoiceAIConfig(baseURL: "http://localhost:1234/v1"))
+        let local = try XCTUnwrap(AIStubURLProtocol.requests.first)
+        XCTAssertEqual(local.url?.host, "localhost")
+        XCTAssertNil(local.value(forHTTPHeaderField: "Authorization"), "the key stays bound to the host it was saved for")
+        XCTAssertNil(VoiceAIReadiness.check(base: AIMemoryKeyStore.exampleBase, keys: keys))
+        XCTAssertEqual(VoiceAIReadiness.check(base: "https://api.groq.com/openai/v1", keys: keys), .keyMissing)
+        session.invalidateAndCancel()
+    }
+
+    func testAnthropicKeyIsNotSentAfterTheBaseURLChanges() async throws {
+        let session = AIStubURLProtocol.session()
+        let provider = AnthropicChatProvider(keys: AIMemoryKeyStore.anthropic("ant-bound-secret"), session: session)
+        AIStubURLProtocol.reset([])
+        let proxy = await provider.complete(
+            plainRequest(), config: VoiceAIConfig(anthropicBaseURL: "https://anthropic-proxy.example.test")
+        )
+        XCTAssertEqual(proxy, .failed(.keyMissing))
+        XCTAssertTrue(AIStubURLProtocol.requests.isEmpty)
+        AIStubURLProtocol.reset([AIStubURLProtocol.json(200, ["content": [["type": "text", "text": "Hi."]]])])
+        _ = await provider.complete(plainRequest(), config: VoiceAIConfig(anthropicBaseURL: "http://127.0.0.1:8080"))
+        let local = try XCTUnwrap(AIStubURLProtocol.requests.first)
+        XCTAssertNil(local.value(forHTTPHeaderField: "x-api-key"))
+        XCTAssertNil(local.value(forHTTPHeaderField: "Authorization"))
         session.invalidateAndCancel()
     }
 }

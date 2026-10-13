@@ -208,6 +208,9 @@ When you choose a provider for a step:
 - API keys are saved only in your Keychain (`com.desnotch.app.voice-ai`, and
   `com.desnotch.app.voice-ai.anthropic` for Claude). They are never shown, logged, exported, or
   written to the audit log. A server on this Mac may run without a key.
+- A saved key is bound to the host and port it was saved for. After you change the base URL to
+  another host, Settings shows "Key saved for <host> — re-enter for this host" and nothing is
+  sent with that key. URL and model fields apply when you press Return or leave the field.
 - desnotch saves no audio, transcript, or reply. The provider's own retention policy applies.
 - Provider settings, including the base URLs, are never exported or imported.
 - Answers keep every agent-lane rule: the 1.5-second review window, the daily limit, Stop, and the

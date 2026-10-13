@@ -254,6 +254,29 @@ final class VoiceAISpeechTests: XCTestCase {
         }
         XCTAssertFalse(AIStubURLProtocol.requests.isEmpty)
     }
+
+    func testSpeechStepsDoNotSendAKeyBoundToAnotherHost() async {
+        AIStubURLProtocol.reset([])
+        let session = AIStubURLProtocol.session()
+        let audio = AIFakeAudioCapture()
+        let moved = OpenAISpeechRecognizer(
+            config: VoiceAIConfigBox(VoiceAIConfig(baseURL: "https://api.other.test/v1")),
+            keys: AIMemoryKeyStore("sk-test"), session: session, audio: audio, microphoneAuthorized: { true }
+        )
+        let events = await collect(moved.start(localeIdentifier: "en-US", contextualStrings: []))
+        XCTAssertEqual(events, [.failed(.provider(.keyMissing))])
+        XCTAssertEqual(audio.startCount, 0)
+        let fallback = CoordRecordingSynth()
+        fallback.gated = false
+        let tts = OpenAISpeechSynthesizer(
+            config: VoiceAIConfigBox(VoiceAIConfig(baseURL: "https://api.other.test/v1")),
+            keys: AIMemoryKeyStore("sk-test"), session: session, player: AIFakePlayer(outcome: .finished), fallback: fallback
+        )
+        _ = await tts.speak("Halo", localeIdentifier: "id-ID")
+        XCTAssertEqual(fallback.spoken.map(\.text), ["Halo"])
+        XCTAssertTrue(AIStubURLProtocol.requests.isEmpty)
+        session.invalidateAndCancel()
+    }
 }
 
 /// Fake microphone: `push` delivers a chunk as the real tap would. Thread safety: `lock`.

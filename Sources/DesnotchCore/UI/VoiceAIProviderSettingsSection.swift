@@ -62,8 +62,21 @@ enum VoiceAISettingsWords {
         }
     }
 
-    static func keyStatus(_ hasKey: Bool) -> String {
-        hasKey ? "Key saved" : "No key saved"
+    /// `bound` is where the stored key may be sent; `current` is the binding of the base URL in
+    /// the field (nil while that URL is not acceptable). Only endpoint names, never the key.
+    static func keyStatus(bound: String?, current: String?) -> String {
+        guard let current else { return "Fix the base URL to save a key" }
+        guard let bound else { return "No key saved" }
+        if bound == current { return "Key saved for \(hostLabel(bound))" }
+        return "Key saved for \(hostLabel(bound)) — re-enter for this host"
+    }
+
+    /// `api.openai.com:443` reads as `api.openai.com`; a non-default port stays visible.
+    static func hostLabel(_ binding: String) -> String {
+        if binding.hasSuffix(":443") || binding.hasSuffix(":80") {
+            return String(binding[..<(binding.lastIndex(of: ":") ?? binding.endIndex)])
+        }
+        return binding
     }
 
     /// Nil when the URL is acceptable; empty means the default, which is.
@@ -84,8 +97,8 @@ struct VoiceAIProviderSettingsSection: View {
 
     @State private var openAIKeyDraft = ""
     @State private var anthropicKeyDraft = ""
-    @State private var hasOpenAIKey = false
-    @State private var hasAnthropicKey = false
+    @State private var openAIKeyBinding: String?
+    @State private var anthropicKeyBinding: String?
     @State private var openAITest: String?
     @State private var anthropicTest: String?
     @State private var testing = false
@@ -154,7 +167,12 @@ struct VoiceAIProviderSettingsSection: View {
         if let note = VoiceAISettingsWords.endpointNote(settings.voiceAIBaseURL) {
             SettingsNote(note, warning: true)
         }
-        keyRow(draft: $openAIKeyDraft, hasKey: hasOpenAIKey, store: openAIKeys)
+        keyRow(
+            draft: $openAIKeyDraft,
+            bound: openAIKeyBinding,
+            current: VoiceAIEndpoint.keyBinding(base: VoiceAIConfig(settings: settings).baseURL),
+            store: openAIKeys
+        )
         if settings.voiceSpeechProvider == .openAICompatible {
             textRow("Speech model", text: $settings.voiceAISTTModel, prompt: SettingsStore.defaultVoiceAISTTModel)
             textRow("Language", text: $settings.voiceAILanguage, prompt: "auto")
@@ -178,7 +196,12 @@ struct VoiceAIProviderSettingsSection: View {
         if let note = VoiceAISettingsWords.endpointNote(settings.voiceAnthropicBaseURL) {
             SettingsNote(note, warning: true)
         }
-        keyRow(draft: $anthropicKeyDraft, hasKey: hasAnthropicKey, store: anthropicKeys)
+        keyRow(
+            draft: $anthropicKeyDraft,
+            bound: anthropicKeyBinding,
+            current: VoiceAIEndpoint.keyBinding(base: VoiceAIConfig(settings: settings).anthropicBaseURL),
+            store: anthropicKeys
+        )
         textRow("Model", text: $settings.voiceAnthropicModel, prompt: SettingsStore.defaultVoiceAnthropicModel)
         testRow(result: anthropicTest) { runTest(.anthropic) }
     }
@@ -217,30 +240,31 @@ struct VoiceAIProviderSettingsSection: View {
         HStack(spacing: 8) {
             Text(title)
                 .frame(width: 105, alignment: .leading)
-            TextField(title, text: text, prompt: Text(prompt))
-                .labelsHidden()
-                .textFieldStyle(.roundedBorder)
-                .disableAutocorrection(true)
+            VoiceAICommittedTextField(title: title, prompt: prompt, value: text)
         }
         .font(.system(size: 11))
     }
 
     @ViewBuilder
-    private func keyRow(draft: Binding<String>, hasKey: Bool, store: VoiceAIKeyStoring) -> some View {
+    private func keyRow(
+        draft: Binding<String>, bound: String?, current: String?, store: VoiceAIKeyStoring
+    ) -> some View {
+        let status = VoiceAISettingsWords.keyStatus(bound: bound, current: current)
         HStack(spacing: 8) {
             Text("API key")
                 .frame(width: 105, alignment: .leading)
-            SecureField("API key", text: draft, prompt: Text(VoiceAISettingsWords.keyStatus(hasKey)))
+            SecureField("API key", text: draft, prompt: Text(status))
                 .labelsHidden()
                 .textFieldStyle(.roundedBorder)
             Button("Save") {
-                if store.saveKey(draft.wrappedValue) {
+                // The key is saved for the base URL shown above and is only ever sent there.
+                if let current, store.saveKey(draft.wrappedValue, for: current) {
                     draft.wrappedValue = ""
                     keysChanged()
                 }
             }
-            .disabled(VoiceAIKeyFormat.normalized(draft.wrappedValue) == nil)
-            if hasKey {
+            .disabled(current == nil || VoiceAIKeyFormat.normalized(draft.wrappedValue) == nil)
+            if bound != nil {
                 Button("Remove") {
                     store.deleteKey()
                     keysChanged()
@@ -248,7 +272,7 @@ struct VoiceAIProviderSettingsSection: View {
             }
         }
         .font(.system(size: 11))
-        SettingsNote("\(VoiceAISettingsWords.keyStatus(hasKey)). \(VoiceAISettingsWords.keyNote)")
+        SettingsNote("\(status). \(VoiceAISettingsWords.keyNote)")
     }
 
     private func testRow(result: String?, action: @escaping () -> Void) -> some View {
@@ -287,7 +311,41 @@ struct VoiceAIProviderSettingsSection: View {
     }
 
     private func refreshKeyStatus() {
-        hasOpenAIKey = openAIKeys.hasKey()
-        hasAnthropicKey = anthropicKeys.hasKey()
+        openAIKeyBinding = openAIKeys.boundEndpoint()
+        anthropicKeyBinding = anthropicKeys.boundEndpoint()
+    }
+}
+
+/// A text field that writes its value only on Return, on losing focus, or when Settings closes,
+/// never per keystroke. A capture that starts mid-edit therefore never sees a half-typed base URL
+/// (or model name), and each committed URL change re-checks the lane once.
+@MainActor
+struct VoiceAICommittedTextField: View {
+    let title: String
+    let prompt: String
+    @Binding var value: String
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField(title, text: $draft, prompt: Text(prompt))
+            .labelsHidden()
+            .textFieldStyle(.roundedBorder)
+            .disableAutocorrection(true)
+            .focused($focused)
+            .onSubmit(commit)
+            .onChange(of: focused) { isFocused in
+                if !isFocused { commit() }
+            }
+            .onChange(of: value) { newValue in
+                if !focused { draft = newValue }
+            }
+            .onAppear { draft = value }
+            .onDisappear(perform: commit)
+    }
+
+    private func commit() {
+        if draft != value { value = draft }
+        draft = value
     }
 }

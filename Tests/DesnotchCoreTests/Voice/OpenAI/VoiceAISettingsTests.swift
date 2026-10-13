@@ -73,7 +73,7 @@ final class VoiceAISettingsTests: XCTestCase {
     func testKeyAndBaseURLNeverReachDefaultsOrExport() throws {
         let store = SettingsStore(defaults: defaults)
         let keys = AIMemoryKeyStore()
-        XCTAssertTrue(keys.saveKey("sk-live-secret-123"))
+        XCTAssertTrue(keys.saveKey("sk-live-secret-123", for: "private-gateway.example.test:443"))
         store.voiceAIBaseURL = "https://private-gateway.example.test/v1"
         store.voiceAnthropicBaseURL = "https://anthropic-proxy.example.test"
         store.voiceSpeechProvider = .openAICompatible
@@ -137,7 +137,14 @@ final class VoiceAISettingsTests: XCTestCase {
         XCTAssertNil(VoiceAISettingsWords.endpointNote(""))
         XCTAssertNil(VoiceAISettingsWords.endpointNote("https://api.openai.com/v1"))
         XCTAssertEqual(VoiceAISettingsWords.endpointNote("http://10.0.0.2/v1"), VoiceAISettingsWords.endpointInvalidNote)
-        XCTAssertEqual(VoiceAISettingsWords.keyStatus(true), "Key saved")
+        XCTAssertEqual(VoiceAISettingsWords.keyStatus(bound: "api.openai.com:443", current: "api.openai.com:443"), "Key saved for api.openai.com")
+        XCTAssertEqual(
+            VoiceAISettingsWords.keyStatus(bound: "api.openai.com:443", current: "api.groq.com:443"),
+            "Key saved for api.openai.com — re-enter for this host"
+        )
+        XCTAssertEqual(VoiceAISettingsWords.keyStatus(bound: nil, current: "localhost:1234"), "No key saved")
+        XCTAssertEqual(VoiceAISettingsWords.keyStatus(bound: "localhost:1234", current: nil), "Fix the base URL to save a key")
+        XCTAssertEqual(VoiceAISettingsWords.hostLabel("localhost:1234"), "localhost:1234")
         XCTAssertTrue(VoiceAISettingsWords.anthropicNote.contains("no speech API"))
         XCTAssertEqual(VoiceAISettingsWords.answersLabel(.anthropic), "Claude (Anthropic)")
     }

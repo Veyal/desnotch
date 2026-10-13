@@ -108,7 +108,7 @@ final class VoiceAIWireTests: XCTestCase {
         XCTAssertEqual(VoiceAIReadiness.check(base: "https://api.openai.com/v1", keys: empty), .keyMissing)
         XCTAssertNil(VoiceAIReadiness.check(base: "http://localhost:1234/v1", keys: empty))
         XCTAssertEqual(VoiceAIReadiness.check(base: "http://example.com/v1", keys: AIMemoryKeyStore("k")), .endpointInvalid)
-        XCTAssertNil(VoiceAIReadiness.check(base: "https://api.openai.com/v1", keys: AIMemoryKeyStore("k")))
+        XCTAssertNil(VoiceAIReadiness.check(base: "https://api.openai.com/v1", keys: AIMemoryKeyStore("k", base: "https://api.openai.com/v1")))
         XCTAssertEqual(empty.readCount, 0, "the preflight check never reads the secret")
     }
 
@@ -218,7 +218,7 @@ final class VoiceAIWireTests: XCTestCase {
         let session = AIStubURLProtocol.session()
         AIStubURLProtocol.reset([AIStubURLProtocol.json(200, ["data": []])])
         let result = await VoiceAIConnectionTester.test(
-            .anthropic, config: VoiceAIConfig(), keys: AIMemoryKeyStore("ant-key"), session: session
+            .anthropic, config: VoiceAIConfig(), keys: AIMemoryKeyStore.anthropic("ant-key"), session: session
         )
         XCTAssertEqual(result, .ok)
         let request = try XCTUnwrap(AIStubURLProtocol.requests.first)
