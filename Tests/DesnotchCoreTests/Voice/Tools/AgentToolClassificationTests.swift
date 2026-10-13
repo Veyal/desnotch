@@ -390,6 +390,20 @@ import XCTest
         XCTAssertFalse(AgentURLPolicy.isNonCanonicalIPv4("1e100.net"))
     }
 
+    func testIPv6FormsThatCarryALocalIPv4AreLocal() {
+        let local = [
+            "http://[::127.0.0.1]/", "http://[64:ff9b::a00:1]/", "http://[64:ff9b:1::a00:1]/", "http://[64:ff9b::7f00:1]/",
+            "http://[::ffff:0:a00:1]/", "http://[2002:a00:1::]/", "http://[2002:7f00:1::1]/", "http://[2001:db8::1]/",
+            "http://[2001:0:4136:e378::1]/", "http://[100::1]/", "http://[fe80::1]/", "http://[fec0::1]/"
+        ]
+        for raw in local {
+            XCTAssertEqual(AgentURLPolicy.classify(raw)?.tier, .t3, raw)
+        }
+        for raw in ["http://[64:ff9b::808:808]/", "http://[2002:808:808::1]/", "http://[2606:4700::1111]/", "http://[::8.8.8.8]/"] {
+            XCTAssertEqual(AgentURLPolicy.classify(raw)?.tier, .t1, raw)
+        }
+    }
+
     func testOpenURLResolvesTheHostBeforeClassifyingIt() async {
         let fetcher = ToolsScriptedFetcher()
         let box = AgentToolbox.standard(system: ToolsFakeSystem(), paths: paths, runner: ToolsScriptedRunner(), fetcher: fetcher)

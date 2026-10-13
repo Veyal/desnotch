@@ -94,18 +94,34 @@ enum AgentURLPolicy {
         }
     }
 
+    /// IPv6 is public unless it is unspecified, loopback, multicast, unique-local, link- or
+    /// site-local, documentation, discard, Teredo or the local-use NAT64 prefix. Forms that carry an
+    /// IPv4 address (`::a.b.c.d`, `::ffff:a.b.c.d`, `::ffff:0:a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4
+    /// `2002::/16`) are judged by the IPv4 rules, so `[::127.0.0.1]` or `[64:ff9b::a00:1]` stay local.
     static func isPublicIPv6(_ address: in6_addr) -> Bool {
         let bytes = withUnsafeBytes(of: address) { Array($0) }
-        if bytes.allSatisfy({ $0 == 0 }) { return false }
-        if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes[15] == 1 { return false }
+        func ipv4(at offset: Int) -> UInt32 {
+            UInt32(bytes[offset]) << 24 | UInt32(bytes[offset + 1]) << 16
+                | UInt32(bytes[offset + 2]) << 8 | UInt32(bytes[offset + 3])
+        }
+        func zero(_ range: Range<Int>) -> Bool { bytes[range].allSatisfy { $0 == 0 } }
+        func prefix(_ values: [UInt8]) -> Bool { Array(bytes.prefix(values.count)) == values }
+        if zero(0..<16) { return false }
+        if zero(0..<15) && bytes[15] == 1 { return false }
         if bytes[0] == 0xFF { return false }
         if bytes[0] & 0xFE == 0xFC { return false }
-        if bytes[0] == 0xFE && bytes[1] & 0xC0 == 0x80 { return false }
-        let mappedPrefix: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF]
-        if Array(bytes.prefix(12)) == mappedPrefix {
-            let v4 = UInt32(bytes[12]) << 24 | UInt32(bytes[13]) << 16 | UInt32(bytes[14]) << 8 | UInt32(bytes[15])
-            return isPublicIPv4(v4)
+        if bytes[0] == 0xFE && bytes[1] & 0x80 == 0x80 { return false }
+        if zero(0..<10) && ((bytes[10] == 0 && bytes[11] == 0) || (bytes[10] == 0xFF && bytes[11] == 0xFF)) {
+            return isPublicIPv4(ipv4(at: 12))
         }
+        if zero(0..<8) && bytes[8] == 0xFF && bytes[9] == 0xFF && bytes[10] == 0 && bytes[11] == 0 {
+            return isPublicIPv4(ipv4(at: 12))
+        }
+        if prefix([0x00, 0x64, 0xFF, 0x9B, 0x00, 0x01]) { return false }
+        if prefix([0x00, 0x64, 0xFF, 0x9B]) { return zero(4..<12) && isPublicIPv4(ipv4(at: 12)) }
+        if prefix([0x20, 0x02]) { return isPublicIPv4(ipv4(at: 2)) }
+        if prefix([0x20, 0x01, 0x00, 0x00]) || prefix([0x20, 0x01, 0x0D, 0xB8]) { return false }
+        if prefix([0x01, 0, 0, 0, 0, 0, 0, 0]) { return false }
         return true
     }
 }
