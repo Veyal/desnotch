@@ -8,6 +8,12 @@
   commands (media, volume, a catalogued app, the focus timer) with on-device speech recognition.
   Anything else can go to an optional cloud Hermes agent lane, which is a second opt-in. Microphone
   and Speech Recognition permissions are requested only when voice is enabled.
+  - Two Settings toggles: **Voice control**, and **Send other requests to the Hermes agent (cloud)**.
+  - Three talk shortcuts to choose from: Option-Command-V (default), Shift-Option-Command-V, and
+    Option-Command-J.
+  - English and Indonesian recognition locales.
+  - Status-menu voice controls: Talk, Stop Listening, Cancel, Approve/Deny, Resume Voice, and Stop
+    Voice Agent.
 
 ## v0.11.0 — 2026-10-08
 
