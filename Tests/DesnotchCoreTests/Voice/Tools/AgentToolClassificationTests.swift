@@ -145,9 +145,54 @@ import XCTest
         XCTAssertEqual(plain.tier, .t2)
         XCTAssertEqual(plain.literal, #"tell application "Music" to pause"#)
         let shell = await propose("run_applescript", #"{"script":"do shell script \"curl https://x.example\""}"#)
-        XCTAssertEqual(shell.tier, .t3)
+        XCTAssertEqual(shell.tier, .t4)
         let secret = await propose("run_applescript", #"{"script":"do shell script \"cat ~/.hermes/config.yaml\""}"#)
         XCTAssertEqual(secret.tier, .t4)
+    }
+
+    // MARK: Review fixes: classification bypasses (item 3)
+
+    func testShellEvasionProbesAreRefused() async {
+        let cases: [(String, VoiceTier)] = [
+            ("cat ~/.[s]sh/id_[r]sa", .t4),
+            ("cat ~/.ss{h,x}/id_rsa", .t4),
+            ("$'\\x63url' x.example", .t4),
+            ("cat ${HOME}/notes", .t4),
+            ("c\\url x.example", .t3),
+            ("\"cu\"rl x.example", .t3),
+            ("s\\udo ls", .t4)
+        ]
+        for (command, tier) in cases {
+            let proposal = await propose("run_shell", ChatJSON.string(["command": command]))
+            XCTAssertEqual(proposal.tier, tier, command)
+        }
+    }
+
+    func testScannerChecksTheStrippedTextForEveryPattern() {
+        XCTAssertEqual(CommandRiskScanner.scan("c\\url x.example").tier, .t3)
+        XCTAssertTrue(CommandRiskScanner.scan("r\"m\" -rf old").flags.contains(.destructive))
+        XCTAssertEqual(CommandRiskScanner.scan("s'u'do ls").tier, .t4)
+        XCTAssertEqual(CommandRiskScanner.scan("ls -la").tier, .t2)
+        XCTAssertFalse(CommandRiskScanner.shellEvasion("ls -la ~/Documents"))
+    }
+
+    func testAppleScriptThatReachesAShellIsRefused() async {
+        let scripts = [
+            #"do shell script ("cu" & "rl https://x")"#,
+            #"do shell script ("cu" & "rl x.example")"#,
+            #"do  shell   script "ls""#,
+            #"run script "beep""#,
+            #"load script file "x""#,
+            #"set c to character id 99"#,
+            #"set c to ASCII character 99"#,
+            #"set p to "a" & "b""#
+        ]
+        for script in scripts {
+            let proposal = await propose("run_applescript", ChatJSON.string(["script": script]))
+            XCTAssertEqual(proposal.tier, .t4, script)
+        }
+        let plain = await propose("run_applescript", ChatJSON.string(["script": #"tell application "Music" to play"#]))
+        XCTAssertEqual(plain.tier, .t2)
     }
 
     // MARK: Paths

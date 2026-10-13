@@ -155,8 +155,12 @@ are T3; a plain public URL is T1; a query, credentials or more than 200 characte
 | `web_fetch` (GET, text only, 1 MB read, redirects not followed, public addresses only after DNS) | T1 | as `open_url` |
 | `write_file` | T2 | T3 outside the write scope, T4 protected |
 | `run_shortcut` (`shortcuts run <name>`) | T2 | T4 protected name |
-| `run_applescript` (`/usr/bin/osascript` subprocess, script on stdin) | T2 | `CommandRiskScanner` tier (T3 egress, T4 flagged) |
-| `run_shell` (`/bin/zsh -f -c`) | T2 (no read-only downgrade) | `CommandRiskScanner` tier (T3 egress, T4 flagged or protected cwd) |
+| `run_applescript` (`/usr/bin/osascript` subprocess, script on stdin) | T2 | `CommandRiskScanner` tier (T3 egress, T4 flagged); T4 for `do shell script`, `run script`, `load script`, `character id`, `ASCII character` or any `&` (`appleScriptReachesShell`: shell goes only through `run_shell`) |
+| `run_shell` (`/bin/zsh -f -c`) | T2 (no read-only downgrade) | `CommandRiskScanner` tier (T3 egress, T4 flagged or protected cwd); T4 for glob classes `[...]`, braces `{...}`, `$'` and `${` (`shellEvasion`) |
+
+`CommandRiskScanner.scan` (shared with the Hermes lane) now runs every pattern over the quote/backslash-stripped text as well, so `c\url` or
+`s'u'do` are caught; this only adds flags, never removes one. `shellEvasion` and `appleScriptReachesShell` are scoped to the in-process tools and
+do not change the Hermes lane.
 
 Process tools run through `SubprocessRunner`: own process group, sanitized environment, no TTY, stdin closed (AppleScript gets its script on
 stdin, then EOF), the scratch folder `~/Library/Application Support/desnotch/agent-scratch` as working directory, a 30 s timeout and a 16 KB

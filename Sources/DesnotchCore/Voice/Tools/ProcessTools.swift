@@ -108,7 +108,7 @@ struct RunShellTool: AgentTool {
         }
         let risk = CommandRiskScanner.scan(command)
         var tier = ProcessTools.tier(risk)
-        if folder.tier >= .t4 { tier = .t4 }
+        if folder.tier >= .t4 || CommandRiskScanner.shellEvasion(command) { tier = .t4 }
         var literal = risk.sanitized
         if args.text("cwd") != nil {
             literal = "cd \(CommandRiskScanner.scan(AgentToolPaths.display(folder.url, context: paths)).sanitized)\n" + literal
@@ -154,8 +154,9 @@ struct RunAppleScriptTool: AgentTool {
             return AgentProposals.invalid("tool.run_applescript", label: AgentToolStep.runAppleScriptApproved, "script is required")
         }
         let risk = CommandRiskScanner.scan(script)
+        let tier = CommandRiskScanner.appleScriptReachesShell(script) ? .t4 : ProcessTools.tier(risk)
         return ChatToolProposal(
-            tier: ProcessTools.tier(risk), stepLabel: AgentToolStep.runAppleScriptApproved,
+            tier: tier, stepLabel: AgentToolStep.runAppleScriptApproved,
             summary: "Run an AppleScript", literal: risk.sanitized, risk: risk.flags,
             isTruncated: risk.wasTruncated, auditCode: "tool.run_applescript"
         )

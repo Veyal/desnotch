@@ -19,6 +19,12 @@ enum CommandRiskScanner {
         static let gitPush = #"\bgit\s+push\b"#
         static let sshCommand = #"(?:^|[\s;&|])ssh\s"#
         static let destructive = #"\b(rm|rmdir|mv|kill|killall|pkill|chmod|chown|dd|mkfs|truncate|shred|diskutil)\b"#
+        // In-process tools only (see `shellEvasion` / `appleScriptReachesShell`).
+        static let globClass = #"\[[^\]]*\]"#
+        static let braceExpansion = #"\{[^}]*\}"#
+        static let ansiCQuote = #"\$'"#
+        static let parameterExpansion = #"\$\{"#
+        static let appleScriptShell = #"\b(do\s+shell\s+script|run\s+script|load\s+script|character\s+id|ascii\s+character)\b"#
     }
 
     private static let protectedPaths: [String] = [
@@ -71,12 +77,15 @@ enum CommandRiskScanner {
         if matches(Pat.pipeToInterpreter, lowered) || matches(Pat.pipeToInterpreter, folded) {
             flags.insert(.pipeToInterpreter)
         }
-        if matches(Pat.base64Flag, lowered) || matches(Pat.b64decode, lowered) {
+        // Every pattern also runs over the quote/backslash-stripped text, so `c\url` or `"su"do`
+        // cannot hide a word the shell would still see.
+        let either = { (pattern: String) in matches(pattern, lowered) || matches(pattern, folded) }
+        if either(Pat.base64Flag) || either(Pat.b64decode) {
             flags.insert(.base64Decode)
         }
-        if matches(Pat.evalUse, lowered) { flags.insert(.evalUse) }
+        if either(Pat.evalUse) { flags.insert(.evalUse) }
         if lowered.contains("$(") || lowered.contains("`") { flags.insert(.commandSubstitution) }
-        if matches(Pat.sudo, lowered) { flags.insert(.sudo) }
+        if either(Pat.sudo) { flags.insert(.sudo) }
         if mentionsProtected(lowered) || mentionsProtected(folded) || globHitsProtected(folded) {
             flags.insert(.protectedPath)
         }
@@ -85,11 +94,10 @@ enum CommandRiskScanner {
         }
         if matches(Pat.singlePipe, lowered) { flags.insert(.pipe) }
         if lowered.contains(">") || lowered.contains("<") { flags.insert(.redirect) }
-        if matches(Pat.urlScheme, lowered) || matches(Pat.networkTool, lowered)
-            || matches(Pat.gitPush, lowered) || matches(Pat.sshCommand, lowered) {
+        if either(Pat.urlScheme) || either(Pat.networkTool) || either(Pat.gitPush) || either(Pat.sshCommand) {
             flags.insert(.url)
         }
-        if matches(Pat.destructive, lowered) { flags.insert(.destructive) }
+        if either(Pat.destructive) { flags.insert(.destructive) }
 
         var wasTruncated = false
         if sanitized.count > displayLimit {
@@ -108,6 +116,26 @@ enum CommandRiskScanner {
             tier = .t2
         }
         return CommandRisk(flags: flags, sanitized: sanitized, wasTruncated: wasTruncated, tier: tier)
+    }
+
+    /// Stricter check for desnotch's own `run_shell` tool only (the Hermes lane keeps `scan`
+    /// unchanged): shell syntax that builds a word at run time (glob classes `[...]`, brace
+    /// expansion `{...}`, ANSI-C quoting `$'...'`, parameter expansion `${...}`) can spell a
+    /// protected path or a network tool the scanner never sees, so such a command is refused (T4).
+    static func shellEvasion(_ command: String) -> Bool {
+        let lowered = command.lowercased()
+        return matches(Pat.globClass, lowered) || matches(Pat.braceExpansion, lowered)
+            || matches(Pat.ansiCQuote, lowered) || matches(Pat.parameterExpansion, lowered)
+    }
+
+    /// Stricter check for desnotch's own `run_applescript` tool only: an AppleScript that can reach
+    /// a shell or build a string at run time (`do shell script`, `run script`, `load script`,
+    /// `character id`, `ASCII character`, or `&` concatenation) is refused (T4), so shell
+    /// commands only ever run through `run_shell`, where the card shows them literally.
+    static func appleScriptReachesShell(_ script: String) -> Bool {
+        let collapsed = script.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return collapsed.contains("&") || matches(Pat.appleScriptShell, collapsed)
+            || matches(Pat.appleScriptShell, fold(collapsed))
     }
 
     /// True when a path (or any text) names a protected location. The machine-control file
