@@ -45,21 +45,32 @@ final class AgentToolbox: ChatToolHandling {
         catalog.map(\.definition)
     }
 
-    func propose(name: String, inputJSON: String) async -> ChatToolProposal {
+    func propose(name: String, inputJSON: String, context: ChatToolCallContext) async -> ChatToolProposal {
         guard let tool = byName[name] else { return AgentProposals.unknownTool() }
         guard let args = AgentToolArgs.parse(inputJSON) else {
             return AgentProposals.invalid("tool.\(name)", label: "Invalid", "arguments must be a JSON object")
+        }
+        return await Self.classify(tool, args, context)
+    }
+
+    func revealsData(name: String) -> Bool {
+        byName[name]?.revealsData ?? false
+    }
+
+    private static func classify(_ tool: AgentTool, _ args: AgentToolArgs, _ context: ChatToolCallContext) async -> ChatToolProposal {
+        if context.afterDataRead, let egress = tool as? AgentEgressTool {
+            return egress.proposeAfterDataRead(args)
         }
         return await tool.propose(args)
     }
 
     /// Re-classifies first: a call whose tier rose since the gate let it through (a path that
     /// became a symlink to a protected folder, a file that appeared) is refused, not run.
-    func run(name: String, inputJSON: String, approvedTier: VoiceTier) async -> ChatToolOutcome {
+    func run(name: String, inputJSON: String, approvedTier: VoiceTier, context: ChatToolCallContext) async -> ChatToolOutcome {
         guard let tool = byName[name], let args = AgentToolArgs.parse(inputJSON) else {
             return ChatToolOutcome(content: "Unknown tool.", isError: true)
         }
-        let again = await tool.propose(args)
+        let again = await Self.classify(tool, args, context)
         guard again.invalidReason == nil, again.tier <= approvedTier, again.tier <= .t2 else {
             return ChatToolOutcome(content: "Refused: the request changed since it was checked.", isError: true)
         }

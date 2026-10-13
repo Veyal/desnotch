@@ -93,7 +93,10 @@ final class AgentApprovalGate: @unchecked Sendable {
 }
 
 /// Runs one model tool call through the tier gate, in this order:
-/// 1. `propose` (no side effects). Invalid arguments go back to the model; nothing runs.
+/// 1. `propose` (no side effects). Invalid arguments go back to the model; nothing runs. Once a
+///    tool that returns user data has run in the turn (`afterDataRead`), `open_url` and
+///    `web_fetch` classify at T2 or higher without any DNS lookup, so a read cannot be carried
+///    out in a URL's path or host name without the user seeing the full URL on a card.
 /// 2. T0/T1: T1 takes a slot from the tool rate limiter (10 per minute); the start is reported
 ///    as `.toolActivity(label)` (R82) and the tool runs.
 /// 3. T2: `.approvalNeeded` with a fresh nonce; the agent card shows the exact literal and
@@ -133,9 +136,12 @@ final class AgentToolGate: @unchecked Sendable {
     static let blockedByPolicy = "Blocked by desnotch's safety policy: this action is not available by voice. Do not retry it or work around it; tell the user you can't do that here."
     static let rateLimited = "Too many actions in the last minute. Do not retry now; tell the user to try again shortly."
 
-    func perform(id: String, name: String, inputJSON: String, emit: @Sendable (AgentEvent) -> Void) async -> ChatContentBlock {
+    func perform(
+        id: String, name: String, inputJSON: String, afterDataRead: inout Bool, emit: @Sendable (AgentEvent) -> Void
+    ) async -> ChatContentBlock {
         let started = clock.now()
-        let proposal = await handler.propose(name: name, inputJSON: inputJSON)
+        let context = ChatToolCallContext(afterDataRead: afterDataRead)
+        let proposal = await handler.propose(name: name, inputJSON: inputJSON, context: context)
         if let reason = proposal.invalidReason {
             await record(proposal, outcome: "invalid", started: started)
             return .toolResult(toolUseID: id, content: "Invalid arguments: \(reason).", isError: true)
@@ -165,7 +171,8 @@ final class AgentToolGate: @unchecked Sendable {
             return .toolResult(toolUseID: id, content: Self.blockedByPolicy, isError: true)
         }
         emit(.toolActivity(kind: proposal.stepLabel))
-        let outcome = await handler.run(name: name, inputJSON: inputJSON, approvedTier: proposal.tier)
+        let outcome = await handler.run(name: name, inputJSON: inputJSON, approvedTier: proposal.tier, context: context)
+        if handler.revealsData(name: name) { afterDataRead = true }
         let cancelled = Task.isCancelled
         await record(proposal, outcome: cancelled ? "cancelled" : (outcome.isError ? "error" : "ok"), started: started,
                      outputBytes: outcome.content.utf8.count)

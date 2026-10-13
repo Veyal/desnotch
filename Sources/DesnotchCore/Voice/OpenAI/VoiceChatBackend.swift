@@ -134,6 +134,7 @@ final class VoiceChatBackend: AgentBackend, @unchecked Sendable {
         let system = tools == nil ? systemPrompt : toolSystemPrompt
         let maxTokens = tools == nil ? VoiceAILimits.maxReplyTokens : VoiceAILimits.maxToolTurnTokens
         var toolCalls = 0
+        var afterDataRead = false
         for _ in 0...maxToolRounds {
             if Task.isCancelled {
                 emit(.failed(.agentFailed("cancelled")))
@@ -169,7 +170,10 @@ final class VoiceChatBackend: AgentBackend, @unchecked Sendable {
                         emit(.failed(.stepBudgetExceeded))
                         return
                     }
-                    results.append(await tools.perform(id: call.id, name: call.name, inputJSON: call.inputJSON, emit: emit))
+                    let result = await tools.perform(
+                        id: call.id, name: call.name, inputJSON: call.inputJSON, afterDataRead: &afterDataRead, emit: emit
+                    )
+                    results.append(result)
                 }
                 if Task.isCancelled {
                     emit(.failed(.agentFailed("cancelled")))

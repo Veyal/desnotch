@@ -25,6 +25,7 @@ private func pathProposal(
 /// `list_dir`: names, kinds and sizes of a folder's visible entries, capped. T1 in the read scope.
 struct ListDirTool: AgentTool {
     let paths: AgentPathContext
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(
@@ -77,6 +78,7 @@ struct ListDirTool: AgentTool {
 /// `read_file`: a text file's first lines, capped. Binary files are refused. T1 in the read scope.
 struct ReadFileTool: AgentTool {
     let paths: AgentPathContext
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(
@@ -123,6 +125,7 @@ struct ReadFileTool: AgentTool {
 /// never entered; the walk is bounded in depth, entries visited, and results.
 struct SearchFilesTool: AgentTool {
     let paths: AgentPathContext
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(

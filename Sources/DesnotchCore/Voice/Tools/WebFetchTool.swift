@@ -19,8 +19,9 @@ protocol AgentWebFetching: Sendable {
 /// `web_fetch`: GET a public http(s) page and return its text. Tier from `AgentURLPolicy`
 /// (T1 for a plain public URL, T2 when the URL can carry data out, T3 for local addresses).
 /// The page is untrusted data and is fenced like every tool result.
-struct WebFetchTool: AgentTool {
+struct WebFetchTool: AgentEgressTool {
     let fetcher: AgentWebFetching
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(
@@ -42,6 +43,17 @@ struct WebFetchTool: AgentTool {
             risk: verdict.risk,
             isTruncated: verdict.isTruncated,
             auditCode: "tool.web_fetch"
+        )
+    }
+
+    func proposeAfterDataRead(_ args: AgentToolArgs) -> ChatToolProposal {
+        guard let raw = args.text("url"), let verdict = AgentURLPolicy.classify(raw) else {
+            return AgentProposals.invalid("tool.web_fetch", label: AgentToolStep.fetchPageApproved, "a valid http(s) url is required")
+        }
+        return ChatToolProposal(
+            tier: max(.t2, verdict.tier), stepLabel: AgentToolStep.fetchPageApproved,
+            summary: "Download a web page for the AI", literal: verdict.literal, risk: verdict.risk,
+            isTruncated: verdict.isTruncated, auditCode: "tool.web_fetch"
         )
     }
 

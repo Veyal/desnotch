@@ -129,14 +129,28 @@ struct ChatToolProposal: Equatable, Sendable {
     }
 }
 
+/// Facts about the turn so far that change how a call classifies. `afterDataRead` is true once a
+/// tool that returns user data (a file, a folder listing, a page, command output, the clipboard,
+/// system info) has run in this turn: from then on every call that sends data off the Mac
+/// (`open_url`, `web_fetch`) needs the card, decided before any DNS lookup.
+struct ChatToolCallContext: Equatable, Sendable {
+    var afterDataRead: Bool
+
+    init(afterDataRead: Bool = false) {
+        self.afterDataRead = afterDataRead
+    }
+}
+
 /// The machine-control seam (`AgentToolbox` in `Voice/Tools/`). The answers backend asks
 /// `propose` first and gates the call on its tier (`AgentToolGate`); `run` happens only after
 /// that gate, and re-checks the call so nothing changed between the card and the start.
 protocol ChatToolHandling: Sendable {
     var tools: [ChatToolDefinition] { get }
-    func propose(name: String, inputJSON: String) async -> ChatToolProposal
+    func propose(name: String, inputJSON: String, context: ChatToolCallContext) async -> ChatToolProposal
     /// `approvedTier` is the tier the gate let through; a call that now classifies higher is refused.
-    func run(name: String, inputJSON: String, approvedTier: VoiceTier) async -> ChatToolOutcome
+    func run(name: String, inputJSON: String, approvedTier: VoiceTier, context: ChatToolCallContext) async -> ChatToolOutcome
+    /// True for tools whose result carries user data (marks the turn `afterDataRead`).
+    func revealsData(name: String) -> Bool
 }
 
 /// Small JSON helpers shared by both adapters.

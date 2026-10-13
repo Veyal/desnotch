@@ -91,6 +91,7 @@ enum ProcessTools {
 struct RunShellTool: AgentTool {
     let paths: AgentPathContext
     let runner: AgentProcessRunning
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(
@@ -140,6 +141,7 @@ struct RunShellTool: AgentTool {
 struct RunAppleScriptTool: AgentTool {
     let paths: AgentPathContext
     let runner: AgentProcessRunning
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(
@@ -178,6 +180,7 @@ struct RunAppleScriptTool: AgentTool {
 struct RunShortcutTool: AgentTool {
     let paths: AgentPathContext
     let runner: AgentProcessRunning
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(

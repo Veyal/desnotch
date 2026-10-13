@@ -20,7 +20,7 @@ import XCTest
     }
 
     private func propose(_ name: String, _ json: String) async -> ChatToolProposal {
-        await toolbox().propose(name: name, inputJSON: json)
+        await toolbox().propose(name: name, inputJSON: json, context: ChatToolCallContext())
     }
 
     // MARK: Catalog and schemas

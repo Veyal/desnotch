@@ -9,8 +9,23 @@ import Foundation
 /// action itself. `propose` must not have side effects; `execute` runs only after the gate.
 protocol AgentTool: Sendable {
     var definition: ChatToolDefinition { get }
+    /// True when the result carries user data (file contents, listings, pages, command output,
+    /// the clipboard, system info): later egress calls in the turn then need the card.
+    var revealsData: Bool { get }
     func propose(_ args: AgentToolArgs) async -> ChatToolProposal
     func execute(_ args: AgentToolArgs) async -> ChatToolOutcome
+}
+
+extension AgentTool {
+    var revealsData: Bool { false }
+}
+
+/// A tool that can send data off the Mac in its arguments (`open_url`, `web_fetch`). After a
+/// data read in the turn the toolbox asks `proposeAfterDataRead` instead of `propose`: a purely
+/// static classification (no DNS lookup, which would itself leak the host name) that is never
+/// below T2, so the card shows the full URL first.
+protocol AgentEgressTool: AgentTool {
+    func proposeAfterDataRead(_ args: AgentToolArgs) -> ChatToolProposal
 }
 
 /// A parsed argument value. Only JSON scalars are accepted; nested objects and arrays are

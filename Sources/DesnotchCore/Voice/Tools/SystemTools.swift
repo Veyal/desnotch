@@ -47,7 +47,7 @@ struct OpenAppTool: AgentTool {
 }
 
 /// `open_url`: an http(s) link in the default browser. Tier from `AgentURLPolicy`.
-struct OpenURLTool: AgentTool {
+struct OpenURLTool: AgentEgressTool {
     let system: AgentSystemServing
 
     var definition: ChatToolDefinition {
@@ -73,8 +73,19 @@ struct OpenURLTool: AgentTool {
         )
     }
 
-    func execute(_ args: AgentToolArgs) async -> ChatToolOutcome {
+    func proposeAfterDataRead(_ args: AgentToolArgs) -> ChatToolProposal {
         guard let raw = args.text("url"), let verdict = AgentURLPolicy.classify(raw) else {
+            return AgentProposals.invalid("tool.open_url", label: AgentToolStep.openLinkApproved, "a valid http(s) url is required")
+        }
+        return ChatToolProposal(
+            tier: max(.t2, verdict.tier), stepLabel: AgentToolStep.openLinkApproved,
+            summary: "Open a link in your browser", literal: verdict.literal, risk: verdict.risk,
+            isTruncated: verdict.isTruncated, auditCode: "tool.open_url"
+        )
+    }
+
+    func execute(_ args: AgentToolArgs) async -> ChatToolOutcome {
+        guard let raw = args.text("url"), let verdict = AgentURLPolicy.classify(raw), verdict.tier <= .t2 else {
             return ChatToolOutcome(content: "Invalid url.", isError: true)
         }
         let opened = await system.open(verdict.url)
@@ -211,6 +222,7 @@ enum LocalIntentTools {
 /// `get_system_info`: date and time, battery, free disk space, frontmost app, now playing. T1.
 struct SystemInfoTool: AgentTool {
     let system: AgentSystemServing
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(
@@ -254,6 +266,7 @@ struct SystemInfoTool: AgentTool {
 /// be shared but never shows the text itself.
 struct ClipboardReadTool: AgentTool {
     let system: AgentSystemServing
+    var revealsData: Bool { true }
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(

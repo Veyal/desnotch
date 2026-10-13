@@ -225,11 +225,13 @@ final class AIRecordingToolHandler: ChatToolHandling, @unchecked Sendable {
         [ChatToolDefinition(name: "weather", description: "Weather", inputSchemaJSON: #"{"type":"object"}"#)]
     }
 
-    func propose(name: String, inputJSON: String) async -> ChatToolProposal {
+    func propose(name: String, inputJSON: String, context: ChatToolCallContext) async -> ChatToolProposal {
         ChatToolProposal(tier: .t0, stepLabel: name, summary: "Weather", auditCode: "tool.\(name)")
     }
 
-    func run(name: String, inputJSON: String, approvedTier: VoiceTier) async -> ChatToolOutcome {
+    func revealsData(name: String) -> Bool { false }
+
+    func run(name: String, inputJSON: String, approvedTier: VoiceTier, context: ChatToolCallContext) async -> ChatToolOutcome {
         record("\(name) \(inputJSON)")
         return ChatToolOutcome(content: "31C", isError: false)
     }

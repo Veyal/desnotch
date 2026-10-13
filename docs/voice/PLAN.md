@@ -142,11 +142,15 @@ invalid arguments never run. Path rules (`AgentToolPaths`): any path that names 
 hidden folders and `~/Library` (and in desnotch's scratch folder), T2 elsewhere; writes are T2 in that same scope and T3 elsewhere (dotfiles,
 launch agents, system folders). URL rules (`AgentURLPolicy`): http(s) only; this Mac, private/link-local/CGNAT/tailnet hosts and `.local` names
 are T3; a plain public URL is T1; a query, credentials or more than 200 characters make it T2 (those shapes can carry data out).
+**Data-read escalation:** once a tool that returns user data (`read_file`, `list_dir`, `search_files`, `clipboard_read`, `web_fetch`,
+`get_system_info`, `run_shell`, `run_applescript`, `run_shortcut`) has run in a turn, every later `open_url` and `web_fetch` in that turn is at
+least T2 (card with the full URL), decided statically before any DNS lookup (a lookup would itself leak the host name). Data in a URL's path
+or host name therefore never leaves without a card after a read; the mark resets with each new turn.
 
 | Tool | Default tier | Raised to |
 |---|---|---|
 | `open_app` (catalog name, exact bundle id, or exact installed app name) | T1 | T4 when the name hits a protected marker |
-| `open_url` | T1 | T2 query/credentials/long, T3 non-http(s) or local host |
+| `open_url` | T1 | T2 query/credentials/long or after a data read in the turn, T3 non-http(s) or local host |
 | `media_control`, `set_volume`, `focus_timer` (`SystemLocalExecutor` intents) | T0 (`ConfirmationPolicy`) | T2 volume above 70% |
 | `get_system_info` (time, battery, disk free, frontmost app, now playing) | T1 | |
 | `list_dir`, `read_file`, `search_files` (names only; bounded walk) | T1 | T2 outside the read scope, T4 protected |
