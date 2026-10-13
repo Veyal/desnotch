@@ -140,8 +140,9 @@ desnotch runs these tools itself (`Sources/DesnotchCore/Voice/Tools/`), so every
 invalid arguments never run. Path rules (`AgentToolPaths`): any path that names a protected marker (the scanner's shared list, now also
 `engagement`, `evidence`, `pentest`), before or after resolving symlinks, or desnotch's own voice folder, is T4; reads are T1 in home outside
 hidden folders and `~/Library` (and in desnotch's scratch folder), T2 elsewhere; writes are T2 in that same scope and T3 elsewhere (dotfiles,
-launch agents, system folders). URL rules (`AgentURLPolicy`): http(s) only; this Mac, private/link-local/CGNAT/tailnet hosts and `.local` names
-are T3; a plain public URL is T1; a query, credentials or more than 200 characters make it T2 (those shapes can carry data out).
+launch agents, system folders). URL rules (`AgentURLPolicy`): http(s) only; this Mac, private/link-local/CGNAT/tailnet hosts, `.local` names and
+non-canonical numeric spellings (`127.1`, `0x7f.0.0.1`, `0177.0.0.1`, a bare integer) are T3; `open_url` also resolves the host before the
+first data read of a turn (a name that resolves to a local address, such as `localtest.me`, is T3) and again right before opening; a plain public URL is T1; a query, credentials or more than 200 characters make it T2 (those shapes can carry data out).
 **Data-read escalation:** once a tool that returns user data (`read_file`, `list_dir`, `search_files`, `clipboard_read`, `web_fetch`,
 `get_system_info`, `run_shell`, `run_applescript`, `run_shortcut`) has run in a turn, every later `open_url` and `web_fetch` in that turn is at
 least T2 (card with the full URL), decided statically before any DNS lookup (a lookup would itself leak the host name). Data in a URL's path

@@ -14,6 +14,9 @@ enum AgentFetchResult: Equatable, Sendable {
 
 protocol AgentWebFetching: Sendable {
     func fetch(_ url: URL) async -> AgentFetchResult
+    /// True when every address the name resolves to is public (a failed lookup is false). Used
+    /// to classify `open_url`, which hands the URL to the browser and has no fetch of its own.
+    func isPublicHost(_ host: String) async -> Bool
 }
 
 /// `web_fetch`: GET a public http(s) page and return its text. Tier from `AgentURLPolicy`

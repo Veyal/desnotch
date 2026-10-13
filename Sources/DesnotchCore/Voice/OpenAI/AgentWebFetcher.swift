@@ -61,6 +61,11 @@ struct AgentWebFetcher: AgentWebFetching {
         }
     }
 
+    func isPublicHost(_ host: String) async -> Bool {
+        guard !AgentURLPolicy.isLocalHost(host) else { return false }
+        return await Self.resolvesOnlyToPublicAddresses(host)
+    }
+
     static func isTextual(_ contentType: String) -> Bool {
         if contentType.isEmpty { return true }
         return contentType.hasPrefix("text/") || contentType.contains("json") || contentType.contains("xml")

@@ -23,7 +23,7 @@ final class AgentToolbox: ChatToolHandling {
     ) -> AgentToolbox {
         AgentToolbox(tools: [
             OpenAppTool(system: system),
-            OpenURLTool(system: system),
+            OpenURLTool(system: system, network: fetcher),
             MediaControlTool(system: system),
             SetVolumeTool(system: system),
             FocusTimerTool(system: system),

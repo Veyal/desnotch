@@ -325,6 +325,42 @@ import XCTest
         }
     }
 
+    // MARK: Review fixes: local hosts in open_url (item 4)
+
+    func testNumericHostSpellingsAreLocal() {
+        for raw in ["http://127.1:8080/", "http://0x7f.0.0.1/", "http://0177.0.0.1/", "http://0x7f000001/", "http://10.1/"] {
+            XCTAssertEqual(AgentURLPolicy.classify(raw)?.tier, .t3, raw)
+        }
+        XCTAssertEqual(AgentURLPolicy.classify("http://93.184.216.34/")?.tier, .t1)
+        XCTAssertEqual(AgentURLPolicy.classify("https://cafe.be/")?.tier, .t1, "hex-looking names are still names")
+        XCTAssertFalse(AgentURLPolicy.isNonCanonicalIPv4("1e100.net"))
+    }
+
+    func testOpenURLResolvesTheHostBeforeClassifyingIt() async {
+        let fetcher = ToolsScriptedFetcher()
+        let box = AgentToolbox.standard(system: ToolsFakeSystem(), paths: paths, runner: ToolsScriptedRunner(), fetcher: fetcher)
+        let local = await box.propose(name: "open_url", inputJSON: #"{"url":"http://localtest.me/"}"#, context: ChatToolCallContext())
+        XCTAssertEqual(local.tier, .t3)
+        let probe = await box.propose(name: "open_url", inputJSON: #"{"url":"http://127.1:8080/"}"#, context: ChatToolCallContext())
+        XCTAssertEqual(probe.tier, .t3)
+        let plain = await box.propose(name: "open_url", inputJSON: #"{"url":"https://example.com/"}"#, context: ChatToolCallContext())
+        XCTAssertEqual(plain.tier, .t1)
+        XCTAssertEqual(fetcher.lookups, ["localtest.me", "example.com"])
+        let afterRead = await box.propose(name: "open_url", inputJSON: #"{"url":"https://evil.example/x"}"#,
+                                          context: ChatToolCallContext(afterDataRead: true))
+        XCTAssertEqual(afterRead.tier, .t2)
+        XCTAssertEqual(fetcher.lookups, ["localtest.me", "example.com"], "no lookup before the card after a data read")
+    }
+
+    func testOpenURLRefusesALocalHostEvenAfterApproval() async {
+        let system = ToolsFakeSystem()
+        let box = AgentToolbox.standard(system: system, paths: paths, runner: ToolsScriptedRunner(), fetcher: ToolsScriptedFetcher())
+        let outcome = await box.run(name: "open_url", inputJSON: #"{"url":"http://localtest.me/"}"#, approvedTier: .t2,
+                                    context: ChatToolCallContext(afterDataRead: true))
+        XCTAssertTrue(outcome.isError)
+        XCTAssertTrue(system.opened.isEmpty)
+    }
+
     // MARK: Output handling
 
     func testOutputIsCappedWithAMarker() {

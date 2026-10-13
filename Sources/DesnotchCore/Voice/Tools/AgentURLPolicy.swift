@@ -45,8 +45,23 @@ enum AgentURLPolicy {
         let localSuffixes = [".localhost", ".local", ".lan", ".internal", ".home.arpa", ".ts.net", ".intranet"]
         if localSuffixes.contains(where: { host.hasSuffix($0) }) { return true }
         if !host.contains(".") && !host.contains(":") { return true }
+        if isNonCanonicalIPv4(host) { return true }
         if let isPublic = isPublicAddress(host) { return !isPublic }
         return false
+    }
+
+    /// True for the numeric IPv4 spellings a resolver or browser accepts but that are not a plain
+    /// dotted quad: short forms (`127.1`), hex or octal parts (`0x7f.0.0.1`, `0177.0.0.1`), and a
+    /// single integer. They exist mostly to dodge address checks, so they count as local.
+    static func isNonCanonicalIPv4(_ host: String) -> Bool {
+        var parsed = in_addr()
+        guard inet_aton(host, &parsed) == 1 else { return false }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        let canonical = parts.count == 4 && parts.allSatisfy { part in
+            !part.isEmpty && part.count <= 3 && part.allSatisfy(\.isASCII) && part.allSatisfy(\.isNumber)
+                && (part == "0" || part.first != "0") && (Int(part) ?? 256) <= 255
+        }
+        return !canonical
     }
 
     /// Nil when `text` is not a literal IPv4/IPv6 address. Otherwise false for loopback,

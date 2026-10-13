@@ -72,19 +72,35 @@ final class ToolsScriptedFetcher: AgentWebFetching, @unchecked Sendable {
     private var recorded: [URL] = []
     private let reply: AgentFetchResult
 
-    init(reply: AgentFetchResult = .page(status: 200, contentType: "text/html", text: "page text")) {
+    private var looked: [String] = []
+    /// Names this fake resolves to a local address (like the public `localtest.me`).
+    private let localNames: Set<String>
+
+    init(reply: AgentFetchResult = .page(status: 200, contentType: "text/html", text: "page text"),
+         localNames: Set<String> = ["localtest.me"]) {
         self.reply = reply
+        self.localNames = localNames
     }
 
     var urls: [URL] { lock.lock(); defer { lock.unlock() }; return recorded }
+    var lookups: [String] { lock.lock(); defer { lock.unlock() }; return looked }
 
     func fetch(_ url: URL) async -> AgentFetchResult {
         record(url)
         return reply
     }
 
+    func isPublicHost(_ host: String) async -> Bool {
+        lookup(host)
+        return !AgentURLPolicy.isLocalHost(host) && !localNames.contains(host.lowercased())
+    }
+
     private func record(_ url: URL) {
         lock.lock(); recorded.append(url); lock.unlock()
+    }
+
+    private func lookup(_ host: String) {
+        lock.lock(); looked.append(host); lock.unlock()
     }
 }
 

@@ -46,9 +46,14 @@ struct OpenAppTool: AgentTool {
     }
 }
 
-/// `open_url`: an http(s) link in the default browser. Tier from `AgentURLPolicy`.
+/// `open_url`: an http(s) link in the default browser. Tier from `AgentURLPolicy`; before the
+/// first data read of a turn the host must also resolve only to public addresses (a name such as
+/// `localtest.me` that points at this Mac is T3), and it is checked again right before opening.
+/// After a data read the classification is static (`proposeAfterDataRead`), so the lookup never
+/// happens before the card.
 struct OpenURLTool: AgentEgressTool {
     let system: AgentSystemServing
+    let network: AgentWebFetching
 
     var definition: ChatToolDefinition {
         ChatToolDefinition(
@@ -62,9 +67,11 @@ struct OpenURLTool: AgentEgressTool {
         guard let raw = args.text("url"), let verdict = AgentURLPolicy.classify(raw) else {
             return AgentProposals.invalid("tool.open_url", label: AgentToolStep.openLink, "a valid http(s) url is required")
         }
+        var tier = verdict.tier
+        if tier <= .t2, !(await network.isPublicHost(verdict.url.host ?? "")) { tier = .t3 }
         return ChatToolProposal(
-            tier: verdict.tier,
-            stepLabel: verdict.tier == .t2 ? AgentToolStep.openLinkApproved : AgentToolStep.openLink,
+            tier: tier,
+            stepLabel: tier == .t2 ? AgentToolStep.openLinkApproved : AgentToolStep.openLink,
             summary: "Open a link in your browser",
             literal: verdict.literal,
             risk: verdict.risk,
@@ -87,6 +94,9 @@ struct OpenURLTool: AgentEgressTool {
     func execute(_ args: AgentToolArgs) async -> ChatToolOutcome {
         guard let raw = args.text("url"), let verdict = AgentURLPolicy.classify(raw), verdict.tier <= .t2 else {
             return ChatToolOutcome(content: "Invalid url.", isError: true)
+        }
+        guard await network.isPublicHost(verdict.url.host ?? "") else {
+            return ChatToolOutcome(content: "Refused: that address is on this Mac or the local network.", isError: true)
         }
         let opened = await system.open(verdict.url)
         return ChatToolOutcome(content: opened ? "Opened the link." : "Could not open the link.", isError: !opened)
