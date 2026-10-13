@@ -52,7 +52,10 @@ final class HermesProcessGuardTests: XCTestCase {
         let survivor = try XCTUnwrap(Int32(line.split(separator: " ").last.map(String.init) ?? ""))
         remember(survivor)
         let report = await item.hardStop(sendCancel: {})
-        XCTAssertEqual(report.survivors, ["perl"])
+        // `/usr/bin/perl` is a version shim on some macOS releases (macOS 14 execs `perl5.34`),
+        // and the report carries the kernel's process name, so match the family, not the suffix.
+        XCTAssertEqual(report.survivors.count, 1)
+        XCTAssertTrue(report.survivors.allSatisfy { $0.hasPrefix("perl") }, "\(report.survivors)")
         XCTAssertEqual(Darwin.kill(survivor, 0), 0)
         XCTAssertFalse(isDeadOrZombie(survivor))
     }
