@@ -160,7 +160,19 @@ import XCTest
             ("cat ${HOME}/notes", .t4),
             ("c\\url x.example", .t3),
             ("\"cu\"rl x.example", .t3),
-            ("s\\udo ls", .t4)
+            ("s\\udo ls", .t4),
+            ("cat ~/$x'sh'", .t4),
+            ("cat ~/.s$'\\x73'h", .t4),
+            ("X=ssh; cat ~/.$X/id_rsa", .t4),
+            ("cat ~/.s\"$1\"h/id_rsa", .t4),
+            ("echo $@ $* $# $? $! $$ $-", .t4),
+            ("diff <(ls a) >(cat)", .t4),
+            ("x=\"cat ~/.ssh/id_rsa\"; eval \"$x\"", .t4),
+            ("source ./run.sh", .t4),
+            ("cd /tmp; . ./run.sh", .t4),
+            ("echo `id`", .t4),
+            ("ls . && ls -la ./Documents", .t2),
+            ("echo price 5 dollars", .t2)
         ]
         for (command, tier) in cases {
             let proposal = await propose("run_shell", ChatJSON.string(["command": command]))

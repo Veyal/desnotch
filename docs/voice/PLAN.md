@@ -161,7 +161,7 @@ or host name therefore never leaves without a card after a read; the mark resets
 | `write_file` | T2; the card shows path, size and the WHOLE content, and Approve is disabled (`isTruncated`) when it does not fit in 240 characters / 6 lines | T3 outside the write scope, T4 protected or content with control, bidi or zero-width characters (anything but newline and tab) |
 | `run_shortcut` (`shortcuts run <name>`) | T2 | T4 protected name |
 | `run_applescript` (`/usr/bin/osascript` subprocess, script on stdin) | T2 | `CommandRiskScanner` tier (T3 egress, T4 flagged); T4 for `do shell script`, `run script`, `load script`, `character id`, `ASCII character` or any `&` (`appleScriptReachesShell`: shell goes only through `run_shell`) |
-| `run_shell` (`/bin/zsh -f -c`) | T2 (no read-only downgrade) | `CommandRiskScanner` tier (T3 egress, T4 flagged or protected cwd); T4 for glob classes `[...]`, braces `{...}`, `$'` and `${` (`shellEvasion`) |
+| `run_shell` (`/bin/zsh -f -c`) | T2 (no read-only downgrade) | `CommandRiskScanner` tier (T3 egress, T4 flagged or protected cwd); T4 when the command can assemble a word or code at run time (`shellEvasion`): glob classes `[...]`, braces `{...}`, ANSI-C `$'`, any parameter/variable expansion (`$` followed by a letter, `_`, digit, `@`, `*`, `#`, `?`, `!`, `$`, `-`, or `{`), command substitution (`$(`, backticks), process substitution (`<(`, `>(`), and the `eval`, `source` and `.` builtins |
 
 `CommandRiskScanner.scan` (shared with the Hermes lane) now runs every pattern over the quote/backslash-stripped text as well, so `c\url` or
 `s'u'do` are caught; this only adds flags, never removes one. `shellEvasion` and `appleScriptReachesShell` are scoped to the in-process tools and

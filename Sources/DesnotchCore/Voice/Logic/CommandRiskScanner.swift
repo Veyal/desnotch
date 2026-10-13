@@ -24,6 +24,9 @@ enum CommandRiskScanner {
         static let braceExpansion = #"\{[^}]*\}"#
         static let ansiCQuote = #"\$'"#
         static let parameterExpansion = #"\$\{"#
+        static let variableExpansion = #"\$[a-z_0-9@*#?!$-]"#
+        static let processSubstitution = #"[<>]\("#
+        static let sourceBuiltin = #"(?:^|[;&|(\n])\s*(?:source|\.)\s"#
         static let appleScriptShell = #"\b(do\s+shell\s+script|run\s+script|load\s+script|character\s+id|ascii\s+character)\b"#
     }
 
@@ -119,13 +122,19 @@ enum CommandRiskScanner {
     }
 
     /// Stricter check for desnotch's own `run_shell` tool only (the Hermes lane keeps `scan`
-    /// unchanged): shell syntax that builds a word at run time (glob classes `[...]`, brace
-    /// expansion `{...}`, ANSI-C quoting `$'...'`, parameter expansion `${...}`) can spell a
-    /// protected path or a network tool the scanner never sees, so such a command is refused (T4).
+    /// unchanged): shell syntax that builds a word or runs code assembled at run time can spell a
+    /// protected path or a network tool the scanner never sees, so such a command is refused (T4):
+    /// glob classes `[...]`, brace expansion `{...}`, ANSI-C quoting `$'...'`, any parameter or
+    /// variable expansion (`${...}`, `$x`, `$1`, `$@`, `$$`...), command substitution (`$(`,
+    /// backticks), process substitution (`<(`, `>(`), and the `eval`, `source` and `.` builtins.
     static func shellEvasion(_ command: String) -> Bool {
         let lowered = command.lowercased()
-        return matches(Pat.globClass, lowered) || matches(Pat.braceExpansion, lowered)
-            || matches(Pat.ansiCQuote, lowered) || matches(Pat.parameterExpansion, lowered)
+        let patterns = [
+            Pat.globClass, Pat.braceExpansion, Pat.ansiCQuote, Pat.parameterExpansion, Pat.variableExpansion,
+            Pat.processSubstitution, Pat.sourceBuiltin, Pat.evalUse
+        ]
+        return lowered.contains("$(") || lowered.contains("`")
+            || patterns.contains { matches($0, lowered) || matches($0, fold(lowered)) }
     }
 
     /// Stricter check for desnotch's own `run_applescript` tool only: an AppleScript that can reach

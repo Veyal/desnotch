@@ -145,8 +145,12 @@ private func finalText(_ text: String) -> ChatResult {
     }
 
     func testStopKillsARunningShellProcessGroup() async throws {
+        // A unique duration marks this test's two sleeps (one in the background, one in the
+        // foreground of the shell), found with pgrep; no shell expansion is needed (run_shell
+        // refuses `$`).
+        let marker = "sleep 31.\(Int.random(in: 100_000...999_999))"
         let provider = AIScriptedChatProvider([
-            toolCall("s1", "run_shell", #"{"command":"echo $$ > leader.pid; sleep 30 & echo $! > child.pid; wait"}"#),
+            toolCall("s1", "run_shell", ChatJSON.string(["command": "\(marker) & \(marker)"])),
             finalText("unreachable")
         ])
         let chat = backend(provider, runner: LiveAgentProcessRunner())
@@ -161,30 +165,35 @@ private func finalText(_ text: String) -> ChatResult {
             }
             return events
         }
-        let leaderFile = paths.scratch.appendingPathComponent("leader.pid")
-        let childFile = paths.scratch.appendingPathComponent("child.pid")
         let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline, Self.pid(childFile) == nil || Self.pid(leaderFile) == nil {
+        while Date() < deadline, Self.pids(matching: marker).count < 2 {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        let leader = try XCTUnwrap(Self.pid(leaderFile))
-        let child = try XCTUnwrap(Self.pid(childFile))
-        XCTAssertEqual(Darwin.kill(child, 0), 0, "the tool is running")
+        let running = Self.pids(matching: marker)
+        XCTAssertEqual(running.count, 2, "the background and the foreground sleep are running")
         let report = await chat.emergencyStop()
         XCTAssertEqual(report, EmergencyStopReport())
         let events = await collector.value
         XCTAssertEqual(events.last, .failed(.agentFailed("cancelled")))
         let gone = Date().addingTimeInterval(3)
-        while Date() < gone, Darwin.kill(child, 0) == 0 || Darwin.kill(leader, 0) == 0 {
+        while Date() < gone, running.contains(where: { Darwin.kill($0, 0) == 0 }) {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        XCTAssertNotEqual(Darwin.kill(child, 0), 0, "the background child died with the group")
-        XCTAssertNotEqual(Darwin.kill(leader, 0), 0, "the shell died")
+        for pid in running {
+            XCTAssertNotEqual(Darwin.kill(pid, 0), 0, "every process of the group died, the background one too")
+        }
         XCTAssertEqual(provider.requests.count, 1, "nothing was sent after Stop")
     }
 
-    private static func pid(_ file: URL) -> pid_t? {
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
-        return pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    private static func pids(matching marker: String) -> [pid_t] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-f", marker]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        do { try process.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).compactMap { pid_t($0) }
     }
 }
