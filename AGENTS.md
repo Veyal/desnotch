@@ -495,7 +495,12 @@ reported with `AgentToolStep` labels, which `ToolTierTable` resolves exactly (R8
 match them). Shell/AppleScript tiers come from `CommandRiskScanner` (never below T2; do not add a second
 pattern list), paths from `AgentToolPaths` (protected markers before and after symlink resolution are T4;
 reads quiet only in home outside dotfolders and `~/Library`; writes elsewhere are T3), URLs from
-`AgentURLPolicy` (local/private/tailnet hosts T3; query/credentials/long URLs T2). Processes go through
+`AgentURLPolicy` (local/private/tailnet hosts T3; query/credentials/long URLs T2). **Shell enforcement is the
+sandbox:** every `run_shell` runs under `/usr/bin/sandbox-exec` with the `AgentShellSandbox` profile (no network,
+no Apple Events, no terminal/AppleScript exec, no access to protected locations, writes only to scratch, temp and
+home's ordinary folders); the static shell checks are advisory layer 1, and no sandbox means no run (T3). Use kernel
+paths (`realpath`) in the profile and never escape a path into it: refuse unsafe characters. AppleScript and
+Shortcuts are NOT sandboxed (they run in other processes): they stay T2 with the exact text, terminal-driving T4. Processes go through
 `SubprocessRunner` (own group, sanitized env, scratch cwd, 30 s, 16 KB) and die with the turn task on Stop.
 `web_fetch` is the one extra network path and lives in `Voice/OpenAI/AgentWebFetcher.swift` (URLSession
 stays in that folder). Tool output is capped and fenced as untrusted; the audit gets one metadata-only

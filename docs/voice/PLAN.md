@@ -163,11 +163,42 @@ or host name therefore never leaves without a card after a read; the mark resets
 | `write_file` | T2; the card shows path, size and the WHOLE content, and Approve is disabled (`isTruncated`) when it does not fit in 240 characters / 6 lines | T3 outside the write scope, T4 protected or content with control, bidi or zero-width characters (anything but newline and tab), or any Unicode Default_Ignorable_Code_Point or format (Cf) character (tag characters, Hangul fillers, the combining grapheme joiner, variation selectors; the scanner flags these everywhere) |
 | `run_shortcut` (`shortcuts run <name>`) | T2 | T4 protected name |
 | `run_applescript` (`/usr/bin/osascript` subprocess, script on stdin) | T2 | `CommandRiskScanner` tier (T3 egress, T4 flagged); T4 for `do shell script`, `run script`, `load script`, `character id`, `ASCII character`, any `&`, Terminal's `do script`, iTerm's `write text`, `keystroke`/`key code`, or any `tell application` naming Terminal, iTerm, Warp, Ghostty, kitty, Alacritty, WezTerm, Hyper or Tabby (`appleScriptReachesShell`: shell goes only through `run_shell`) |
-| `run_shell` (`/bin/zsh -f -c`) | T2 (no read-only downgrade) | `CommandRiskScanner` tier (T3 egress, T4 flagged or protected cwd); T4 when the command can assemble a word or code at run time (`shellEvasion`): glob classes `[...]`, braces `{...}`, ANSI-C `$'`, any parameter/variable expansion (`$` followed by a letter, `_`, digit, `@`, `*`, `#`, `?`, `!`, `$`, `-`, or `{`), command substitution (`$(`, backticks), process substitution (`<(`, `>(`), and the `eval`, `source` and `.` builtins; T4 when a script interpreter gets inline code (`inlineInterpreter`: python*, perl*, ruby, node, deno, bun, php, swift, lua, tclsh, pwsh and sh/bash/zsh/dash/ksh/fish with `-e`/`-c`/`-E`/`-r`/`-p`/`--eval`, combined flags such as `-lc`, code on stdin, a `<` redirect or a heredoc); the AppleScript runner and awk are T4 in any form. Running a script file stays T2 |
+| `run_shell` (`/bin/zsh -f -c` inside the `AgentShellSandbox` profile; T3 when the sandbox or its profile is unavailable) | T2 (no read-only downgrade) | layer 1 (advisory): `CommandRiskScanner` tier (T3 egress, T4 flagged or protected cwd); T4 when the command can assemble a word or code at run time (`shellEvasion`): glob classes `[...]`, braces `{...}`, ANSI-C `$'`, any parameter/variable expansion (`$` followed by a letter, `_`, digit, `@`, `*`, `#`, `?`, `!`, `$`, `-`, or `{`), command substitution (`$(`, backticks), process substitution (`<(`, `>(`), and the `eval`, `source` and `.` builtins; T4 when a script interpreter gets inline code (`inlineInterpreter`: python*, perl*, ruby, node, deno, bun, php, swift, lua, tclsh, pwsh and sh/bash/zsh/dash/ksh/fish with `-e`/`-c`/`-E`/`-r`/`-p`/`--eval`, combined flags such as `-lc`, code on stdin, a `<` redirect or a heredoc); the AppleScript runner, awk, sqlite3, jsc, dc, editors (vim/vi/nvim/view/ex/ed/emacs), expect, gdb and lldb are T4 in any form; flags with attached code (`-e1`, `-c'...'`, `-Mstrict -e`) count as inline; printf/echo/print with `\x`, `\0`-`\7` or `\u` escapes, `git -c`/`--config-env`, `open -a <terminal>` and `.command`/`.tool`/`.terminal` targets are T4. Running a script file stays T2. Layer 2 (enforcement) is the sandbox below |
 
 `CommandRiskScanner.scan` (shared with the Hermes lane) now runs every pattern over the quote/backslash-stripped text as well, stripping
 repeatedly until stable (bounded), so `c\url`, `cu\\rl` or `s'u'do` are caught; this only adds flags, never removes one. `shellEvasion` and `appleScriptReachesShell` are scoped to the in-process tools and
 do not change the Hermes lane.
+
+**Shell enforcement is the sandbox, not the classification.** Static analysis cannot prove that a shell command has no path to a T4
+action (every new interpreter or escape is another variant), so the classification above is advisory layer 1 and every `run_shell` runs
+under `/usr/bin/sandbox-exec -p <profile>` (`AgentShellSandbox`, generated per run, last matching rule wins). The command starts only after the
+same profile has loaded once for `/usr/bin/true`; if `sandbox-exec` is missing or a path cannot be put in the profile safely (only
+`[A-Za-z0-9/._-@+~ ,]` is accepted, never escaped), the call is T3 and nothing runs. Abridged profile:
+
+```
+(version 1)
+(allow default)
+(deny network*)
+(deny appleevent-send)
+(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.coreservices.appleevents"))
+(deny process-exec (literal "/usr/bin/osascript") (literal "/usr/bin/osacompile") (literal "/usr/bin/open") (literal "/usr/bin/shortcuts")
+  (literal "/usr/bin/automator") (subpath "/System/Applications/Utilities/Terminal.app") (subpath "/Applications/iTerm.app") ...)
+(deny file-write*)
+(allow file-write* (subpath "/private/tmp") (subpath "<per-user temp>") (regex #"^/dev/(null|zero|tty.*|fd/.*)$"))
+(deny file-write* (subpath "<home>"))
+(allow file-write* (subpath "<home>"))
+(deny file-write* (subpath "<home>/Library") (regex #"^<home>/(.*/)?\.[^/]*"))
+(allow file-write* (subpath "<scratch>"))
+(deny file-read* file-write* (subpath "<home>/.ssh") (subpath "<home>/.hermes") (subpath "<home>/.gnupg") (subpath "<home>/.aws")
+  (subpath "<home>/.config/gh") ... (subpath "<home>/Library/Keychains") (subpath "<voice audit folder>")
+  (regex #"^<home>/.*[eE][nN][gG][aA][gG][eE][mM][eE][nN][tT]") ... one per protected marker ...
+  (subpath "/private/etc/sudoers") (subpath "/Library/Keychains"))
+```
+
+Paths in the profile are kernel paths (`realpath`, so `/private/var/...`, not `/var/...`). Residual risk, stated plainly: `run_applescript`
+and `run_shortcut` are NOT sandboxed (an Apple Event is executed by the target app, a Shortcut by the Shortcuts service); they stay T2 with
+the exact text on the card, and AppleScript that drives a terminal or reaches a shell is T4. The sandbox allows reading ordinary files
+outside the protected locations (the same scope the file tools allow), so an approved command can still show the model such files.
 
 Process tools run through `SubprocessRunner`: own process group, sanitized environment, no TTY, stdin closed (AppleScript gets its script on
 stdin, then EOF), the scratch folder `~/Library/Application Support/desnotch/agent-scratch` as working directory, a 30 s timeout and a 16 KB
@@ -985,7 +1016,7 @@ These are not numbered rules, so section numbers and cross-references elsewhere 
 2. The pill shows state words plus bounded, `privacyRedacted` transcript/reply/command text only while a session is active; nothing is persisted and everything clears when the session returns to idle.
 3. The audit log (`~/Library/Application Support/desnotch/voice/voice-audit.jsonl`, mode 0600, hash-chained, size-rotated) stores metadata only: timestamp, kind, lane, tier, decision/outcome codes, a SHA-256 of the transcript, counters. No audio, no utterance text, no command text.
 4. Utterance, reply and command text is never announced to VoiceOver, never put in the status menu (local approvals show a desnotch-authored summary), and never logged.
-5. Permissions: Microphone and Speech Recognition only (cloud speech-to-text needs only the Microphone), requested only after the user enables voice and presses Allow. No Accessibility, Screen Recording or Full Disk Access for this feature. **Amendment (machine control):** with "Let the agent control this Mac" on, the first approved `run_applescript` that targets an app makes macOS show its Automation prompt for desnotch (`NSAppleEventsUsageDescription`, hardened-runtime entitlement `com.apple.security.automation.apple-events`); nothing else asks for a new permission, and Accessibility/Screen Recording stay out until a computer-use v2.
+5. Permissions: Microphone and Speech Recognition only (cloud speech-to-text needs only the Microphone), requested only after the user enables voice and presses Allow. No Accessibility, Screen Recording or Full Disk Access for this feature. **Amendment (machine control):** with "Let the agent control this Mac" on, the first approved `run_applescript` that targets an app makes macOS show its Automation prompt for desnotch (`NSAppleEventsUsageDescription`, hardened-runtime entitlement `com.apple.security.automation.apple-events`); nothing else asks for a new permission, and Accessibility/Screen Recording stay out until a computer-use v2. Approved shell commands run inside a `sandbox-exec` profile with no network, no Apple Events and no access to protected locations (section 6); that boundary, not the command classification, is what keeps T4 without a path.
 6. No network listener and no token. The network paths are the optional Hermes lane (a child process spoken to over stdio) and, when opted in, HTTPS requests from `Voice/OpenAI/` (`VoiceAIHTTP`, an ephemeral session) to the user's configured provider base URL and nowhere else. **Amendment (machine control):** with tools on, `web_fetch` (`Voice/OpenAI/AgentWebFetcher.swift`, same ephemeral no-redirect session) GETs public http(s) pages the model names, after the tier gate and a DNS check that refuses local, private, link-local and tailnet addresses; a `run_shell` command that reaches the network is T3 and never runs. The fixed recognizer hint list is never sent.
 7. Approvals are visual only, bound to a random nonce, answered `once` or `deny` only. No spoken confirmation. T3 is denied in the MVP; T4 never has a voice path.
 8. Voice is OFF by default and inert in smoke-test mode. The cloud lane is a second opt-in that is re-checked (preflight) on every spawn and every session, and it additionally requires the global Stop chord to be registered (`hotkeyStatus == .active`).
