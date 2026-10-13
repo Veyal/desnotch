@@ -182,7 +182,7 @@ struct SettingsView: View {
                 SettingsNote(Self.hotKeyExplanation(binding: .default, unavailable: false))
             }
             Toggle("Privacy mode", isOn: $settings.privacyModeEnabled)
-            SettingsNote("Privacy mode hides song titles, agent task titles, event and reminder names, clipboard previews, and tray filenames — for screen sharing.")
+            SettingsNote(VoiceSettingsWords.privacyModeNote)
             Toggle("Notify when an agent needs you", isOn: $settings.notifyAgentNeedsYou)
             Toggle("Notify when a process looks stuck", isOn: $settings.notifyStuckProcess)
 

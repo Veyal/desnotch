@@ -56,7 +56,7 @@ final class VoiceCoordinator {
     private var isDispatching = false
 
     private var timerHandles: [TimerKey: VoiceTimerHandle] = [:]
-    private var recognitionTasks: [Task<Void, Never>] = []
+    private var recognitionTasks: [RecognitionTaskBox] = []
     private var auditChain: Task<Void, Never>?
     private var stopChain: Task<Void, Never>?
     private var laneCheckGeneration = 0
@@ -125,8 +125,8 @@ final class VoiceCoordinator {
         if stopped { return }
         stopped = true
         cancellables.removeAll()
-        for task in recognitionTasks {
-            task.cancel()
+        for box in recognitionTasks {
+            box.task?.cancel()
         }
         recognitionTasks.removeAll()
         cancelAllTimers()
@@ -198,11 +198,15 @@ final class VoiceCoordinator {
     // MARK: - Dispatch
 
     private func step(_ event: VoiceEvent) {
+        let reapIdle = shouldReapOnIdleStop(event)
         let transition = VoiceReducer.reduce(context, event, env: makeEnvironment(for: event))
         context = transition.context
-        for effect in transition.effects {
-            perform(effect)
-        }
+        // Write this transition's audit records before any action they authorize.
+        let audits = transition.effects.filter { if case .audit = $0 { return true }; return false }
+        let rest = transition.effects.filter { if case .audit = $0 { return false }; return true }
+        for effect in audits { perform(effect) }
+        for effect in rest { perform(effect) }
+        if reapIdle { reapIdleAgent() }
         if !keepsTypedFlow {
             typedFlow = false
             typedStartPending = false
@@ -288,7 +292,9 @@ final class VoiceCoordinator {
             localeIdentifier: settings.voiceLocale,
             contextualStrings: VoiceLexicon.contextualStrings
         )
+        let box = RecognitionTaskBox()
         let task = Task { @MainActor [weak self] in
+            defer { self?.recognitionTasks.removeAll { $0 === box } }
             var sawTerminal = false
             for await event in stream {
                 guard let self, !self.stopped else { return }
@@ -299,7 +305,8 @@ final class VoiceCoordinator {
             guard let self, !self.stopped else { return }
             self.finishSpeech(generation: generation, sawTerminal: sawTerminal)
         }
-        recognitionTasks.append(task)
+        box.task = task
+        recognitionTasks.append(box)
     }
 
     /// `captureGeneration` is the stale check for the newest main-flow capture. An interrupt
@@ -419,7 +426,8 @@ final class VoiceCoordinator {
     }
 
     private func execute(_ intent: LocalIntent, generation: Int) {
-        if ConfirmationPolicy.tier(of: intent) >= .t2 && !auditWritable {
+        let needsAudit = ConfirmationPolicy.tier(of: intent) >= .t2
+        if needsAudit && !auditWritable {
             dispatch(.localExecutionFinished(
                 .failure(.executionFailed("audit_unwritable")),
                 generation: generation
@@ -427,9 +435,19 @@ final class VoiceCoordinator {
             return
         }
         let executor = self.executor
+        let pendingAudit = auditChain
         Task { @MainActor [weak self] in
-            let result = await executor.execute(intent)
+            await pendingAudit?.value
             guard let self, !self.stopped else { return }
+            if needsAudit && !self.auditWritable {
+                self.dispatch(.localExecutionFinished(
+                    .failure(.executionFailed("audit_unwritable")),
+                    generation: generation
+                ))
+                return
+            }
+            let result = await executor.execute(intent)
+            guard !self.stopped else { return }
             self.dispatch(.localExecutionFinished(result, generation: generation))
         }
     }
@@ -439,12 +457,28 @@ final class VoiceCoordinator {
             dispatch(.agent(.failed(.executionFailed("audit_unwritable")), generation: generation))
             return
         }
-        let stream = backend.submit(text)
+        if !laneEnabled {
+            dispatch(.agent(.failed(.agentFailed("lane_off")), generation: generation))
+            return
+        }
+        let backend = self.backend
         let clock = self.clock
+        let pendingAudit = auditChain
         Task { @MainActor [weak self] in
+            await pendingAudit?.value
+            guard let self, !self.stopped else { return }
+            if !self.auditWritable {
+                self.dispatch(.agent(.failed(.executionFailed("audit_unwritable")), generation: generation))
+                return
+            }
+            if !self.laneEnabled {
+                self.dispatch(.agent(.failed(.agentFailed("lane_off")), generation: generation))
+                return
+            }
+            let stream = backend.submit(text)
             var sawTerminal = false
             for await event in stream {
-                guard let self, !self.stopped else { return }
+                guard !self.stopped else { return }
                 if case .status("started") = event {
                     self.dailyTurns.increment(now: clock.now())
                 }
@@ -461,15 +495,24 @@ final class VoiceCoordinator {
                 if case .failed = event { sawTerminal = true }
                 self.dispatch(.agent(event, generation: generation))
             }
-            guard let self, !self.stopped, !sawTerminal else { return }
+            guard !self.stopped, !sawTerminal else { return }
             self.dispatch(.agent(.failed(.agentFailed("stream_ended")), generation: generation))
         }
     }
 
     private func respondToApproval(nonce: String, allow: Bool) {
-        let effectiveAllow = allow && auditWritable
         let backend = self.backend
-        Task { @MainActor in
+        let pendingAudit = auditChain
+        if !allow || !auditWritable {
+            Task { @MainActor in
+                await backend.respond(nonce: nonce, allow: false)
+            }
+            return
+        }
+        Task { @MainActor [weak self] in
+            await pendingAudit?.value
+            let writable = self?.auditWritable ?? false
+            let effectiveAllow = allow && writable && self?.stopped != true
             await backend.respond(nonce: nonce, allow: effectiveAllow)
         }
     }
@@ -591,11 +634,32 @@ final class VoiceCoordinator {
             }
         } else {
             laneEnabled = false
+            laneCheckGeneration += 1
+            laneCheckTask?.cancel()
+            laneCheckTask = nil
             model.setHermesLaneStatus(.off)
-            if context.lane == .hermes && context.state.isAgentBusy {
+            let cloudSession = context.lane == .hermes
+                && (context.state.isAgentBusy || context.state == .review)
+            if cloudSession {
                 dispatch(.stopAllRequested)
             }
             enqueueShutdown()
+        }
+    }
+
+    /// R03a leaves an idle Stop as an audit only. A Hermes child that outlived a soft
+    /// cancel is still this process's responsibility, so Stop reaps it.
+    private func shouldReapOnIdleStop(_ event: VoiceEvent) -> Bool {
+        guard case .stopAllRequested = event else { return false }
+        return context.state == .idle && context.interrupt == nil
+    }
+
+    private func reapIdleAgent() {
+        let backend = self.backend
+        let previous = stopChain
+        stopChain = Task { @MainActor in
+            await previous?.value
+            _ = await backend.emergencyStop()
         }
     }
 
@@ -760,4 +824,10 @@ final class VoiceCoordinator {
             await backend.shutdown()
         }
     }
+}
+
+/// One capture task. The box identity is what the task removes, so a finished capture
+/// does not stay in `recognitionTasks` until `stop()`.
+private final class RecognitionTaskBox {
+    var task: Task<Void, Never>?
 }

@@ -34,7 +34,7 @@ final class VoiceContractSmokeTests: XCTestCase {
             VoiceState.allCases.filter(\.isAgentBusy).map(\.rawValue).sorted(),
             ["acting", "awaitingApproval", "thinking"]
         )
-        XCTAssertEqual(VoiceTimerKind.allCases.count, 7)
+        XCTAssertEqual(VoiceTimerKind.allCases.count, 8)
     }
 
     func testLocalIntentKindsAndSummaries() {

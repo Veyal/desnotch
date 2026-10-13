@@ -97,15 +97,45 @@ struct VoiceLiteralBlock: View {
 
 @MainActor
 struct VoiceApproveButton: View {
+    static let disabledOpacity: Double = 0.45
+
     let spec: VoiceButtonSpec
     let presentedNonce: String
+    var note: String? = nil
     let actions: VoiceSectionActions
     let motion: NotchAnimation.Motion
     let increasedContrast: Bool
 
+    init(
+        spec: VoiceButtonSpec,
+        presentedNonce: String,
+        note: String? = nil,
+        actions: VoiceSectionActions,
+        motion: NotchAnimation.Motion,
+        increasedContrast: Bool
+    ) {
+        self.spec = spec
+        self.presentedNonce = presentedNonce
+        self.note = note
+        self.actions = actions
+        self.motion = motion
+        self.increasedContrast = increasedContrast
+    }
+
     @GestureState private var isPressing = false
     @State private var progress: CGFloat = 0
     @Environment(\.isFocused) private var isFocused
+
+    static func disabledAccessibilityLabel(spec: VoiceButtonSpec, note: String?) -> String {
+        if let note, !note.isEmpty {
+            return "\(spec.title), \(note)"
+        }
+        return "\(spec.title), cannot be used"
+    }
+
+    var disabledAccessibilityLabel: String {
+        Self.disabledAccessibilityLabel(spec: spec, note: note)
+    }
 
     /// Re-checks the card that is on screen. A gesture is not a button, so a disabled
     /// spec or a nonce from a previous card must not be able to approve.
@@ -136,11 +166,12 @@ struct VoiceApproveButton: View {
                     }
                 }
                 .accessibilityLabel("Approve, hold to confirm")
-                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("Pointer hold required. VoiceOver cannot approve.")
         } else {
             labeled
+                .opacity(Self.disabledOpacity)
                 .accessibilityAddTraits(.isButton)
-                .accessibilityLabel(spec.title)
+                .accessibilityLabel(disabledAccessibilityLabel)
         }
     }
 
@@ -155,23 +186,24 @@ struct VoiceApproveButton: View {
     }
 
     private var content: some View {
-        Text(spec.title)
-            .font(PillTextStyle.body.font)
-            .lineLimit(1)
-            .frame(minHeight: 24)
-            .padding(.horizontal, PillSpace.s)
-            .background(
-                Circle()
-                    .trim(from: 0, to: ringTrim)
-                    .stroke(VoiceSectionChrome.color(for: .amber), lineWidth: 1.5)
-                    .frame(width: 24, height: 24)
-                    .opacity(ringOpacity)
-            )
-            .pillFocusRing(
-                RoundedRectangle(cornerRadius: PillRadius.control, style: .continuous),
-                isFocused: isFocused,
-                increasedContrast: increasedContrast
-            )
+        HStack(spacing: PillSpace.xs) {
+            Circle()
+                .trim(from: 0, to: ringTrim)
+                .stroke(VoiceSectionChrome.color(for: .amber), lineWidth: 1.5)
+                .frame(width: 24, height: 24)
+                .opacity(ringOpacity)
+            Text(spec.title)
+                .font(PillTextStyle.body.font)
+                .lineLimit(1)
+        }
+        .frame(minHeight: 24)
+        .padding(.horizontal, PillSpace.s)
+        .contentShape(Rectangle())
+        .pillFocusRing(
+            RoundedRectangle(cornerRadius: PillRadius.control, style: .continuous),
+            isFocused: isFocused,
+            increasedContrast: increasedContrast
+        )
     }
 
     private var ringTrim: CGFloat {
@@ -254,7 +286,6 @@ struct VoiceSectionView: View {
                 .font(PillTextStyle.bodyStrong.font)
                 .lineLimit(presentation.titleLineLimit)
                 .truncationMode(.tail)
-                .layoutPriority(1)
             Spacer(minLength: 0)
             if presentation.showsCloudBadge {
                 HStack(spacing: 3) {
@@ -263,7 +294,10 @@ struct VoiceSectionView: View {
                         .foregroundStyle(PillPalette.mist.color)
                     Text("Hermes")
                         .font(PillTextStyle.caption.font)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
+                .layoutPriority(1)
                 .accessibilityHidden(true)
             }
         }
@@ -334,9 +368,19 @@ struct VoiceSectionView: View {
             PillChip(text: card.tierLabel, tint: tierTint, reduceTransparency: reduceTransparency)
                 .lineLimit(1)
             if compact {
-                if totalRisks > 0 {
+                let showsDestructive = card.riskWords.contains("destructive")
+                if showsDestructive {
                     PillChip(
-                        text: totalRisks == 1 ? "1 risk" : "\(totalRisks) risks",
+                        text: "destructive",
+                        tint: PillPalette.amber,
+                        reduceTransparency: reduceTransparency
+                    )
+                    .lineLimit(1)
+                }
+                let hidden = totalRisks - (showsDestructive ? 1 : 0)
+                if hidden > 0 {
+                    PillChip(
+                        text: hidden == 1 ? "1 risk" : "\(hidden) risks",
                         tint: PillPalette.amber,
                         reduceTransparency: reduceTransparency
                     )
@@ -376,6 +420,7 @@ struct VoiceSectionView: View {
             VoiceApproveButton(
                 spec: spec,
                 presentedNonce: spec.nonce ?? "",
+                note: presentation.card?.note,
                 actions: actions,
                 motion: motion,
                 increasedContrast: contrast == .increased
@@ -391,6 +436,7 @@ struct VoiceSectionView: View {
                 Image(systemName: (spec.glyph ?? .stop).rawValue)
                     .font(.system(size: 12, weight: .semibold))
                     .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(PillButtonStyle(role: .icon))
             .disabled(!spec.isEnabled)
@@ -413,6 +459,7 @@ struct VoiceSectionView: View {
                     .lineLimit(1)
                     .frame(minHeight: 24)
                     .padding(.horizontal, PillSpace.xs)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(PillButtonStyle(role: .row))
             .disabled(!spec.isEnabled)

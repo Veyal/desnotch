@@ -126,21 +126,21 @@ final class HermesAgentBackend: AgentBackend, @unchecked Sendable {
     }
 
     func submit(_ utterance: String) -> AsyncStream<AgentEvent> {
-        let mine = epoch.value
         let pair = AsyncStream<AgentEvent>.makeStream()
         if Self.isSlash(utterance) {
             pair.continuation.yield(.failed(.agentFailed("slash_prefix")))
             pair.continuation.finish()
             return pair.stream
         }
-        if promptIsInFlight() {
+        guard let turn = claimTurn() else {
             pair.continuation.yield(.failed(.agentFailed("busy")))
             pair.continuation.finish()
             return pair.stream
         }
+        let mine = epoch.value
         let token = storeUser(pair.continuation)
         Task { [weak self] in
-            await self?.run(utterance, epoch: mine, user: token)
+            await self?.run(utterance, epoch: mine, user: token, turn: turn)
         }
         return pair.stream
     }
@@ -186,8 +186,7 @@ final class HermesAgentBackend: AgentBackend, @unchecked Sendable {
         finishCurrentUser(.failed(.agentFailed("stop_cancelled")))
     }
 
-    private func run(_ utterance: String, epoch mine: Int, user token: Int) async {
-        let turn = beginTurn()
+    private func run(_ utterance: String, epoch mine: Int, user token: Int, turn: Int) async {
         defer { endTurn(turn) }
         if consumeKill() {
             processGuard.terminateNow()
@@ -409,8 +408,14 @@ final class HermesAgentBackend: AgentBackend, @unchecked Sendable {
         clearClient()
     }
 
-    private func beginTurn() -> Int {
+    /// Claims the turn before the run task exists, so a cancel during the handshake
+    /// still looks busy and a second submit cannot share the transport.
+    private func claimTurn() -> Int? {
         lock.lock()
+        if promptInFlight || turnOpen {
+            lock.unlock()
+            return nil
+        }
         turnToken += 1
         let token = turnToken
         turnOpen = true

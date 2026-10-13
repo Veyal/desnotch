@@ -228,7 +228,7 @@ final class HermesProcessGuardTests: XCTestCase {
         _ = try second.ensureRunning()
         second.terminateNow()
         XCTAssertEqual(signals.values.filter { $0.0 == pid && $0.1 == SIGTERM }.count, 1)
-        XCTAssertFalse(signals.values.contains { $0.1 == SIGKILL })
+        XCTAssertEqual(signals.values.filter { $0.0 == pid && $0.1 == SIGKILL }.count, 1)
     }
 
     func testProcessTransportSendAfterTheChildExitedThrowsAndTheProcessSurvives() async {

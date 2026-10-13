@@ -132,3 +132,5 @@ scripts/voice-harness/import-wp.sh	BASE
 scripts/voice-harness/check-rule-tests.sh	BASE
 scripts/voice-harness/verify-audit.py	BASE
 scripts/voice-harness/check-test-names.sh	BASE
+Sources/DesnotchCore/MediaRemote/MediaRemoteBridge.swift	BASE
+Tests/DesnotchCoreTests/MediaRemotePayloadTests.swift	BASE

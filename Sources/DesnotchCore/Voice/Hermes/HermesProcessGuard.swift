@@ -94,9 +94,9 @@ final class HermesProcessGuard: @unchecked Sendable {
         let descendants = Self.descendants(of: pid)
         sendCancel()
         Self.pause(until: { false }, seconds: VoiceTiming.hardStopGrace)
-        _ = killGroup(pid, SIGTERM)
+        _ = signal(pid, SIGTERM)
         Self.pause(until: { false }, seconds: 0.5)
-        _ = killGroup(pid, SIGKILL)
+        _ = signal(pid, SIGKILL)
         Self.pause(until: { !descendants.contains(where: Self.alive) }, seconds: 0.5)
         let survivors = descendants.filter(Self.alive).map(Self.processName)
         transport.terminate()
@@ -114,15 +114,24 @@ final class HermesProcessGuard: @unchecked Sendable {
 
     func terminateNow() {
         guard let transport = takeCurrent() else { return }
-        if let pid = transport.processID {
-            _ = killGroup(pid, SIGTERM)
+        if let pid = transport.processID, Self.alive(pid) {
+            _ = signal(pid, SIGTERM)
             Self.pause(until: { !Self.alive(pid) }, seconds: 0.5)
-            if Self.alive(pid) { _ = killGroup(pid, SIGKILL) }
+            // SIGKILL even when the leader has already died, so a member that ignored
+            // SIGTERM does not outlive Stop. A pid that was already dead is left alone.
+            _ = signal(pid, SIGKILL)
             transport.terminate()
             deletePidFile(matching: pid)
             return
         }
         transport.terminate()
+    }
+
+    /// `killpg` is ESRCH until the perl launcher has called `setsid`. Fall back to the pid.
+    private func signal(_ pid: Int32, _ code: Int32) -> Int32 {
+        let grouped = killGroup(pid, code)
+        if grouped != 0 { return Darwin.kill(pid, code) }
+        return grouped
     }
 
     func shutdown() async {

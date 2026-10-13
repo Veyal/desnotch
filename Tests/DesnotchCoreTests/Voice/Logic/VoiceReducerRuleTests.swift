@@ -528,7 +528,9 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertEqual(t.context.state, .acting)
         XCTAssertEqual(t.effects, [
             .execute(.volumeSet(percent: 30), generation: 1),
-            .audit(AuditDraft(kind: .execute, lane: .local, tier: .t0, decision: "allow"))
+            .audit(AuditDraft(kind: .execute, lane: .local, tier: .t0, decision: "allow")),
+            .startTimer(.localExecutionBudget, generation: 1,
+                        seconds: VoiceTiming.localExecutionBudget)
         ])
     }
 
@@ -656,7 +658,9 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertEqual(t.effects, [
             .cue(.approved),
             .execute(.volumeSet(percent: 90), generation: 1),
-            .audit(AuditDraft(kind: .approval, lane: .local, tier: .t2, decision: "approved"))
+            .audit(AuditDraft(kind: .approval, lane: .local, tier: .t2, decision: "approved")),
+            .startTimer(.localExecutionBudget, generation: 1,
+                        seconds: VoiceTiming.localExecutionBudget)
         ])
     }
 
@@ -1084,6 +1088,42 @@ final class VoiceReducerRuleTests: XCTestCase {
         XCTAssertTrue(t.effects.isEmpty)
     }
 
+    func testR98_localWatchdogTimesOut() {
+        var c = ctx(.acting)
+        c.lane = .local
+        let t = step(c, .timerElapsed(.localExecutionBudget, generation: 1))
+        XCTAssertEqual(t.context.state, .error)
+        XCTAssertEqual(t.context.failure, .timeout)
+        XCTAssertFalse(t.effects.contains(.cancelAgentTurn), "a local execution has no turn to cancel")
+        XCTAssertEqual(t.effects, [
+            .cue(.error),
+            .startTimer(.errorDisplay, generation: 1, seconds: 3.0),
+            .audit(AuditDraft(kind: .error, lane: .local, decision: "failure", outcome: "timeout"))
+        ])
+
+        // The watchdog only fires in local acting; a Hermes lane or another state is a no-op.
+        var hermes = ctx(.acting)
+        hermes.lane = .hermes
+        let wrongLane = step(hermes, .timerElapsed(.localExecutionBudget, generation: 1))
+        XCTAssertEqual(wrongLane.context, hermes)
+        XCTAssertTrue(wrongLane.effects.isEmpty)
+
+        let thinking = step(ctx(.thinking), .timerElapsed(.localExecutionBudget, generation: 1))
+        XCTAssertEqual(thinking.context, ctx(.thinking))
+        XCTAssertTrue(thinking.effects.isEmpty)
+    }
+
+    func testR98_lateLocalFinishAfterWatchdogIsNoOp() {
+        var c = ctx(.acting)
+        c.lane = .local
+        let timedOut = step(c, .timerElapsed(.localExecutionBudget, generation: 1))
+        XCTAssertEqual(timedOut.context.state, .error)
+        let late = step(timedOut.context,
+                        .localExecutionFinished(.success(spoken: "Volume 30"), generation: 1))
+        XCTAssertEqual(late.context, timedOut.context)
+        XCTAssertTrue(late.effects.isEmpty)
+    }
+
     // MARK: interrupt capture
 
     private func interruptContext() -> VoiceContext {
@@ -1297,6 +1337,14 @@ final class VoiceReducerRuleTests: XCTestCase {
                                                                           generation: 1)).effects))
         XCTAssertEqual(budget.kind, .turnBudget)
         XCTAssertEqual(budget.seconds, VoiceTiming.agentTurnBudget)
+
+        var localAllow = ctx(.review)
+        localAllow.route = .local(.mute)
+        localAllow.lane = .local
+        let localWatchdog = try XCTUnwrap(timerEffect(step(localAllow, .timerElapsed(.review,
+                                                                                    generation: 1)).effects))
+        XCTAssertEqual(localWatchdog.kind, .localExecutionBudget)
+        XCTAssertEqual(localWatchdog.seconds, VoiceTiming.localExecutionBudget)
 
         var card = ctx(.acting)
         card.lane = .hermes

@@ -386,27 +386,50 @@ struct AdapterRestartBackoff {
 
 /// Splits the adapter's newline-delimited JSON stream back into whole lines. `availableData`
 /// doesn't respect line boundaries, so a partial trailing line is held until its newline
-/// arrives. Empty lines are dropped.
+/// arrives. Empty lines are dropped. A line that grows past `maxPendingBytes` is discarded,
+/// and further bytes are ignored until the next newline, so a newline-less stream cannot
+/// grow without bound. Each append scans only the bytes just received.
 struct AdapterLineBuffer {
+    static let maxPendingBytes = 1_048_576
+
     private var pending = Data()
+    private var discarding = false
 
     /// Bytes of an incomplete trailing line still waiting for its newline.
     var pendingByteCount: Int { pending.count }
 
     /// Appends `data` and returns every line it completed, in order, without the newline.
     mutating func append(_ data: Data) -> [Data] {
+        if discarding {
+            guard let newline = data.firstIndex(of: 0x0A) else { return [] }
+            discarding = false
+            let rest = data[data.index(after: newline)...]
+            return rest.isEmpty ? [] : append(Data(rest))
+        }
+        let prior = pending.count
         pending.append(data)
         var lines: [Data] = []
-        while let newlineIndex = pending.firstIndex(of: 0x0A) {
-            let line = pending[pending.startIndex..<newlineIndex]
-            pending.removeSubrange(pending.startIndex...newlineIndex)
+        var consumed = pending.startIndex
+        var scan = pending.index(pending.startIndex, offsetBy: prior)
+        while scan < pending.endIndex, let newline = pending[scan...].firstIndex(of: 0x0A) {
+            let line = pending[consumed..<newline]
             if !line.isEmpty { lines.append(Data(line)) }
+            consumed = pending.index(after: newline)
+            scan = consumed
+        }
+        if consumed > pending.startIndex {
+            pending.removeSubrange(pending.startIndex..<consumed)
+        }
+        if pending.count > Self.maxPendingBytes {
+            pending.removeAll(keepingCapacity: false)
+            discarding = true
         }
         return lines
     }
 
     /// Drops any partial line (a new adapter stream must never inherit a dead one's tail).
     mutating func reset() {
-        pending = Data()
+        pending.removeAll(keepingCapacity: false)
+        discarding = false
     }
 }

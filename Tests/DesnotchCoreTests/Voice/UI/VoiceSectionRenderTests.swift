@@ -131,6 +131,49 @@ final class VoiceSectionRenderTests: XCTestCase {
         XCTAssertEqual(box.nonces, ["card"])
     }
 
+    func testDisabledApproveButtonStylingAndAccessibilityLabel() {
+        let disabledSpec = VoiceButtonSpec(
+            role: .approveHold, title: "Approve", glyph: nil, isEnabled: false, nonce: "card"
+        )
+        XCTAssertEqual(VoiceApproveButton.disabledOpacity, 0.45)
+        XCTAssertEqual(
+            VoiceApproveButton.disabledAccessibilityLabel(spec: disabledSpec, note: "Can't approve this from voice"),
+            "Approve, Can't approve this from voice"
+        )
+        XCTAssertEqual(
+            VoiceApproveButton.disabledAccessibilityLabel(spec: disabledSpec, note: "Too long to review here"),
+            "Approve, Too long to review here"
+        )
+        XCTAssertEqual(
+            VoiceApproveButton.disabledAccessibilityLabel(spec: disabledSpec, note: "Turn off Privacy mode to review"),
+            "Approve, Turn off Privacy mode to review"
+        )
+        XCTAssertEqual(
+            VoiceApproveButton.disabledAccessibilityLabel(spec: disabledSpec, note: nil),
+            "Approve, cannot be used"
+        )
+    }
+
+    func testDisabledApproveCardRendersWithinHeightBudget() {
+        let request = ConfirmationRequest(
+            nonce: "disabled-nonce",
+            tier: .t3,
+            source: .hermes,
+            summary: "Run command",
+            literal: "curl https://example.com"
+        )
+        let presentation = VoiceSectionPresentation(
+            VoiceSectionSnapshot(state: .awaitingApproval, pending: request),
+            privacyMode: false,
+            now: Date()
+        )
+        XCTAssertEqual(presentation.card?.note, "Can't approve this from voice")
+        XCTAssertEqual(presentation.buttons.first { $0.role == .approveHold }?.isEnabled, false)
+        let size = fittedSize(section(presentation, width: 268), width: 268)
+        XCTAssertGreaterThan(size.width, 0)
+        XCTAssertLessThanOrEqual(size.height, presentation.heightBudget)
+    }
+
     private func assertLiteralIsNotClipped(_ literal: String, width: CGFloat) {
         let block = VoiceLiteralBlock(text: literal).frame(width: width)
         let size = fittedSize(block, width: width)

@@ -6,7 +6,9 @@ enum CommandRiskScanner {
     // The dangerous vocabulary lives here as DATA only: one regex constant per line, and one
     // protected path string per line below. Nothing else in this file names those tokens.
     private enum Pat {
-        static let pipeToInterpreter = #"\|\s*(sudo\s+)?(env\s+)?((ba|z|da|k|c|tc)?sh|python[0-9.]*|perl|ruby|node|php|osascript|source)\b"#
+        // Optional path (`/bin/sh`) and `env NAME=value` before the interpreter, so
+        // `| /bin/sh` and `| env X=1 sh` stay auto-deny.
+        static let pipeToInterpreter = #"\|\s*(sudo\s+)?(?:env(?:\s+\S+=\S*)*\s+)?(?:\S*/)?((ba|z|da|k|c|tc)?sh|python[0-9.]*|perl|ruby|node|php|osascript|source)\b"#
         static let base64Flag = #"\bbase64\s+(-d|-D|--decode)\b"#
         static let b64decode = #"\bb64decode\b"#
         static let evalUse = #"\beval\b"#
@@ -63,14 +65,19 @@ enum CommandRiskScanner {
         }
 
         let lowered = sanitized.lowercased()
-        if matches(Pat.pipeToInterpreter, lowered) { flags.insert(.pipeToInterpreter) }
+        let folded = fold(lowered)
+        if matches(Pat.pipeToInterpreter, lowered) || matches(Pat.pipeToInterpreter, folded) {
+            flags.insert(.pipeToInterpreter)
+        }
         if matches(Pat.base64Flag, lowered) || matches(Pat.b64decode, lowered) {
             flags.insert(.base64Decode)
         }
         if matches(Pat.evalUse, lowered) { flags.insert(.evalUse) }
         if lowered.contains("$(") || lowered.contains("`") { flags.insert(.commandSubstitution) }
         if matches(Pat.sudo, lowered) { flags.insert(.sudo) }
-        for path in protectedPaths where lowered.contains(path) { flags.insert(.protectedPath) }
+        if mentionsProtected(lowered) || mentionsProtected(folded) || globHitsProtected(folded) {
+            flags.insert(.protectedPath)
+        }
         if lowered.contains(";") || lowered.contains("&&") || lowered.contains("||") {
             flags.insert(.chaining)
         }
@@ -103,5 +110,68 @@ enum CommandRiskScanner {
 
     private static func matches(_ pattern: String, _ text: String) -> Bool {
         text.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Drops quotes and backslashes so `$HOME/.h""ermes` still contains `.hermes`.
+    private static func fold(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        var escaped = false
+        for scalar in text.unicodeScalars {
+            if escaped {
+                escaped = false
+                out.append(scalar)
+                continue
+            }
+            if scalar == "\\" {
+                escaped = true
+                continue
+            }
+            if scalar == "\"" || scalar == "'" { continue }
+            out.append(scalar)
+        }
+        return String(out)
+    }
+
+    private static func mentionsProtected(_ text: String) -> Bool {
+        protectedPaths.contains { text.contains($0) }
+    }
+
+    /// A token glob such as `~/.herm*` or `auth.js*` that can expand onto a protected path.
+    private static func globHitsProtected(_ text: String) -> Bool {
+        let tokens = text.split { character in
+            character == " " || character == "\t" || character == ";" || character == "|"
+                || character == "&" || character == "\n" || character == ">" || character == "<"
+        }
+        for token in tokens {
+            let raw = String(token)
+            guard raw.contains("*") || raw.contains("?") else { continue }
+            let literalPrefix = raw.prefix { $0 != "*" && $0 != "?" }
+            if literalPrefix.count < 3 { continue }
+            let pattern = NSRegularExpression.escapedPattern(for: raw)
+                .replacingOccurrences(of: "\\*", with: ".*")
+                .replacingOccurrences(of: "\\?", with: ".")
+            guard let regex = try? NSRegularExpression(pattern: "^(?:\(pattern))$") else { continue }
+            if protectedCandidates().contains(where: { candidate in
+                let range = NSRange(candidate.startIndex..., in: candidate)
+                return regex.firstMatch(in: candidate, range: range) != nil
+            }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func protectedCandidates() -> [String] {
+        var candidates: [String] = []
+        for path in protectedPaths {
+            candidates.append(path)
+            candidates.append("~/\(path)")
+            candidates.append("$home/\(path)")
+            for other in protectedPaths where other != path {
+                candidates.append("~/\(path)/\(other)")
+                candidates.append("\(path)/\(other)")
+            }
+        }
+        return candidates
     }
 }

@@ -62,9 +62,11 @@ final class ProcessACPTransport: ACPTransport, @unchecked Sendable {
         let source = readSource
         readSource = nil
         ownedReadFD = -1
+        let remove = process == nil || terminated
         lock.unlock()
         source?.cancel()
         process?.terminationHandler = nil
+        if remove { removeDirectory() }
     }
 
     func setExitHandler(_ handler: @escaping @Sendable (TimeInterval) -> Void) {
@@ -82,12 +84,14 @@ final class ProcessACPTransport: ACPTransport, @unchecked Sendable {
     func start() throws {
         let built = try prepareStart()
         guard installHandlers(generation: built.generation, process: built.process) else {
+            removeDirectory()
             throw ACPTransportError.launchFailed
         }
         do {
             try built.process.run()
         } catch {
             stopReading()
+            removeDirectory()
             throw ACPTransportError.launchFailed
         }
         queue.async { [weak self] in self?.drainStdoutNonblocking() }
@@ -95,7 +99,8 @@ final class ProcessACPTransport: ACPTransport, @unchecked Sendable {
     }
 
     func send(line: Data) throws {
-        let fd = try writeFDIfAlive()
+        let fd = try duplicateWriteFD()
+        defer { Darwin.close(fd) }
         var payload = line
         payload.append(0x0A)
         try Self.writeAll(payload, to: fd)
@@ -104,12 +109,12 @@ final class ProcessACPTransport: ACPTransport, @unchecked Sendable {
     func terminate() {
         let snapshot = beginTerminate()
         closeWriteEnd()
-        if let pid = snapshot.pid, !snapshot.exitReported {
-            Darwin.killpg(pid, SIGTERM)
+        if let pid = snapshot.pid, pid > 1, !snapshot.exitReported, HermesProcessGuard.alive(pid) {
+            Self.signal(pid, SIGTERM)
             Self.pause(until: { !HermesProcessGuard.alive(pid) }, seconds: 0.5)
-            if HermesProcessGuard.alive(pid) {
-                Darwin.killpg(pid, SIGKILL)
-            }
+            // The leader can die on SIGTERM while a group member ignores it. Always
+            // SIGKILL the group we just signalled; kill(2) covers the window before setsid.
+            Self.signal(pid, SIGKILL)
         }
         drainOnQueue()
         markStdoutClosed()
@@ -201,7 +206,7 @@ final class ProcessACPTransport: ACPTransport, @unchecked Sendable {
         let wait = DispatchWorkItem { [weak self] in
             self?.forceStdoutClosed(generation: token)
         }
-        storeEOFWait(wait)
+        storeEOFWait(wait, generation: token)
         queue.asyncAfter(deadline: .now() + 1, execute: wait)
     }
 
@@ -288,12 +293,24 @@ final class ProcessACPTransport: ACPTransport, @unchecked Sendable {
     }
 
     private func cancelEOFWait() {
-        eofWait?.cancel()
+        lock.lock()
+        let wait = eofWait
         eofWait = nil
+        lock.unlock()
+        wait?.cancel()
     }
 
-    private func storeEOFWait(_ wait: DispatchWorkItem) {
+    private func storeEOFWait(_ wait: DispatchWorkItem, generation token: UInt64) {
+        lock.lock()
+        if token != generation {
+            lock.unlock()
+            wait.cancel()
+            return
+        }
+        let previous = eofWait
         eofWait = wait
+        lock.unlock()
+        if previous !== wait { previous?.cancel() }
     }
 
     private func retireGeneration() {
@@ -332,20 +349,27 @@ final class ProcessACPTransport: ACPTransport, @unchecked Sendable {
         return TerminateSnapshot(pid: pid, exitReported: reported)
     }
 
-    private func writeFDIfAlive() throws -> Int32 {
+    /// A private dup, so `closeWriteEnd` can close the pipe handle without this write
+    /// landing on a file descriptor the process has already reused.
+    private func duplicateWriteFD() throws -> Int32 {
         lock.lock()
-        let stop = terminated
-        lock.unlock()
-        if stop { throw ACPTransportError.terminated }
-        return stdinPipe.fileHandleForWriting.fileDescriptor
+        defer { lock.unlock() }
+        if terminated || writeClosed { throw ACPTransportError.terminated }
+        let copy = Darwin.dup(stdinPipe.fileHandleForWriting.fileDescriptor)
+        if copy < 0 { throw ACPTransportError.writeFailed(errno) }
+        _ = Darwin.fcntl(copy, F_SETNOSIGPIPE, 1)
+        return copy
     }
 
     private func closeWriteEnd() {
         lock.lock()
         let already = writeClosed
         writeClosed = true
+        let handle = stdinPipe.fileHandleForWriting
         lock.unlock()
-        if !already { Darwin.close(stdinPipe.fileHandleForWriting.fileDescriptor) }
+        // FileHandle.close() retires the descriptor. Darwin.close would close it once
+        // and the handle's deinit would close that number again.
+        if !already { try? handle.close() }
     }
 
     private func closeReadEnd() {
@@ -361,6 +385,12 @@ final class ProcessACPTransport: ACPTransport, @unchecked Sendable {
         directoryRemoved = true
         lock.unlock()
         try? FileManager.default.removeItem(at: workingDirectory)
+    }
+
+    private static func signal(_ pid: Int32, _ code: Int32) {
+        if Darwin.killpg(pid, code) != 0 {
+            _ = Darwin.kill(pid, code)
+        }
     }
 
     private static func writeAll(_ data: Data, to fd: Int32) throws {

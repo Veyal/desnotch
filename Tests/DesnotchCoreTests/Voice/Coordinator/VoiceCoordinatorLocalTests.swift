@@ -1184,6 +1184,7 @@ final class CoordGatedBackend: AgentBackend, @unchecked Sendable {
     private var report = EmergencyStopReport()
     private var gatePreflight = false
     private var continuation: AsyncStream<AgentEvent>.Continuation?
+    private var queuedEvents: [AgentEvent] = []
     private var preflightWaiters: [CheckedContinuation<AgentPreflightResult, Never>] = []
 
     var callLog: [String] { lock.lock(); defer { lock.unlock() }; return log }
@@ -1242,7 +1243,13 @@ final class CoordGatedBackend: AgentBackend, @unchecked Sendable {
 
     func emit(_ event: AgentEvent) {
         let current = currentContinuation()
-        current?.yield(event)
+        if let current {
+            current.yield(event)
+            return
+        }
+        lock.lock()
+        queuedEvents.append(event)
+        lock.unlock()
     }
 
     func finish() {
@@ -1291,7 +1298,10 @@ final class CoordGatedBackend: AgentBackend, @unchecked Sendable {
         utterances.append(utterance)
         let previous = continuation
         continuation = next
+        let queued = queuedEvents
+        queuedEvents.removeAll()
         lock.unlock()
+        for event in queued { next.yield(event) }
         return previous
     }
 

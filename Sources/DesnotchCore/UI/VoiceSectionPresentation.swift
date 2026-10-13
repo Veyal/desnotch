@@ -242,11 +242,19 @@ struct VoiceSectionPresentation: Equatable {
         case .error:
             title = snapshot.errorText ?? "Something went wrong"
             buttons = [VoiceSectionPresentation.stopButton()]
+            let severityText: String
             switch snapshot.errorSeverity {
-            case .info: tint = .calm
-            case .warning: tint = .amber
-            case .alert: tint = .red
+            case .info:
+                tint = .calm
+                severityText = "Info"
+            case .warning:
+                tint = .amber
+                severityText = "Warning"
+            case .alert:
+                tint = .red
+                severityText = "Alert"
             }
+            bodyLines = [VoiceBodyLine(text: severityText, lineLimit: 1, emphasis: .caption)]
         case .paused:
             title = snapshot.errorText ?? "Agent stopped"
             if !snapshot.survivors.isEmpty {
@@ -348,6 +356,8 @@ struct VoiceSectionPresentation: Equatable {
             note = "Turn off Privacy mode to review"
         } else if !reviewable || request.isTruncated {
             note = "Too long to review here"
+        } else if !request.canApprove {
+            note = "Can't approve this from voice"
         } else {
             note = nil
         }
@@ -503,6 +513,7 @@ enum VoiceRiskWords {
 enum VoiceSettingsWords {
     static let shortcutShadowNote = "⌥⌘V also moves items in Finder; choose another shortcut if you use that."
     static let updateCheckNote = "Asks GitHub once a day whether a newer release exists. The update check is the only network request desnotch makes on its own; the optional Hermes agent lane (Voice control) sends requests to your configured agent. You still download and install updates yourself."
+    static let privacyModeNote = "Privacy mode hides song titles, agent task titles, event and reminder names, clipboard previews, and tray filenames — for screen sharing. Voice transcripts and replies are hidden and agent approvals are blocked."
 
     static func hotkeyLabel(_ choice: VoiceHotkeyChoice) -> String {
         switch choice {

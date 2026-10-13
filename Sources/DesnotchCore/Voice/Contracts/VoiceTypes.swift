@@ -79,6 +79,9 @@ enum VoiceState: String, CaseIterable, Sendable, Equatable {
 /// `VoiceEvent.timerElapsed(kind, generation:)`.
 enum VoiceTimerKind: String, Sendable, Equatable, CaseIterable {
     case listenCap, finalWatchdog, review, approval, errorDisplay, replyDisplay, turnBudget
+    /// Local-execution watchdog. Valid only in `acting` with lane `.local`; distinct from
+    /// `turnBudget` so a local timeout never emits `.cancelAgentTurn` (there is no turn).
+    case localExecutionBudget
 }
 
 /// Short sound/haptic cues. The UI/coordinator decides how to render them.
@@ -728,6 +731,10 @@ enum VoiceTiming {
     static let replyDisplay = 6.0
     /// Wall-clock budget for one agent turn.
     static let agentTurnBudget = 180.0
+    /// Watchdog for a local action that never reports back. The local lane has no cancel
+    /// (R97), so this is the only way an abandoned `acting` returns from the local lane.
+    /// Short, because a local command is immediate.
+    static let localExecutionBudget = 5.0
     /// Wait between interrupt and SIGTERM, and between SIGTERM and SIGKILL, in a hard stop.
     static let hardStopGrace = 0.5
 }

@@ -186,6 +186,17 @@ final class AdapterLineBufferTests: XCTestCase {
         XCTAssertEqual(MediaRemoteBridge.payload(from: lines[0])?["title"] as? String, "Fresh")
     }
 
+    func testOversizedLineIsDiscardedAndTheNextLineStillParses() {
+        var buffer = AdapterLineBuffer()
+        let huge = Data(repeating: 0x61, count: AdapterLineBuffer.maxPendingBytes + 1)
+        XCTAssertTrue(buffer.append(huge).isEmpty)
+        XCTAssertEqual(buffer.pendingByteCount, 0)
+        XCTAssertTrue(buffer.append(Data("still-huge".utf8)).isEmpty)
+        let lines = buffer.append(Data("\n{\"payload\":{}}\n".utf8))
+        XCTAssertEqual(strings(lines), ["{\"payload\":{}}"])
+        XCTAssertEqual(buffer.pendingByteCount, 0)
+    }
+
     func testMalformedLineStillComesBackSoTheBridgeCanLogAndSkipIt() {
         var buffer = AdapterLineBuffer()
         let lines = buffer.append(Data("not json\n{\"payload\":{}}\n".utf8))

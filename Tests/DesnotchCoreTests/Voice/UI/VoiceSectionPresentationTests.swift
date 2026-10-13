@@ -161,9 +161,18 @@ final class VoiceSectionPresentationTests: XCTestCase {
     }
 
     func testErrorSeverityStyling() {
-        XCTAssertEqual(present(.init(state: .error, errorSeverity: .info)).tint, .calm)
-        XCTAssertEqual(present(.init(state: .error, errorText: "Timed out", errorSeverity: .warning)).tint, .amber)
-        XCTAssertEqual(present(.init(state: .error, errorSeverity: .alert)).tint, .red)
+        let info = present(.init(state: .error, errorSeverity: .info))
+        XCTAssertEqual(info.tint, .calm)
+        XCTAssertEqual(info.bodyLines, [VoiceBodyLine(text: "Info", lineLimit: 1, emphasis: .caption)])
+
+        let warning = present(.init(state: .error, errorText: "Timed out", errorSeverity: .warning))
+        XCTAssertEqual(warning.tint, .amber)
+        XCTAssertEqual(warning.bodyLines, [VoiceBodyLine(text: "Warning", lineLimit: 1, emphasis: .caption)])
+
+        let alert = present(.init(state: .error, errorSeverity: .alert))
+        XCTAssertEqual(alert.tint, .red)
+        XCTAssertEqual(alert.bodyLines, [VoiceBodyLine(text: "Alert", lineLimit: 1, emphasis: .caption)])
+
         XCTAssertEqual(present(.init(state: .error, errorText: "Timed out")).title, "Timed out")
     }
 
@@ -442,6 +451,7 @@ final class VoiceSectionPresentationTests: XCTestCase {
         ))
         XCTAssertFalse(try button(.approveHold, presentation).isEnabled)
         XCTAssertFalse(presentation.card?.literal.isEmpty == true)
+        XCTAssertEqual(presentation.card?.note, "Can't approve this from voice")
     }
 
     func testButtonsCarryTheNonceOfTheCardOnScreen() throws {
@@ -632,6 +642,48 @@ final class VoiceSectionPresentationTests: XCTestCase {
         XCTAssertTrue(note.contains("on its own"))
         XCTAssertTrue(note.contains("Hermes agent lane"))
         XCTAssertFalse(note.contains("That is the only network request"))
+    }
+
+    func testDisabledApproveNotes() throws {
+        // Privacy mode + Hermes card: keep "Turn off Privacy mode to review"
+        let privacyCard = card(source: .hermes, summary: "Run", literal: "ls")
+        let privacyPres = present(.init(state: .awaitingApproval, pending: privacyCard), privacyMode: true)
+        XCTAssertFalse(try button(.approveHold, privacyPres).isEnabled)
+        XCTAssertEqual(privacyPres.card?.note, "Turn off Privacy mode to review")
+
+        // Literal not reviewable by length: keep "Too long to review here"
+        let longLiteral = String(repeating: "a", count: 241)
+        let longPres = present(.init(state: .awaitingApproval, pending: card(source: .hermes, summary: "Run", literal: longLiteral)))
+        XCTAssertFalse(try button(.approveHold, longPres).isEnabled)
+        XCTAssertEqual(longPres.card?.note, "Too long to review here")
+
+        // Literal truncated: keep "Too long to review here"
+        let truncPres = present(.init(state: .awaitingApproval, pending: card(source: .hermes, summary: "Run", literal: "ls", isTruncated: true)))
+        XCTAssertFalse(try button(.approveHold, truncPres).isEnabled)
+        XCTAssertEqual(truncPres.card?.note, "Too long to review here")
+
+        // Otherwise when !request.canApprove: note "Can't approve this from voice"
+        let t3Pres = present(.init(state: .awaitingApproval, pending: card(source: .hermes, summary: "Run", literal: "ls", tier: .t3)))
+        XCTAssertFalse(try button(.approveHold, t3Pres).isEnabled)
+        XCTAssertEqual(t3Pres.card?.note, "Can't approve this from voice")
+
+        let t4Pres = present(.init(state: .awaitingApproval, pending: card(source: .hermes, summary: "Run", literal: "ls", tier: .t4)))
+        XCTAssertFalse(try button(.approveHold, t4Pres).isEnabled)
+        XCTAssertEqual(t4Pres.card?.note, "Can't approve this from voice")
+
+        let req2FA = ConfirmationRequest(
+            nonce: "2fa", tier: .t2, source: .hermes, summary: "Run", literal: "ls", requiresSecondFactor: true
+        )
+        let twoFAPres = present(.init(state: .awaitingApproval, pending: req2FA))
+        XCTAssertFalse(try button(.approveHold, twoFAPres).isEnabled)
+        XCTAssertEqual(twoFAPres.card?.note, "Can't approve this from voice")
+    }
+
+    func testPrivacyModeNoteMentionsVoiceTranscriptsRepliesAndApprovals() {
+        let note = VoiceSettingsWords.privacyModeNote
+        XCTAssertTrue(note.contains("Privacy mode hides song titles, agent task titles, event and reminder names, clipboard previews, and tray filenames — for screen sharing."))
+        XCTAssertTrue(note.contains("voice transcripts and replies are hidden") || note.contains("Voice transcripts and replies are hidden"))
+        XCTAssertTrue(note.contains("agent approvals are blocked"))
     }
 
     private func present(

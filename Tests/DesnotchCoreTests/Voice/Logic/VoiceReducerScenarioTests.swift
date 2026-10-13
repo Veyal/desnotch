@@ -47,7 +47,9 @@ final class VoiceReducerScenarioTests: XCTestCase {
         XCTAssertEqual(results[4].context.route, .local(.volumeSet(percent: 30)))
         XCTAssertEqual(results[5].effects, [
             .execute(.volumeSet(percent: 30), generation: 1),
-            .audit(AuditDraft(kind: .execute, lane: .local, tier: .t0, decision: "allow"))
+            .audit(AuditDraft(kind: .execute, lane: .local, tier: .t0, decision: "allow")),
+            .startTimer(.localExecutionBudget, generation: 1,
+                        seconds: VoiceTiming.localExecutionBudget)
         ])
         XCTAssertEqual(results[6].context.generation, 2)
         XCTAssertEqual(results[6].effects, [
@@ -72,7 +74,9 @@ final class VoiceReducerScenarioTests: XCTestCase {
                                             .startTimer(.listenCap, generation: 1, seconds: 10.0)])
         XCTAssertEqual(results[5].effects, [
             .execute(.mute, generation: 1),
-            .audit(AuditDraft(kind: .execute, lane: .local, tier: .t0, decision: "allow"))
+            .audit(AuditDraft(kind: .execute, lane: .local, tier: .t0, decision: "allow")),
+            .startTimer(.localExecutionBudget, generation: 1,
+                        seconds: VoiceTiming.localExecutionBudget)
         ])
     }
 

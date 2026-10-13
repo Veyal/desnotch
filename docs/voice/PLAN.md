@@ -212,7 +212,7 @@ enum VoiceReducer {
 `reduce` is a pure function: no clock (`env.now`), no randomness (`env.freshNonce`), no I/O, no global
 state. The literal seconds in the rules below ARE the contract constants: 0.35 = `VoiceTiming.holdThreshold`, 1.5 = `reviewWindow`,
 5.0 = `finalWatchdog`, 30.0 = `holdListenCap`, 10.0 = `toggleListenCap` (also the interrupt capture's cap), 60.0 = `approvalTimeout`,
-3.0 = `errorDisplay`, 6.0 = `replyDisplay`, 180.0 = `agentTurnBudget`, 12 = `VoiceLimits.maxAgentSteps`; code may use either form (the
+3.0 = `errorDisplay`, 6.0 = `replyDisplay`, 180.0 = `agentTurnBudget`, 12 = `VoiceLimits.maxAgentSteps`, 5.0 = `localExecutionBudget` (the local-execution watchdog, R98); code may use either form (the
 constants are preferred) and a test asserts they agree (WP-LOGIC, "Rule tests"). It returns the next `VoiceContext` and the ordered list of `VoiceEffect`s. Anything not
 listed in the rules below is a **no-op**: return `VoiceTransition(context: context, effects: [])`
 (the unchanged context).
@@ -412,13 +412,14 @@ Other events in the busy states: `timerElapsed(.turnBudget)` is R89 in all three
 
 **local execution (`acting` with `lane == .local`)**
 
-R95-R97 apply only when `state == .acting && lane == .local`. `localExecutionFinished` in any other state, or with lane `.hermes`, is a no-op (and a late one is also stale by R01 once the flow moved on).
+R95-R98 apply only when `state == .acting && lane == .local`. `localExecutionFinished` in any other state, or with lane `.hermes`, is a no-op (and a late one is also stale by R01 once the flow moved on). R60 and R73 also append `.startTimer(.localExecutionBudget, generation: generation, seconds: 5.0)`, so a local executor that never reports back is bounded even though the local lane has no cancel.
 
 | ID | Event [guard] | Result |
 |---|---|---|
 | R95 | `localExecutionFinished(.success(spoken))` | If `env.speechAllowed` and `spoken` is non-nil and non-empty: `FINISH(spoken)`. Otherwise `TO_IDLE([.cue(.done), .audit(AuditDraft(kind: .execute, lane: .local, decision: "finished", outcome: "ok"))])`. |
 | R96 | `localExecutionFinished(.failure(f))` | `TO_ERROR(f, [.audit(AuditDraft(kind: .execute, lane: .local, decision: "finished", outcome: f.code))])` |
 | R97 | `cancelRequested` [`lane == .local`] | no-op (a local action is instantaneous and cannot be cancelled) |
+| R98 | `timerElapsed(.localExecutionBudget)` [`state == .acting && lane == .local`] | `TO_ERROR(.timeout)`; never `.cancelAgentTurn` (a local execution has no turn to cancel). A no-op in any other state or lane. |
 
 **interrupt capture (stop-only second capture during a busy agent turn)**
 
@@ -958,6 +959,6 @@ Nothing in this section gates an import, a commit or the completion of an agent 
 
 One flag stops everything at runtime (`voiceEnabled`). To remove the feature from the source tree in one commit:
 
-1. `git rm -r Sources/DesnotchCore/Voice Tests/DesnotchCoreTests/Voice scripts/voice-harness docs/voice`.
-2. Revert the edits outside those folders (all listed in section 9 as `changed`): the voice keys in `SettingsStore.swift` and `SettingsTransfer.swift` and its test; the `voice` parameter in `AppComposition.swift`, `NotchWindowController.swift`, `NotchPillView.swift`; the section, wing, hover, flash and haptic additions in the UI files; the status-menu and Settings additions; the `PermissionSnapshot` fields and their test; the microphone/speech strings, entitlement and smoke assertions in `scripts/`; the Voice section of `AGENTS.md`, `CHANGELOG.md` and `README.md`.
+1. `git rm -r Sources/DesnotchCore/Voice Tests/DesnotchCoreTests/Voice scripts/voice-harness docs/voice Sources/DesnotchCore/UI/VoiceSectionView.swift Sources/DesnotchCore/UI/VoiceSectionPresentation.swift Sources/DesnotchCore/UI/VoiceSettingsSection.swift Sources/DesnotchCore/UI/VoiceCuePlayer.swift Sources/DesnotchCore/UI/NotchPillView+Voice.swift`.
+2. Revert the edits outside those folders (all listed in section 9 as `changed`): the voice keys in `SettingsStore.swift` and `SettingsTransfer.swift` and its test; the `voice` parameter in `AppComposition.swift`, `NotchWindowController.swift`, `NotchPillView.swift`; the section, wing, hover, flash and haptic additions in the UI files; the status-menu and Settings additions; the `PermissionSnapshot` fields and their test; the microphone/speech strings, entitlement and smoke assertions in `scripts/`; the voice entry in `CHANGELOG.md`; and the scattered voice-control edits in `AGENTS.md` and `README.md` (the `voiceActive` pill-visibility input and its references, the microphone/speech permission notes, the app-wiring/agent-lane lines, and each file's `## Voice control` section). This pass removes only voice-control text: leave the unrelated VoiceOver and accessibility notes in both files untouched.
 3. `swift build` and the full test suite. The stored `voice*` UserDefaults keys are harmless; the audit folder `~/Library/Application Support/desnotch/voice/` can be deleted by hand.

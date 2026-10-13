@@ -280,6 +280,9 @@ enum VoiceReducer {
         switch event {
         case .timerElapsed(.turnBudget, _): // R89
             b.toError(.timeout, [.cancelAgentTurn])
+        case .timerElapsed(.localExecutionBudget, _): // R98
+            guard b.context.state == .acting, b.context.lane == .local else { return }
+            b.toError(.timeout)
         case .cancelRequested: // R90 (thinking/acting); R97 is a no-op for local
             if b.context.lane == .hermes {
                 b.toIdle([.cancelAgentTurn,
@@ -626,6 +629,8 @@ enum VoiceReducer {
                 effects.append(.execute(intent, generation: context.generation))
                 effects.append(.audit(AuditDraft(kind: .execute, lane: .local, tier: tier,
                                                  decision: "allow")))
+                effects.append(.startTimer(.localExecutionBudget, generation: context.generation,
+                                           seconds: VoiceTiming.localExecutionBudget))
             case .confirm: // R61
                 let request = ConfirmationRequest(nonce: env.freshNonce, tier: tier, source: .local,
                                                   summary: intent.summary, literal: intent.summary)
@@ -668,6 +673,8 @@ enum VoiceReducer {
                 effects.append(.execute(intent, generation: context.generation))
                 effects.append(.audit(AuditDraft(kind: .approval, lane: .local, tier: tier,
                                                  decision: "approved")))
+                effects.append(.startTimer(.localExecutionBudget, generation: context.generation,
+                                           seconds: VoiceTiming.localExecutionBudget))
             } else { // R74 agent card
                 let tier = pending.tier
                 if tier >= .t2, case .limited = context.rate.tryConsume(tier: tier, now: env.now) {
