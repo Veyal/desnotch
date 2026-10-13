@@ -518,8 +518,8 @@ extension XCTestCase {
             if let data = await iterator.next() { box.set(String(decoding: data, as: UTF8.self)) }
             done.fulfill()
         }
-        let result = await fulfillment(of: [done], timeout: timeout)
-        if result == .timedOut { task.cancel() }
+        await fulfillment(of: [done], timeout: timeout)
+        task.cancel()
         return box.get()
     }
 
@@ -532,11 +532,8 @@ extension XCTestCase {
             box.set(events)
             done.fulfill()
         }
-        let result = await fulfillment(of: [done], timeout: timeout)
-        if result == .timedOut {
-            task.cancel()
-            return nil
-        }
+        await fulfillment(of: [done], timeout: timeout)
+        task.cancel()
         return box.get()
     }
 }

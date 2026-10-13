@@ -239,8 +239,7 @@ final class HermesProcessGuardTests: XCTestCase {
         let exited = expectation(description: "child exited")
         transport.setExitHandler { _ in exited.fulfill() }
         try? transport.start()
-        let result = await fulfillment(of: [exited], timeout: 10)
-        XCTAssertNotEqual(result, .timedOut)
+        await fulfillment(of: [exited], timeout: 10)
         XCTAssertThrowsError(try transport.send(line: Data(#"{"jsonrpc":"2.0"}"#.utf8)))
     }
 
@@ -273,17 +272,15 @@ final class HermesProcessGuardTests: XCTestCase {
         XCTAssertTrue(line.hasPrefix("child-"))
         let sleepPID = try XCTUnwrap(Int32(line.dropFirst("child-".count)))
         remember(sleepPID)
-        let result = await fulfillment(of: [exited], timeout: 5)
-        XCTAssertNotEqual(result, .timedOut)
+        await fulfillment(of: [exited], timeout: 5)
         let drained = expectation(description: "lines finished")
         let task = Task {
             var iterator = transport.lines.makeAsyncIterator()
             while await iterator.next() != nil {}
             drained.fulfill()
         }
-        let drain = await fulfillment(of: [drained], timeout: 5)
-        if drain == .timedOut { task.cancel() }
-        XCTAssertNotEqual(drain, .timedOut)
+        await fulfillment(of: [drained], timeout: 5)
+        task.cancel()
         transport.terminate()
         XCTAssertEqual(counter.value, 1)
     }
