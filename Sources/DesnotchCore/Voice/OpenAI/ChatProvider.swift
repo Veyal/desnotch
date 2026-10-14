@@ -2,8 +2,9 @@ import Foundation
 
 // Provider-neutral chat vocabulary for the answers lane. Two adapters speak it today
 // (OpenAI-compatible chat completions and the Anthropic Messages API). Tool use is modelled
-// end to end (tool calls out, tool results back) so a later package can add machine control
-// behind `ChatToolHandling`; in this release no tool is ever offered to a model.
+// end to end (tool calls out, tool results back). Tools are offered to a model only when the
+// user turned on "Let the agent control this Mac" (`voiceAgentToolsEnabled`); the tools
+// themselves live in `Voice/Tools/` behind `ChatToolHandling`.
 
 enum ChatRole: String, Sendable, Equatable {
     case user
@@ -90,13 +91,66 @@ struct ChatToolOutcome: Equatable, Sendable {
     var isError: Bool
 }
 
-/// Hook for a later machine-control package. The answers backend takes it as nil in this
-/// release, so no tool definition is sent and no tool call can be run. A handler added later
-/// must also teach `ToolTierTable` its tool names: every tool call is reported to the reducer
-/// as `.toolActivity`, and an unknown tool trips the tripwire (R83).
+/// What desnotch decided about one tool call BEFORE anything runs. `tier` picks the gate
+/// (T0/T1 run, T2 needs the agent approval card, T3/T4 never run); `stepLabel` is the
+/// `AgentToolStep` label the start is reported with. `summary` is desnotch-authored; `literal`
+/// is the exact command, path or URL the card shows. `auditCode` is a fixed catalog code
+/// (`tool.<name>`, or `tool.unknown`), never model text.
+struct ChatToolProposal: Equatable, Sendable {
+    var tier: VoiceTier
+    var stepLabel: String
+    var summary: String
+    var literal: String
+    var risk: RiskFlags
+    var isTruncated: Bool
+    var auditCode: String
+    /// Set when the arguments do not parse or are out of range: nothing runs and this short,
+    /// desnotch-authored reason goes back to the model.
+    var invalidReason: String?
+
+    init(
+        tier: VoiceTier,
+        stepLabel: String,
+        summary: String,
+        literal: String = "",
+        risk: RiskFlags = [],
+        isTruncated: Bool = false,
+        auditCode: String,
+        invalidReason: String? = nil
+    ) {
+        self.tier = tier
+        self.stepLabel = stepLabel
+        self.summary = summary
+        self.literal = literal
+        self.risk = risk
+        self.isTruncated = isTruncated
+        self.auditCode = auditCode
+        self.invalidReason = invalidReason
+    }
+}
+
+/// Facts about the turn so far that change how a call classifies. `afterDataRead` is true once a
+/// tool that returns user data (a file, a folder listing, a page, command output, the clipboard,
+/// system info) has run in this turn: from then on every call that sends data off the Mac
+/// (`open_url`, `web_fetch`) needs the card, decided before any DNS lookup.
+struct ChatToolCallContext: Equatable, Sendable {
+    var afterDataRead: Bool
+
+    init(afterDataRead: Bool = false) {
+        self.afterDataRead = afterDataRead
+    }
+}
+
+/// The machine-control seam (`AgentToolbox` in `Voice/Tools/`). The answers backend asks
+/// `propose` first and gates the call on its tier (`AgentToolGate`); `run` happens only after
+/// that gate, and re-checks the call so nothing changed between the card and the start.
 protocol ChatToolHandling: Sendable {
     var tools: [ChatToolDefinition] { get }
-    func run(name: String, inputJSON: String) async -> ChatToolOutcome
+    func propose(name: String, inputJSON: String, context: ChatToolCallContext) async -> ChatToolProposal
+    /// `approvedTier` is the tier the gate let through; a call that now classifies higher is refused.
+    func run(name: String, inputJSON: String, approvedTier: VoiceTier, context: ChatToolCallContext) async -> ChatToolOutcome
+    /// True for tools whose result carries user data (marks the turn `afterDataRead`).
+    func revealsData(name: String) -> Bool
 }
 
 /// Small JSON helpers shared by both adapters.

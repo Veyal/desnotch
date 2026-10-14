@@ -25,8 +25,8 @@ What to expect from the Hermes lane (by design, not a defect): the `voice` profi
 
 - No wake word and no always-on microphone. Push-to-talk only.
 - No cloud speech recognition and no audio leaving the process **by default**. The one exception is the opt-in AI provider (amendment, section 14 rule 1): when the user picks an OpenAI-compatible provider for speech-to-text, the captured audio goes to that endpoint only. No whisper.cpp/Piper/AEC/barge-in/VAD endpointing (a later phase).
-- No new SPM target, no new package dependency, no new permission beyond Microphone and Speech Recognition (no Accessibility, Automation, Screen Recording, Full Disk Access).
-- No `cua-driver`/computer-use, no Shortcuts verb, no focus-app verb, no AppleScript, no shell from the local lane.
+- No new SPM target, no new package dependency, no new permission beyond Microphone and Speech Recognition (no Accessibility, Automation, Screen Recording, Full Disk Access). Amendment (machine control, section 14 rule 5): with "Let the agent control this Mac" on, the first approved AppleScript that targets an app triggers the macOS Automation prompt.
+- No `cua-driver`/computer-use, no Shortcuts verb, no focus-app verb, no AppleScript, no shell from the local lane. (The opt-in machine control of the OpenAI-compatible/Claude answers lane, section 6, is the only place a shell, AppleScript or Shortcut runs, and only behind its tier gate; computer use, screenshots and clicks stay out of scope.)
 - No `hermes serve`, no WebSocket, no tokens: the only Hermes transport is ACP over the stdio of a child process desnotch owns.
 - desnotch never creates, edits or reads secrets in `~/.hermes`. The `voice` Hermes profile is created and locked by the human.
 - No T3 (network egress) approvals in the MVP (no second factor exists): T3 is denied. T4 has no voice path, ever.
@@ -131,6 +131,80 @@ Unknown tool names default to T3 (default-deny). A tier decides the gate:
 
 The exact action -> tier tables (local intents, tool names, command patterns) are in `WP-LOGIC.md`, Steps 2a-2c, and are what the
 tests assert. The decision table is `ConfirmationPolicy.decide`: T0/T1 allow, T2 confirm, T3 deny while no second factor, T4 deny.
+
+**Amendment: machine control (opt-in `voiceAgentToolsEnabled`, "Let the agent control this Mac", OpenAI-compatible and Claude answers only).**
+desnotch runs these tools itself (`Sources/DesnotchCore/Voice/Tools/`), so every call is classified and, at T2, approved BEFORE it starts
+(`AgentToolGate`). The Hermes lane is unchanged: its tools still classify through `ToolTierTable` and trip the wire. T0/T1 run with a step chip
+(T1 shares a 10-per-minute `RateLimiter` per backend); T2 shows the agent card with the exact command, path or URL and needs hold-to-approve
+(R74 also applies its 3-per-10-minutes limit); T3 and T4 never run (R84 auto-deny, the model is told it is blocked). Unknown tool names and
+invalid arguments never run. Path rules (`AgentToolPaths`): any path that names a protected marker (the scanner's shared list, now also
+`engagement`, `evidence`, `pentest`), before or after resolving symlinks, or desnotch's own voice folder, is T4; reads are T1 in home outside
+hidden folders and `~/Library` (and in desnotch's scratch folder), T2 elsewhere; writes are T2 in that same scope and T3 elsewhere (dotfiles,
+launch agents, system folders). URL rules (`AgentURLPolicy`): http(s) only; this Mac, private/link-local/CGNAT/tailnet hosts, `.local` names and
+non-canonical numeric spellings (`127.1`, `0x7f.0.0.1`, `0177.0.0.1`, a bare integer) are T3; IPv6 forms that carry an IPv4 address
+(`::a.b.c.d`, `::ffff:a.b.c.d`, `::ffff:0:a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) follow the IPv4 rules, and the local-use NAT64
+`64:ff9b:1::/48`, documentation, discard, Teredo and site-local prefixes are T3; `open_url` also resolves the host before the
+first data read of a turn (a name that resolves to a local address, such as `localtest.me`, is T3) and again right before opening; a plain public URL is T1; a query, credentials or more than 200 characters make it T2 (those shapes can carry data out).
+**Data-read escalation:** once a tool that returns user data (`read_file`, `list_dir`, `search_files`, `clipboard_read`, `web_fetch`,
+`get_system_info`, `run_shell`, `run_applescript`, `run_shortcut`) has run in a turn, every later `open_url` and `web_fetch` in that turn is at
+least T2 (card with the full URL), decided statically before any DNS lookup (a lookup would itself leak the host name). Data in a URL's path
+or host name therefore never leaves without a card after a read; the mark resets with each new turn.
+
+| Tool | Default tier | Raised to |
+|---|---|---|
+| `open_app` (catalog name, exact bundle id, or exact installed app name) | T1 | T4 when the name hits a protected marker |
+| `open_url` | T1 | T2 query/credentials/long or after a data read in the turn, T3 non-http(s) or local host |
+| `media_control`, `set_volume`, `focus_timer` (`SystemLocalExecutor` intents) | T0 (`ConfirmationPolicy`) | T2 volume above 70% |
+| `get_system_info` (time, battery, disk free, frontmost app, now playing) | T1 | |
+| `list_dir`, `read_file`, `search_files` (names only; bounded walk) | T1 | T2 outside the read scope, T4 protected |
+| `clipboard_read` | T2 | (password-manager markers are refused) |
+| `clipboard_write` | T2 (full text on the card or Approve disabled, like `write_file`) | T4 control, bidi or zero-width characters |
+| `web_fetch` (GET, text only, 1 MB read, redirects not followed, public addresses only after DNS) | T1 | as `open_url` |
+| `write_file` | T2; the card shows path, size and the WHOLE content, and Approve is disabled (`isTruncated`) when it does not fit in 240 characters / 6 lines | T3 outside the write scope, T4 protected or content with control, bidi or zero-width characters (anything but newline and tab), or any Unicode Default_Ignorable_Code_Point or format (Cf) character (tag characters, Hangul fillers, the combining grapheme joiner, variation selectors; the scanner flags these everywhere) |
+| `run_shortcut` (`shortcuts run <name>`) | T2 | T4 protected name |
+| `run_applescript` (`/usr/bin/osascript` subprocess, script on stdin) | T2 | `CommandRiskScanner` tier (T3 egress, T4 flagged); T4 for `do shell script`, `run script`, `load script`, `character id`, `ASCII character`, any `&`, Terminal's `do script`, iTerm's `write text`, `keystroke`/`key code`, or any `tell application` naming Terminal, iTerm, Warp, Ghostty, kitty, Alacritty, WezTerm, Hyper or Tabby (`appleScriptReachesShell`: shell goes only through `run_shell`) |
+| `run_shell` (`/bin/zsh -f -c` inside the `AgentShellSandbox` profile; T3 when the sandbox or its profile is unavailable) | T2 (no read-only downgrade) | layer 1 (advisory): `CommandRiskScanner` tier (T3 egress, T4 flagged or protected cwd); T4 when the command can assemble a word or code at run time (`shellEvasion`): glob classes `[...]`, braces `{...}`, ANSI-C `$'`, any parameter/variable expansion (`$` followed by a letter, `_`, digit, `@`, `*`, `#`, `?`, `!`, `$`, `-`, or `{`), command substitution (`$(`, backticks), process substitution (`<(`, `>(`), and the `eval`, `source` and `.` builtins; T4 when a script interpreter gets inline code (`inlineInterpreter`: python*, perl*, ruby, node, deno, bun, php, swift, lua, tclsh, pwsh and sh/bash/zsh/dash/ksh/fish with `-e`/`-c`/`-E`/`-r`/`-p`/`--eval`, combined flags such as `-lc`, code on stdin, a `<` redirect or a heredoc); the AppleScript runner, awk, sqlite3, jsc, dc, editors (vim/vi/nvim/view/ex/ed/emacs), expect, gdb and lldb are T4 in any form; flags with attached code (`-e1`, `-c'...'`, `-Mstrict -e`) count as inline; printf/echo/print with `\x`, `\0`-`\7` or `\u` escapes, `git -c`/`--config-env`, `open -a <terminal>` and `.command`/`.tool`/`.terminal` targets are T4. Running a script file stays T2. Layer 2 (enforcement) is the sandbox below |
+
+`CommandRiskScanner.scan` (shared with the Hermes lane) now runs every pattern over the quote/backslash-stripped text as well, stripping
+repeatedly until stable (bounded), so `c\url`, `cu\\rl` or `s'u'do` are caught; this only adds flags, never removes one. `shellEvasion` and `appleScriptReachesShell` are scoped to the in-process tools and
+do not change the Hermes lane.
+
+**Shell enforcement is the sandbox, not the classification.** Static analysis cannot prove that a shell command has no path to a T4
+action (every new interpreter or escape is another variant), so the classification above is advisory layer 1 and every `run_shell` runs
+under `/usr/bin/sandbox-exec -p <profile>` (`AgentShellSandbox`, generated per run, last matching rule wins). The command starts only after the
+same profile has loaded once for `/usr/bin/true`; if `sandbox-exec` is missing or a path cannot be put in the profile safely (only
+`[A-Za-z0-9/._-@+~ ,]` is accepted, never escaped), the call is T3 and nothing runs. Abridged profile:
+
+```
+(version 1)
+(allow default)
+(deny network*)
+(deny appleevent-send)
+(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.coreservices.appleevents"))
+(deny process-exec (literal "/usr/bin/osascript") (literal "/usr/bin/osacompile") (literal "/usr/bin/open") (literal "/usr/bin/shortcuts")
+  (literal "/usr/bin/automator") (subpath "/System/Applications/Utilities/Terminal.app") (subpath "/Applications/iTerm.app") ...)
+(deny file-write*)
+(allow file-write* (subpath "/private/tmp") (subpath "<per-user temp>") (regex #"^/dev/(null|zero|tty.*|fd/.*)$"))
+(deny file-write* (subpath "<home>"))
+(allow file-write* (subpath "<home>"))
+(deny file-write* (subpath "<home>/Library") (regex #"^<home>/(.*/)?\.[^/]*"))
+(allow file-write* (subpath "<scratch>"))
+(deny file-read* file-write* (subpath "<home>/.ssh") (subpath "<home>/.hermes") (subpath "<home>/.gnupg") (subpath "<home>/.aws")
+  (subpath "<home>/.config/gh") ... (subpath "<home>/Library/Keychains") (subpath "<voice audit folder>")
+  (regex #"^<home>/.*[eE][nN][gG][aA][gG][eE][mM][eE][nN][tT]") ... one per protected marker ...
+  (subpath "/private/etc/sudoers") (subpath "/Library/Keychains"))
+```
+
+Paths in the profile are kernel paths (`realpath`, so `/private/var/...`, not `/var/...`). Residual risk, stated plainly: `run_applescript`
+and `run_shortcut` are NOT sandboxed (an Apple Event is executed by the target app, a Shortcut by the Shortcuts service); they stay T2 with
+the exact text on the card, and AppleScript that drives a terminal or reaches a shell is T4. The sandbox allows reading ordinary files
+outside the protected locations (the same scope the file tools allow), so an approved command can still show the model such files.
+
+Process tools run through `SubprocessRunner`: own process group, sanitized environment, no TTY, stdin closed (AppleScript gets its script on
+stdin, then EOF), the scratch folder `~/Library/Application Support/desnotch/agent-scratch` as working directory, a 30 s timeout and a 16 KB
+output cap. Every tool result goes back to the model capped at 16 KB and fenced as `<tool_output trust="untrusted">` (the fence cannot be closed
+from inside), and the tool-mode system prompt says tool output is data, never instructions. A turn allows 8 model rounds and 12 tool calls; the
+reducer's 180 s turn budget and 12-step budget (R82) still apply.
 
 Accepted MVP gap: `volumeStep(delta)` (repeated "louder") and `unmute` (it restores the remembered level) are T0 with no card, so they can raise the
 volume past 70% without the T2 card; the card guards only the ABSOLUTE `volumeSet`. Each step is at most 10 points, the review window still applies, and the
@@ -393,6 +467,9 @@ current state. The first rule whose guard holds wins. IDs are stable: tests are 
 | R90 | `cancelRequested` [`lane == .hermes`] | `TO_IDLE([.cancelAgentTurn, .audit(AuditDraft(kind: .cancel, lane: .hermes, decision: "turn"))])` |
 | R91 | `.agent(.approvalNeeded(req))` while `awaitingApproval` | Auto-deny the NEW request exactly like R84's effects (`decision: "second_request"`); the existing `pending` stays. |
 | R92 | `awaitingApproval` + `.agent(.toolActivity(kind))` | Tripwire exactly like R83 (a tool started while a card is open means something ran unapproved). |
+| R82t | `thinking`, `acting` + `.agent(.toolActivity(kind))` where `kind` is an in-process step label (`AgentToolStep.tiers`, exact and case-sensitive) | The tier comes from that table, then R82/R83 unchanged: a T0/T1 label appends a step; an "(approved)" T2 label consumes one `approvedToolStarts` or trips the wire. The labels contain a capital letter and a space, which `HermesEventMapper.toolKind` never produces, so a Hermes tool cannot borrow them. (Machine-control amendment.) |
+| R84t | `thinking`, `acting` + `.agent(.approvalNeeded(req))` from the in-process backend with `req.tier >= .t3` (`requiresSecondFactor`) | R84 unchanged: auto-deny, no card, audit `auto_deny`; the backend never ran the tool and tells the model it is blocked. |
+| R85t | `thinking`, `acting` + `.agent(.approvalNeeded(req))` from the in-process backend with `req.tier == .t2` | R85 unchanged: hold-to-approve card with the exact literal. The backend starts the tool only after `.respondToApproval(nonce, allow: true)` for that nonce (R74), and then reports it with its "(approved)" label, which R82t consumes; deny (R77), expiry (R78), cancel (R79), Stop and a rate-limited approve (R74) all leave the tool unstarted. |
 
 An `.agent(...)` event (other than `.usage`) in any state other than `thinking`, `acting`, `awaitingApproval` is a no-op. **`.agent(.usage)` is different: R88 yields its cost audit in EVERY state, including `idle`, `error`, `paused` and `speaking`, with any `lane` (including nil) and for a stale generation (R01's exception), so do not route all `.agent` events only through the busy-state handler.**
 
@@ -484,6 +561,11 @@ them off.
 `VoiceFailure.provider`, `PreflightFailure.providerEndpointInvalid`/`providerKeyMissing`, `VoiceSessionModel.cloudActivity`/`agentName`/`refreshAgentLane`. The provider answers
 backend (`VoiceChatBackend`) runs in the reducer's `.hermes` lane, so every agent-lane rule (R54-R56, R63, R86-R90, the daily cap, Stop) applies to it unchanged.
 
+**Amendment: machine control.** Added key `voiceAgentToolsEnabled` (false; never exported or imported; `resetToDefaults()` switches it off; shown in Settings only for
+the OpenAI-compatible and Claude answers). No contract file changed: the in-process backend reuses `AgentEvent.toolActivity` and `.approvalNeeded` (R82t, R84t,
+R85t). `ChatToolHandling` (in `Voice/OpenAI/ChatProvider.swift`, not a contract file) now has `propose` (classify, no side effects) and
+`run(name:inputJSON:approvedTier:)`, which re-classifies and refuses a call whose tier rose since the gate.
+
 **Contract amendments.** If a package finds a contract gap it implements the literal spec, works around it inside its own files, and reports `AMENDMENT REQUEST: ...`. The plan
 owner applies additive amendments directly to `feat/voice` and tells the other worktrees to merge it. Breaking changes need a new plan review.
 
@@ -571,6 +653,12 @@ generated from this table). `Package.swift` is not changed by anyone.
 | `Sources/DesnotchCore/Voice/OpenAI/*.swift` | new | WP-PLATFORM | amendment: opt-in AI providers (one row per file in `ownership.tsv`) |
 | `Tests/DesnotchCoreTests/Voice/OpenAI/*.swift` | new | WP-PLATFORM | amendment: opt-in AI provider tests |
 | `Tests/DesnotchCoreTests/Voice/Coordinator/VoiceCoordinatorAITests.swift` | new | WP-HERMES | amendment: provider routing through the coordinator |
+| `Sources/DesnotchCore/Voice/Tools/*.swift` | new | WP-PLATFORM | amendment: machine control (one row per file in `ownership.tsv`) |
+| `Tests/DesnotchCoreTests/Voice/Tools/*.swift` | new | WP-PLATFORM | amendment: machine control tests |
+| `Sources/DesnotchCore/Voice/OpenAI/AgentWebFetcher.swift` | new | WP-PLATFORM | amendment: the `web_fetch` network path (the only folder allowed a network API) |
+| `Tests/DesnotchCoreTests/Voice/Logic/VoiceReducerToolRuleTests.swift` | new | WP-LOGIC | amendment: R82t, R84t, R85t |
+| `Sources/DesnotchCore/Clipboard/ClipboardController.swift` | changed | WP-PLATFORM | amendment: `privateTypes` shared with `clipboard_read` |
+| `scripts/build-app.sh`, `scripts/smoke-test.sh`, `scripts/desnotch.entitlements` | changed | WP-PLATFORM | amendment: Apple Events usage string, entitlement and smoke assertions |
 | `Tests/DesnotchCoreTests/PillInteractionPolicyTests.swift` | changed | WP-UI | only what the API change requires (plus any other existing UI test it breaks) |
 | `Tests/DesnotchCoreTests/PillSectionMotionTests.swift` | changed | WP-UI | only what the API change requires (plus any other existing UI test it breaks) |
 | `Tests/DesnotchCoreTests/WingMetricsTests.swift` | changed | WP-UI | only what the API change requires (plus any other existing UI test it breaks) |
@@ -795,14 +883,18 @@ W="$(mktemp -d)"; HARNESS_DIR="$W" scripts/voice-harness/run.sh --filter VoiceCo
   | grep -E '^/.*: (warning|error):' | grep -vE '/(main|UpdateCheckerTests)\.swift:'; rm -rf "$W"
 # forbidden patterns, pass 1: everything under Voice except the scanner file, then the voice UI files (rg globs, so it also works in zsh before those files exist). Both must print NOTHING, comments included.
 rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|pkill|killall|hermes pause|osascript|auth\.json|AXIsProcessTrusted' \
-  --glob '!**/Logic/CommandRiskScanner.swift' Sources/DesnotchCore/Voice
+  --glob '!**/Logic/CommandRiskScanner.swift' --glob '!**/Voice/Tools/**' Sources/DesnotchCore/Voice
+# pass 1c (machine-control amendment): Voice/Tools may name the AppleScript runner ONLY as the one executable constant (it is run as a
+# subprocess, never in-process); everything else in pass 1 stays banned there. Both must print NOTHING.
+rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|pkill|killall|hermes pause|auth\.json|AXIsProcessTrusted' Sources/DesnotchCore/Voice/Tools
+rg -n 'osascript' Sources/DesnotchCore/Voice/Tools | rg -v '^[^:]+:[0-9]+:\s*static let appleScriptExecutable = "/usr/bin/osascript"$'
 rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|pkill|killall|hermes pause|osascript|auth\.json|AXIsProcessTrusted' \
   -g 'Voice*.swift' -g 'NotchPillView+Voice.swift' Sources/DesnotchCore/UI
 # pass 2a: the scanner may name the dangerous words, but ONLY as data: on a `static let <Name> = #"..."#` line or as one quoted string per line in its protected-path array (WP-LOGIC Step 2c formatting rule). Must print NOTHING.
 rg -n 'osascript|pkill|killall|auth\.json' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift | rg -v '^[0-9]+:\s*(static let [A-Za-z0-9]+ = #"|"[^"]+",?$)'
 # pass 2b: the scanner must contain none of the other banned patterns. Must print nothing.
 rg -n '\bprint\(|\bNSLog\(|\bos_log|\bLogger\(|\.onHover|repeatForever|serve --stop|hermes pause|AXIsProcessTrusted' Sources/DesnotchCore/Voice/Logic/CommandRiskScanner.swift
-# pass 3: safety invariants (no audio file, no URL recognition, no network API, no voice processing, no session/always approvals, no AppleScript, no Accessibility API). Whole Voice tree INCLUDING the scanner. Must print nothing.
+# pass 3: safety invariants (no audio file, no URL recognition, no network API, no voice processing, no session/always approvals, no in-process AppleScript, no Accessibility API). Whole Voice tree INCLUDING the scanner and Voice/Tools (the machine-control tools reach the network only through Voice/OpenAI/AgentWebFetcher.swift, and AppleScript only as a subprocess). Must print nothing.
 rg -n 'AVAudioFile|SFSpeechURLRecognitionRequest|URLSession|setVoiceProcessingEnabled|allow_session|allow_always|deny_always|NSAppleScript|AXUIElement' --glob '!**/Voice/OpenAI/**' Sources/DesnotchCore/Voice
 # pass 3b (opt-in AI provider amendment): Voice/OpenAI/ is the only place a network API may appear, and even there no audio file, URL recognition, voice processing, approval-persistence words, shared/default/cached session, download task or file handle. Must print nothing.
 rg -n 'AVAudioFile|SFSpeechURLRecognitionRequest|setVoiceProcessingEnabled|NSAppleScript|AXUIElement|write\(to:|FileManager|allow_session|allow_always|deny_always|URLSessionConfiguration\.default|URLSession\.shared|downloadTask|URLCache\(|FileHandle|createFile' Sources/DesnotchCore/Voice/OpenAI
@@ -924,11 +1016,11 @@ These are not numbered rules, so section numbers and cross-references elsewhere 
 2. The pill shows state words plus bounded, `privacyRedacted` transcript/reply/command text only while a session is active; nothing is persisted and everything clears when the session returns to idle.
 3. The audit log (`~/Library/Application Support/desnotch/voice/voice-audit.jsonl`, mode 0600, hash-chained, size-rotated) stores metadata only: timestamp, kind, lane, tier, decision/outcome codes, a SHA-256 of the transcript, counters. No audio, no utterance text, no command text.
 4. Utterance, reply and command text is never announced to VoiceOver, never put in the status menu (local approvals show a desnotch-authored summary), and never logged.
-5. Permissions: Microphone and Speech Recognition only (cloud speech-to-text needs only the Microphone), requested only after the user enables voice and presses Allow. No Accessibility, Automation, Screen Recording or Full Disk Access for this feature.
-6. No network listener and no token. The network paths are the optional Hermes lane (a child process spoken to over stdio) and, when opted in, HTTPS requests from `Voice/OpenAI/` (`VoiceAIHTTP`, an ephemeral session) to the user's configured provider base URL and nowhere else. The fixed recognizer hint list is never sent.
+5. Permissions: Microphone and Speech Recognition only (cloud speech-to-text needs only the Microphone), requested only after the user enables voice and presses Allow. No Accessibility, Screen Recording or Full Disk Access for this feature. **Amendment (machine control):** with "Let the agent control this Mac" on, the first approved `run_applescript` that targets an app makes macOS show its Automation prompt for desnotch (`NSAppleEventsUsageDescription`, hardened-runtime entitlement `com.apple.security.automation.apple-events`); nothing else asks for a new permission, and Accessibility/Screen Recording stay out until a computer-use v2. Approved shell commands run inside a `sandbox-exec` profile with no network, no Apple Events and no access to protected locations (section 6); that boundary, not the command classification, is what keeps T4 without a path.
+6. No network listener and no token. The network paths are the optional Hermes lane (a child process spoken to over stdio) and, when opted in, HTTPS requests from `Voice/OpenAI/` (`VoiceAIHTTP`, an ephemeral session) to the user's configured provider base URL and nowhere else. **Amendment (machine control):** with tools on, `web_fetch` (`Voice/OpenAI/AgentWebFetcher.swift`, same ephemeral no-redirect session) GETs public http(s) pages the model names, after the tier gate and a DNS check that refuses local, private, link-local and tailnet addresses; a `run_shell` command that reaches the network is T3 and never runs. The fixed recognizer hint list is never sent.
 7. Approvals are visual only, bound to a random nonce, answered `once` or `deny` only. No spoken confirmation. T3 is denied in the MVP; T4 never has a voice path.
 8. Voice is OFF by default and inert in smoke-test mode. The cloud lane is a second opt-in that is re-checked (preflight) on every spawn and every session, and it additionally requires the global Stop chord to be registered (`hotkeyStatus == .active`).
-9. Nothing from a transcript, screen, web page or tool result can raise a tier or satisfy an approval. Unknown tools are T3 and trip the tripwire.
+9. Nothing from a transcript, screen, web page or tool result can raise a tier or satisfy an approval. Unknown tools are T3 and trip the tripwire. **Amendment (machine control):** tools exist only behind the `voiceAgentToolsEnabled` opt-in for the OpenAI-compatible/Claude answers and stay default-deny: an unknown tool name or invalid arguments never run, every call is classified by desnotch code before it starts, a T2 call needs its own card and nonce every time (no "approved before", no session approval), tool output is fenced as untrusted and only a reducer `.respondToApproval` for the exact nonce starts a T2 tool. The audit log gets one metadata-only record per call (`tool.<name>` code, tier, outcome code, duration, output size), never arguments, paths, commands, URLs or output.
 10. The stop is total: interrupt, then SIGTERM and SIGKILL to the agent's own process group, with a survivor report. desnotch only signals processes it spawned (the crash-recovery kill of a stale pid file additionally requires the exact command-line tokens `-p voice acp`, a matching process start time and a group leader, WP-HERMES B.6).
 11. Hermes keeps its own transcripts (its `state.db`); the desnotch audit log is not a record of what Hermes stored.
 12. Pentest and engagement context never goes on the voice path. Scope of this guarantee, stated honestly: it is enforced on the TOOL and SYSTEM side (T4 markers, an empty MCP list, an empty working directory, no engagement files reachable, default-deny tools). The user's own spoken sentence still goes to the cloud agent after the 1.5 s review window, and the recognizer hint list (`VoiceLexicon.contextualStrings`, an on-device-only hint, never sent anywhere) contains pentest vocabulary (`Interseptor`, `nmap`). Do not speak engagement details into the cloud lane; this plan does not filter them (a router-side keyword block was considered and left out because a keyword list is easy to evade and gives false comfort).
@@ -966,6 +1058,9 @@ Nothing in this section gates an import, a commit or the completion of an agent 
 | Scope creep (CHANGELOG 0.9.0 removed an earlier voice feature) | one flag, one folder, review gate, deletion path |
 | Agent edits its own approvals | the human locks the profile config (`uchg`); preflight checks the flag on every spawn |
 | Stop or cancel loses a race with a spawning agent, or the agent ignores `session/cancel` | the backend keeps a turn epoch re-checked before every step of a submit, `cancelTurn` escalates to the process-group kill after `hardStopGrace`, and a tool start after a cancel kills (WP-HERMES B.7) |
+| Prompt injection through a file, page or command output steers the tool-using agent (machine control) | output fenced as untrusted and the tool-mode prompt says so; every call re-classified by desnotch; T2 needs a fresh card each time; shell/AppleScript T2 minimum, network egress T3, flagged constructs T4; writes outside home's ordinary folders T3; URLs with a query need a card |
+| Data leaves through a T1 tool (machine control) | T1 reads are limited to home outside hidden folders and `~/Library`, protected markers are T4; the model provider already sees what tools return (stated in Settings); `open_url`/`web_fetch` with a query, credentials or a long URL need a card; DNS rebinding between the check and the connection is a residual risk |
+| A tool process outlives Stop (machine control) | `SubprocessRunner` puts each run in its own process group and kills the group on cancel and timeout; a process that deliberately starts a new session escapes the group (residual, same as the Hermes lane) |
 | Short word lost on a cold mic start (R21) | safe by design (the capture is cancelled); expected in P3 testing, a "release after the mic is live" hint is a follow-up |
 
 ## 17. Deletion path

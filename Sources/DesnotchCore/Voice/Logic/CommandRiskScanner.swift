@@ -19,7 +19,26 @@ enum CommandRiskScanner {
         static let gitPush = #"\bgit\s+push\b"#
         static let sshCommand = #"(?:^|[\s;&|])ssh\s"#
         static let destructive = #"\b(rm|rmdir|mv|kill|killall|pkill|chmod|chown|dd|mkfs|truncate|shred|diskutil)\b"#
+        // In-process tools only (see `shellEvasion` / `appleScriptReachesShell`).
+        static let globClass = #"\[[^\]]*\]"#
+        static let braceExpansion = #"\{[^}]*\}"#
+        static let ansiCQuote = #"\$'"#
+        static let parameterExpansion = #"\$\{"#
+        static let variableExpansion = #"\$[a-z_0-9@*#?!$-]"#
+        static let processSubstitution = #"[<>]\("#
+        static let sourceBuiltin = #"(?:^|[;&|(\n])\s*(?:source|\.)\s"#
+        static let alwaysInterpreter = #"^(osascript|osacompile|awk|gawk|nawk|mawk|sqlite3|jsc|dc|vim|vi|nvim|view|ex|ed|emacs|expect|gdb|lldb)$"#
+        static let inlineInterpreter = #"^(python[0-9.]*|perl[0-9.]*|ruby|irb|node|nodejs|deno|bun|php|swift|lua|tclsh|jshell|pwsh|sh|bash|zsh|dash|ksh|fish)$"#
+        static let inlineCodeFlag = #"^(-[a-z]*[cerp].*|--eval.*|--print.*|--command.*|--exec.*|-)$"#
+        static let escapingPrinter = #"^(printf|echo|print)$"#
+        static let escapeSequence = #"\\(x[0-9a-f]|u[0-9a-f]|[0-7])"#
+        static let terminalLaunchTarget = #"(\.command|\.tool|\.terminal)$|^(terminal|iterm|iterm2|warp|ghostty|kitty|alacritty|wezterm|hyper|tabby)(\.app)?$"#
+        static let appleScriptTerminal = #"\.(command|tool|terminal)\b|\b(do\s+script|write\s+text|keystroke|key\s+code)\b|\bapp(lication)?\s+(id\s+)?"?[^"]*(terminal|iterm|warp|ghostty|kitty|alacritty|wezterm|hyper|tabby)"#
+        static let appleScriptShell = #"\b(do\s+shell\s+script|run\s+script|load\s+script|character\s+id|ascii\s+character)\b"#
     }
+
+    /// Shared with the shell sandbox (`AgentShellSandbox`), which denies these markers under home.
+    static var protectedMarkers: [String] { protectedPaths }
 
     private static let protectedPaths: [String] = [
         ".hermes",
@@ -33,7 +52,9 @@ enum CommandRiskScanner {
         ".gnupg",
         "interseptor",
         "vault",
-        "engagements",
+        "engagement",
+        "evidence",
+        "pentest",
         "sudoers",
         "/etc/shadow"
     ]
@@ -56,6 +77,13 @@ enum CommandRiskScanner {
                  0x2060...0x2064, 0x2066...0x2069, 0xFEFF:
                 flags.insert(.hiddenCharacters)
             default:
+                // Every other invisible: Unicode Default_Ignorable_Code_Point (tag characters,
+                // Hangul fillers, the combining grapheme joiner, variation selectors...) and
+                // format characters (Cf).
+                if scalar.properties.isDefaultIgnorableCodePoint || scalar.properties.generalCategory == .format {
+                    flags.insert(.hiddenCharacters)
+                    continue
+                }
                 sanitized.unicodeScalars.append(scalar)
             }
         }
@@ -69,12 +97,15 @@ enum CommandRiskScanner {
         if matches(Pat.pipeToInterpreter, lowered) || matches(Pat.pipeToInterpreter, folded) {
             flags.insert(.pipeToInterpreter)
         }
-        if matches(Pat.base64Flag, lowered) || matches(Pat.b64decode, lowered) {
+        // Every pattern also runs over the quote/backslash-stripped text, so `c\url` or `"su"do`
+        // cannot hide a word the shell would still see.
+        let either = { (pattern: String) in matches(pattern, lowered) || matches(pattern, folded) }
+        if either(Pat.base64Flag) || either(Pat.b64decode) {
             flags.insert(.base64Decode)
         }
-        if matches(Pat.evalUse, lowered) { flags.insert(.evalUse) }
+        if either(Pat.evalUse) { flags.insert(.evalUse) }
         if lowered.contains("$(") || lowered.contains("`") { flags.insert(.commandSubstitution) }
-        if matches(Pat.sudo, lowered) { flags.insert(.sudo) }
+        if either(Pat.sudo) { flags.insert(.sudo) }
         if mentionsProtected(lowered) || mentionsProtected(folded) || globHitsProtected(folded) {
             flags.insert(.protectedPath)
         }
@@ -83,11 +114,10 @@ enum CommandRiskScanner {
         }
         if matches(Pat.singlePipe, lowered) { flags.insert(.pipe) }
         if lowered.contains(">") || lowered.contains("<") { flags.insert(.redirect) }
-        if matches(Pat.urlScheme, lowered) || matches(Pat.networkTool, lowered)
-            || matches(Pat.gitPush, lowered) || matches(Pat.sshCommand, lowered) {
+        if either(Pat.urlScheme) || either(Pat.networkTool) || either(Pat.gitPush) || either(Pat.sshCommand) {
             flags.insert(.url)
         }
-        if matches(Pat.destructive, lowered) { flags.insert(.destructive) }
+        if either(Pat.destructive) { flags.insert(.destructive) }
 
         var wasTruncated = false
         if sanitized.count > displayLimit {
@@ -108,12 +138,97 @@ enum CommandRiskScanner {
         return CommandRisk(flags: flags, sanitized: sanitized, wasTruncated: wasTruncated, tier: tier)
     }
 
+    /// Stricter check for desnotch's own `run_shell` tool only (the Hermes lane keeps `scan`
+    /// unchanged): shell syntax that builds a word or runs code assembled at run time can spell a
+    /// protected path or a network tool the scanner never sees, so such a command is refused (T4):
+    /// glob classes `[...]`, brace expansion `{...}`, ANSI-C quoting `$'...'`, any parameter or
+    /// variable expansion (`${...}`, `$x`, `$1`, `$@`, `$$`...), command substitution (`$(`,
+    /// backticks), process substitution (`<(`, `>(`), and the `eval`, `source` and `.` builtins.
+    static func shellEvasion(_ command: String) -> Bool {
+        let lowered = command.lowercased()
+        let patterns = [
+            Pat.globClass, Pat.braceExpansion, Pat.ansiCQuote, Pat.parameterExpansion, Pat.variableExpansion,
+            Pat.processSubstitution, Pat.sourceBuiltin, Pat.evalUse
+        ]
+        return lowered.contains("$(") || lowered.contains("`")
+            || patterns.contains { matches($0, lowered) || matches($0, fold(lowered)) }
+    }
+
+    /// Stricter check for desnotch's own `run_shell` tool only: a script interpreter given its
+    /// code inline (`-e`, `-c`, `-E`, `--eval`, combined flags such as `-lc`/`-ne`), on stdin (no
+    /// argument, `-`, a `<` redirect) or in a heredoc can assemble a protected path or a network
+    /// call at run time, out of the scanner's sight, so it is refused (T4). The AppleScript runner
+    /// and awk are refused in any form: AppleScript goes through `run_applescript`, and an awk
+    /// program is always inline, as are sqlite3, jsc, dc, editors (vim, emacs, ed...), expect and
+    /// debuggers. Also refused: printf/echo/print with `\x`, `\0`-`\7` or `\u` escapes, `git -c`,
+    /// and terminal launch targets (`open -a Terminal`, `.command`/`.tool`/`.terminal` files).
+    /// Running a script FILE (`python3 tool.py`) stays a T2 card. This is layer 1 only: the
+    /// enforcement boundary is the shell sandbox (`AgentShellSandbox`).
+    static func inlineInterpreter(_ command: String) -> Bool {
+        let lowered = command.lowercased()
+        let folded = fold(lowered)
+        let words = folded.split { $0.isWhitespace || ";&|()".contains($0) }.map(String.init)
+        for (index, word) in words.enumerated() {
+            let name = word.split(separator: "/").last.map(String.init) ?? word
+            if matches(Pat.alwaysInterpreter, name) { return true }
+            // A printer that decodes escapes (`\x2e`, `\0..`, `\u..`) can spell any path.
+            if matches(Pat.escapingPrinter, name) && matches(Pat.escapeSequence, lowered) { return true }
+            // Terminal launch targets: `open -a Terminal`, `x.command`, `.tool`, `.terminal`.
+            if word.hasSuffix(".command") || word.hasSuffix(".tool") || word.hasSuffix(".terminal") { return true }
+            if name == "open", words.dropFirst(index + 1).contains(where: { matches(Pat.terminalLaunchTarget, $0) }) {
+                return true
+            }
+            // `git -c alias.x='!cmd'` (and any -c/--config-env) runs a configured command.
+            if name == "git", words.dropFirst(index + 1).contains(where: { $0 == "-c" || $0.hasPrefix("--config-env") }) {
+                return true
+            }
+            guard matches(Pat.inlineInterpreter, name) else { continue }
+            let rest = words.dropFirst(index + 1)
+            if rest.isEmpty || folded.contains("<<") { return true }
+            if rest.contains(where: { matches(Pat.inlineCodeFlag, $0) || $0.hasPrefix("<") }) { return true }
+        }
+        return false
+    }
+
+    /// Stricter check for desnotch's own `run_applescript` tool only: an AppleScript that can reach
+    /// a shell or build a string at run time (`do shell script`, `run script`, `load script`,
+    /// `character id`, `ASCII character`, or `&` concatenation), or that drives a terminal app
+    /// (Terminal's `do script`, iTerm's `write text`, typed keystrokes, or any `tell application`
+    /// naming Terminal, iTerm, Warp, Ghostty, kitty, Alacritty, WezTerm, Hyper or Tabby) is refused
+    /// (T4), so shell commands only ever run through `run_shell`, where the card shows them literally.
+    static func appleScriptReachesShell(_ script: String) -> Bool {
+        let collapsed = script.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let folded = fold(collapsed)
+        return collapsed.contains("&")
+            || [Pat.appleScriptShell, Pat.appleScriptTerminal].contains { matches($0, collapsed) || matches($0, folded) }
+    }
+
+    /// True when a path (or any text) names a protected location. The machine-control file
+    /// tools use this for every path they touch and every entry a search returns, so the tools
+    /// and the command scanner share one protected-path list.
+    static func mentionsProtectedPath(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        let folded = fold(lowered)
+        return mentionsProtected(lowered) || mentionsProtected(folded) || globHitsProtected(folded)
+    }
+
     private static func matches(_ pattern: String, _ text: String) -> Bool {
         text.range(of: pattern, options: .regularExpression) != nil
     }
 
-    /// Drops quotes and backslashes so `$HOME/.h""ermes` still contains `.hermes`.
+    /// Drops quotes and backslashes so `$HOME/.h""ermes` still contains `.hermes`, repeating until
+    /// nothing changes (bounded), so a doubly escaped `cu\\rl` folds to `curl` as well.
     private static func fold(_ text: String) -> String {
+        var current = text
+        for _ in 0..<8 {
+            let next = foldOnce(current)
+            if next == current { break }
+            current = next
+        }
+        return current
+    }
+
+    private static func foldOnce(_ text: String) -> String {
         var out = String.UnicodeScalarView()
         var escaped = false
         for scalar in text.unicodeScalars {

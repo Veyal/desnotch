@@ -123,6 +123,32 @@ final class VoiceAISettingsTests: XCTestCase {
         XCTAssertEqual(store.voiceAnthropicModel, SettingsStore.defaultVoiceAnthropicModel)
     }
 
+    @MainActor
+    func testAgentToolsSwitchIsOffByDefaultPersistsResetsAndNeverImports() throws {
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertFalse(store.voiceAgentToolsEnabled)
+        XCTAssertFalse(VoiceAIConfig(settings: store).agentToolsEnabled)
+        XCTAssertFalse(VoiceAIConfig().agentToolsEnabled)
+        store.voiceAgentToolsEnabled = true
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertTrue(reloaded.voiceAgentToolsEnabled)
+        XCTAssertTrue(VoiceAIConfig(settings: reloaded).agentToolsEnabled)
+        reloaded.resetToDefaults()
+        XCTAssertFalse(reloaded.voiceAgentToolsEnabled)
+        let document: [String: Any] = ["app": "desnotch", "settings": ["voiceAgentToolsEnabled": true]]
+        let report = try reloaded.importJSON(JSONSerialization.data(withJSONObject: document))
+        XCTAssertEqual(report.rejected, ["voiceAgentToolsEnabled"])
+        XCTAssertFalse(reloaded.voiceAgentToolsEnabled)
+    }
+
+    func testAgentToolsSwitchShowsOnlyForProviderAnswers() {
+        XCTAssertTrue(VoiceAISettingsWords.showsAgentTools(.openAICompatible))
+        XCTAssertTrue(VoiceAISettingsWords.showsAgentTools(.anthropic))
+        XCTAssertFalse(VoiceAISettingsWords.showsAgentTools(.hermes))
+        XCTAssertFalse(VoiceAISettingsWords.showsAgentTools(.off))
+        XCTAssertEqual(VoiceAISettingsWords.agentToolsTitle, "Let the agent control this Mac")
+    }
+
     func testAnswersChoiceFoldsTheLaneSwitchAndProvider() {
         XCTAssertEqual(VoiceAnswersChoice.resolve(laneOn: false, provider: .anthropic), .off)
         XCTAssertEqual(VoiceAnswersChoice.resolve(laneOn: true, provider: .hermes), .hermes)

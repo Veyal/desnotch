@@ -154,6 +154,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <key>NSRemindersFullAccessUsageDescription</key><string>desnotch shows, creates, and completes reminders you choose to manage.</string>
     <key>NSMicrophoneUsageDescription</key><string>desnotch listens while you hold the voice shortcut and turns what you say into a command on this Mac. Audio is never saved or sent anywhere.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>desnotch uses on-device speech recognition to turn what you say into text. Nothing is sent to Apple.</string>
+    <key>NSAppleEventsUsageDescription</key><string>When you turn on "Let the agent control this Mac" and approve an AppleScript on the voice card, desnotch runs it to control the app it names.</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST

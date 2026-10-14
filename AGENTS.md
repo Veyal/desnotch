@@ -483,9 +483,30 @@ were saved for (`VoiceAIEndpoint.keyBinding`, stored in `kSecAttrGeneric`; `Voic
 key out only for that binding); never in `SettingsStore`, logs, export, audit or any UI text. Settings
 text fields commit on Return/blur (`VoiceAICommittedTextField`), never per keystroke. A cloud capture is uploaded only when the user ended it (a cap-ended one
 fails `needsUserRelease`), its final watchdog is stretched to `VoiceAILimits.transcriptionWatchdog`,
-and `VoiceSessionModel.cloudActivity` drives the cloud mark. `ChatProvider` +
-`ChatToolHandling` (nil today: no tool is ever offered) is the seam for a later tool-use package; any
-tool it adds must go through `ToolTierTable`, because each tool call is reported as `.toolActivity`.
+and `VoiceSessionModel.cloudActivity` drives the cloud mark.
+
+**Machine control** (`Voice/Tools/`, opt-in `voiceAgentToolsEnabled` "Let the agent control this Mac",
+shown only for the OpenAI-compatible/Claude answers; the Hermes lane is unchanged and still tripwired).
+`AgentToolbox` (the v1 catalog behind `ChatToolHandling`) runs tools IN-PROCESS, so `AgentToolGate`
+classifies every call BEFORE it starts: T0/T1 run with a step chip (T1 rate-limited), T2 raises
+`.approvalNeeded` (hold-to-approve card with the exact command/path/URL, nonce-bound, one card per call)
+and starts only on `respond(nonce:allow: true)`, T3/T4 and unknown tools never run (R84). Starts are
+reported with `AgentToolStep` labels, which `ToolTierTable` resolves exactly (R82t; Hermes kinds can never
+match them). Shell/AppleScript tiers come from `CommandRiskScanner` (never below T2; do not add a second
+pattern list), paths from `AgentToolPaths` (protected markers before and after symlink resolution are T4;
+reads quiet only in home outside dotfolders and `~/Library`; writes elsewhere are T3), URLs from
+`AgentURLPolicy` (local/private/tailnet hosts T3; query/credentials/long URLs T2). **Shell enforcement is the
+sandbox:** every `run_shell` runs under `/usr/bin/sandbox-exec` with the `AgentShellSandbox` profile (no network,
+no Apple Events, no terminal/AppleScript exec, no access to protected locations, writes only to scratch, temp and
+home's ordinary folders); the static shell checks are advisory layer 1, and no sandbox means no run (T3). Use kernel
+paths (`realpath`) in the profile and never escape a path into it: refuse unsafe characters. AppleScript and
+Shortcuts are NOT sandboxed (they run in other processes): they stay T2 with the exact text, terminal-driving T4. Processes go through
+`SubprocessRunner` (own group, sanitized env, scratch cwd, 30 s, 16 KB) and die with the turn task on Stop.
+`web_fetch` is the one extra network path and lives in `Voice/OpenAI/AgentWebFetcher.swift` (URLSession
+stays in that folder). Tool output is capped and fenced as untrusted; the audit gets one metadata-only
+record per call (`tool.<name>`, tier, outcome code, duration). Keep every new tool on that pattern: a
+`propose` without side effects, an `execute` that re-checks, a label in `AgentToolStep.tiers`, and tests
+in `Tests/DesnotchCoreTests/Voice/Tools/` against a temporary folder, never the real machine.
 
 The expanded pill also has a **Talk row** (`TalkRowPresentation`, `NotchPillView+TalkAction.swift`, `PillSectionKind.talk`):
 shown only while voice is enabled, idle, and `voice.actions.toggleTalk` is installed (never in smoke-test mode); it calls
@@ -494,7 +515,8 @@ shown only while voice is enabled, idle, and `voice.actions.toggleTalk` is insta
 
 `Contracts/` is frozen. The other folders are `Logic/` (reducer, router, tiers), `Platform/`
 (speech, hotkey, permissions, audit), `Coordinator/`, `Hermes/` (preflight, ACP, process
-guard), and `OpenAI/` (opt-in AI providers). Put a change in the folder that already owns that layer.
+guard), `OpenAI/` (opt-in AI providers) and `Tools/` (opt-in machine control). Put a change in the folder
+that already owns that layer.
 
 Load-bearing privacy rules (all 12 are `docs/voice/PLAN.md` section 14):
 
@@ -507,16 +529,18 @@ Load-bearing privacy rules (all 12 are `docs/voice/PLAN.md` section 14):
   (hashes and codes).
 - Approvals are visual only, bound to a random nonce, and answered once or deny. T3 is denied
   in the MVP. T4 has no voice path.
-- Tools are default-deny, plus a tripwire. The profile's ACP toolset is empty. A tool at T2 or
-  higher trips the wire. A tripwire pause is the normal outcome of an agent tool call in the
-  MVP; agent approval cards are exercised only by tests.
+- Tools are default-deny, plus a tripwire. The profile's ACP toolset is empty. A Hermes tool at T2
+  or higher trips the wire; a tripwire pause is the normal outcome of a Hermes tool call. The
+  in-process machine-control tools (opt-in) ask for the card before they start instead, and
+  nothing a tool returns can approve a card.
 - Stop is total (interrupt, then SIGTERM and SIGKILL on the agent's process group). desnotch
   signals only processes it spawned. Crash recovery of a stale pid file also requires the
   command-line tokens `-p voice acp`, a matching start time, and a group leader
   (`HermesProcessGuard`).
 - This feature's permissions are Microphone and Speech Recognition, requested only after the
-  user enables voice and presses Allow. It does not take Accessibility, Automation, Screen
-  Recording, or Full Disk Access.
+  user enables voice and presses Allow. It does not take Accessibility, Screen Recording, or Full
+  Disk Access. With machine control on, the first approved AppleScript that targets an app shows
+  the macOS Automation prompt (`NSAppleEventsUsageDescription`, apple-events entitlement).
 - Voice is off by default and inert in smoke-test mode.
 - The human creates and locks the Hermes profile `voice`. desnotch only reads
   `~/.hermes/profiles/voice/config.yaml`. Never edit `~/.hermes`.

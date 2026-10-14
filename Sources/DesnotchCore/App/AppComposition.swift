@@ -63,23 +63,37 @@ final class AppComposition {
             let backend = HermesAgentBackend()
             hermesBackend = backend
             let systemVoice = AppleSpeechSynthesizer()
+            let localExecutor = SystemLocalExecutor(
+                nowPlaying: nowPlayingController,
+                focusTimer: focusTimerController
+            )
+            let auditLog = FileAuditLogger(
+                directory: FileAuditLogger.defaultDirectory(),
+                writer: DiskFileWriter(),
+                clock: SystemVoiceClock()
+            )
+            let nowPlaying = nowPlayingController
+            let battery = batteryController
+            // Built always, offered to the answers model only while "Let the agent control this
+            // Mac" is on. Constructing it opens, runs and sends nothing.
+            let agentTools = AgentToolbox.standard(
+                system: LiveAgentSystem(
+                    executor: localExecutor,
+                    nowPlaying: { [weak nowPlaying] in nowPlaying?.info },
+                    battery: { [weak battery] in battery?.state }
+                ),
+                fetcher: AgentWebFetcher()
+            )
             voiceCoordinator = VoiceCoordinator(
                 model: voiceModel,
                 settings: SettingsStore.shared,
                 clock: SystemVoiceClock(),
                 recognizer: AppleSpeechRecognizer(),
                 synthesizer: systemVoice,
-                executor: SystemLocalExecutor(
-                    nowPlaying: nowPlayingController,
-                    focusTimer: focusTimerController
-                ),
+                executor: localExecutor,
                 backend: backend,
                 terminateAgentNow: { [backend] in backend.terminateNow() },
-                audit: FileAuditLogger(
-                    directory: FileAuditLogger.defaultDirectory(),
-                    writer: DiskFileWriter(),
-                    clock: SystemVoiceClock()
-                ),
+                audit: auditLog,
                 makeKeys: { CarbonPushToTalk(choice: $0) },
                 lock: ScreenLockMonitor(),
                 ducker: VolumeDucker(),
@@ -90,7 +104,7 @@ final class AppComposition {
                 isPrivacyMode: { SettingsStore.shared.privacyModeEnabled },
                 // Built always, used only for the functions the user switched to a provider.
                 // Constructing it opens nothing and sends nothing.
-                ai: VoiceAIProviders.live(fallbackSynthesizer: systemVoice),
+                ai: VoiceAIProviders.live(fallbackSynthesizer: systemVoice, tools: agentTools, audit: auditLog),
                 debugTypingEnabled: ProcessInfo.processInfo.environment["DESNOTCH_VOICE_DEBUG"] == "1"
             )
             voiceCoordinator?.start()

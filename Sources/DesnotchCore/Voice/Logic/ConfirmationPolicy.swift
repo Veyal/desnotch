@@ -55,6 +55,9 @@ enum ToolTierTable {
     ]
 
     static func tier(forTool kind: String) -> VoiceTier {
+        // Exact, case-sensitive match first: these labels contain a capital letter and a space,
+        // which `HermesEventMapper.toolKind` never produces, so a Hermes tool cannot borrow them.
+        if let inProcess = AgentToolStep.tiers[kind] { return inProcess }
         let lowered = kind.lowercased()
         if lowered.trimmingCharacters(in: .whitespaces).isEmpty { return .t3 }
         for marker in t4Markers where lowered.contains(marker) { return .t4 }
@@ -65,4 +68,60 @@ enum ToolTierTable {
         for word in words where t2Words.contains(word) { return .t2 }
         return .t3
     }
+}
+
+/// Step labels of desnotch's own machine-control tools (`Voice/Tools`, opt-in
+/// `voiceAgentToolsEnabled`), with the tier each label stands for. The in-process backend
+/// classifies a call BEFORE it runs and reports the start with the label of the tier it ran at:
+/// a T2 call is reported only after its card was approved, with an "(approved)" label, so R82
+/// consumes that approval and any other T2 start still trips the wire (R83). Labels are display
+/// text for the step chips: no arguments, ever.
+enum AgentToolStep {
+    static let media = "Media"
+    static let volume = "Volume"
+    static let volumeApproved = "Volume (approved)"
+    static let timer = "Timer"
+    static let openApp = "Open app"
+    static let openLink = "Open link"
+    static let openLinkApproved = "Open link (approved)"
+    static let systemInfo = "System info"
+    static let listFolder = "List folder"
+    static let listFolderApproved = "List folder (approved)"
+    static let readFile = "Read file"
+    static let readFileApproved = "Read file (approved)"
+    static let searchFiles = "Search files"
+    static let searchFilesApproved = "Search files (approved)"
+    static let readClipboardApproved = "Read clipboard (approved)"
+    static let copyToClipboardApproved = "Copy to clipboard (approved)"
+    static let fetchPage = "Fetch page"
+    static let fetchPageApproved = "Fetch page (approved)"
+    static let writeFileApproved = "Write file (approved)"
+    static let runShortcutApproved = "Run shortcut (approved)"
+    static let runAppleScriptApproved = "Run AppleScript (approved)"
+    static let runCommandApproved = "Run command (approved)"
+
+    static let tiers: [String: VoiceTier] = [
+        media: .t0,
+        volume: .t0,
+        timer: .t0,
+        openApp: .t1,
+        openLink: .t1,
+        systemInfo: .t1,
+        listFolder: .t1,
+        readFile: .t1,
+        searchFiles: .t1,
+        fetchPage: .t1,
+        volumeApproved: .t2,
+        openLinkApproved: .t2,
+        listFolderApproved: .t2,
+        readFileApproved: .t2,
+        searchFilesApproved: .t2,
+        readClipboardApproved: .t2,
+        copyToClipboardApproved: .t2,
+        fetchPageApproved: .t2,
+        writeFileApproved: .t2,
+        runShortcutApproved: .t2,
+        runAppleScriptApproved: .t2,
+        runCommandApproved: .t2
+    ]
 }
