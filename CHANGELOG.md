@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.13.0 — 2026-10-14
+
 - **Talk button on the notch:** with voice control on, the expanded notch shows a Talk row (with
   the configured shortcut) that starts a listening session without the hot key, or asks for
   microphone and speech access first. While listening, the card now has Cancel and Done buttons.
@@ -21,7 +23,9 @@
   ones wait for you to hold Approve on a card that shows the exact command, path or link, and
   network commands, credentials, engagement folders and local-network addresses are always
   refused. Commands run in a private scratch folder with a clean environment, a 30-second limit
-  and capped output, and Stop kills them. The app now declares Apple Events use for the approved
+  and capped output, and Stop kills them. Shell commands also run inside a macOS sandbox that
+  blocks network access, protected folders (SSH keys, keychains, credentials, Hermes and engagement
+  folders) and writes outside your ordinary home folders, however the command is written. The app now declares Apple Events use for the approved
   AppleScript tool.
 
 ## v0.12.0 — 2026-10-13
