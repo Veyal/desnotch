@@ -468,19 +468,40 @@ process), `SystemLocalExecutor` for the closed local grammar, or, when the secon
 is what the pill, wings, status menu, and Settings read. The flow, tiers, and rule table are
 `docs/voice/PLAN.md`.
 
+**Opt-in AI provider** (`Voice/OpenAI/`, Settings section `VoiceAIProviderSettingsSection`): per step,
+`voiceSpeechProvider` (on-device | OpenAI-compatible `OpenAISpeechRecognizer`), `voiceAnswersProvider`
+(Hermes | OpenAI-compatible | Anthropic, all through `VoiceChatBackend` except Hermes, with the lane
+switch still `voiceHermesLane`) and `voiceReplyProvider` (macOS | OpenAI-compatible
+`OpenAISpeechSynthesizer`, falling back to the macOS voice). Defaults keep today's behavior. The
+coordinator picks the recognizer at capture start and the backend at submit (`VoiceAIProviders`, nil
+in tests and smoke mode); the provider lane reuses the reducer's `.hermes` lane, so the review window,
+R54, the daily cap, Stop and the audit apply unchanged. `VoiceAIHTTP` is the only network path:
+ephemeral session, redirects refused, https except loopback (`VoiceAIEndpoint`), a whole-request
+ceiling (`VoiceAILimits.resourceTimeout`), bodies streamed and abandoned past `maxBytes`. Keys live only in
+the Keychain (`KeychainVoiceAIKeyStore`, one service per provider), bound to the `host:port` they
+were saved for (`VoiceAIEndpoint.keyBinding`, stored in `kSecAttrGeneric`; `VoiceAIReadiness` hands a
+key out only for that binding); never in `SettingsStore`, logs, export, audit or any UI text. Settings
+text fields commit on Return/blur (`VoiceAICommittedTextField`), never per keystroke. A cloud capture is uploaded only when the user ended it (a cap-ended one
+fails `needsUserRelease`), its final watchdog is stretched to `VoiceAILimits.transcriptionWatchdog`,
+and `VoiceSessionModel.cloudActivity` drives the cloud mark. `ChatProvider` +
+`ChatToolHandling` (nil today: no tool is ever offered) is the seam for a later tool-use package; any
+tool it adds must go through `ToolTierTable`, because each tool call is reported as `.toolActivity`.
+
 The expanded pill also has a **Talk row** (`TalkRowPresentation`, `NotchPillView+TalkAction.swift`, `PillSectionKind.talk`):
 shown only while voice is enabled, idle, and `voice.actions.toggleTalk` is installed (never in smoke-test mode); it calls
 `toggleTalk()` (R11/R33), or `requestPermissions()` while access is `.notDetermined`. The listening card carries Cancel, Done
 (`toggleTalk`) and Stop. Keep the row non-activating and hidden whenever the voice section is up.
 
 `Contracts/` is frozen. The other folders are `Logic/` (reducer, router, tiers), `Platform/`
-(speech, hotkey, permissions, audit), `Coordinator/`, and `Hermes/` (preflight, ACP, process
-guard). Put a change in the folder that already owns that layer.
+(speech, hotkey, permissions, audit), `Coordinator/`, `Hermes/` (preflight, ACP, process
+guard), and `OpenAI/` (opt-in AI providers). Put a change in the folder that already owns that layer.
 
 Load-bearing privacy rules (all 12 are `docs/voice/PLAN.md` section 14):
 
-- Audio is never written to disk. Recognition is on-device only; a locale without on-device
-  support fails closed.
+- Audio is never written to disk. Recognition is on-device by default; a locale without on-device
+  support fails closed (no silent server fallback). Only when the user picks an AI provider for a
+  step does that step's audio or text leave the Mac, only to the configured base URL, with the
+  cloud mark showing, and nothing is persisted (PLAN section 14 rule 1).
 - Utterance, reply, and command text stay out of logs, the audit log, VoiceOver, and the status
   menu. A local approval shows a desnotch-authored summary. The audit log stores metadata only
   (hashes and codes).

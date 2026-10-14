@@ -464,6 +464,11 @@ enum PreflightFailure: String, CaseIterable, Sendable, Equatable {
     case mcpConfigured
     case protocolMismatch
     case notImplemented
+    /// OpenAI-compatible answers lane: the base URL is malformed, or plain http to a host that
+    /// is not this Mac (amendment for the opt-in AI provider).
+    case providerEndpointInvalid
+    /// OpenAI-compatible answers lane: no API key in the Keychain for a non-local endpoint.
+    case providerKeyMissing
 }
 
 enum AgentPreflightResult: Equatable, Sendable {
@@ -625,6 +630,30 @@ enum UnavailableReason: String, Sendable, Equatable {
     case pushToTalk
 }
 
+/// Why a request to the opt-in OpenAI-compatible provider failed. Category only: never the
+/// response body, the transcript, the reply or the key (amendment for the opt-in AI provider).
+enum ProviderFailure: String, Error, Sendable, Equatable, CaseIterable {
+    /// Base URL malformed or not https (plain http is allowed only to this Mac).
+    case endpointInvalid
+    /// No API key stored for a non-local endpoint.
+    case keyMissing
+    /// HTTP 401/403.
+    case unauthorized
+    /// HTTP 404: usually a wrong base URL or model name.
+    case notFound
+    /// HTTP 429.
+    case rateLimited
+    /// Any other non-2xx status.
+    case httpError
+    /// DNS, connection, TLS.
+    case network
+    case timeout
+    /// The body did not decode into the expected shape, or it was too large.
+    case badResponse
+    /// The captured audio exceeded the upload cap.
+    case audioTooLarge
+}
+
 /// Every way a voice flow can fail. `userMessage` is generic, short and secret-free; the UI
 /// still routes it through the privacy-mode redaction boundary.
 enum VoiceFailure: Error, Equatable, Sendable {
@@ -644,6 +673,8 @@ enum VoiceFailure: Error, Equatable, Sendable {
     /// Short reason code, never raw output.
     case executionFailed(String)
     case agentFailed(String)
+    /// The opt-in OpenAI-compatible provider failed (speech-to-text or answers).
+    case provider(ProviderFailure)
 
     enum Severity: Equatable, Sendable {
         /// Normal outcome of a bad utterance; styled calmly.
@@ -679,6 +710,7 @@ enum VoiceFailure: Error, Equatable, Sendable {
         case .preflightRefused(let failure): return "preflight.\(failure.rawValue)"
         case .executionFailed: return "execution_failed"
         case .agentFailed: return "agent_failed"
+        case .provider(let failure): return "provider.\(failure.rawValue)"
         }
     }
 
@@ -707,9 +739,22 @@ enum VoiceFailure: Error, Equatable, Sendable {
         case .timeout: return "Timed out"
         case .stepBudgetExceeded: return "Agent used too many steps"
         case .tripwire: return "Agent stopped: unapproved tool"
+        case .preflightRefused(.providerEndpointInvalid), .preflightRefused(.providerKeyMissing):
+            return "AI provider isn't set up"
         case .preflightRefused: return "Agent lane refused: profile check failed"
         case .executionFailed: return "Couldn't do that"
         case .agentFailed: return "Agent error"
+        case .provider(let failure):
+            switch failure {
+            case .endpointInvalid, .keyMissing: return "AI provider isn't set up"
+            case .unauthorized: return "AI provider rejected the key"
+            case .notFound: return "AI provider: check URL and model"
+            case .rateLimited: return "AI provider is busy, try later"
+            case .httpError, .badResponse: return "AI provider error"
+            case .network: return "Can't reach the AI provider"
+            case .timeout: return "AI provider timed out"
+            case .audioTooLarge: return "That was too long"
+            }
         }
     }
 }

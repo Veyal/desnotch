@@ -153,7 +153,9 @@ final class SettingsStoreTests: XCTestCase {
             "pillMode", "musicIndicatorStyle", "animationStyle", "pillDisplay",
             "hoverCollapseDelay", "minimizedWidth", "minimizedHeight", "expandedWidth",
             "voiceEnabled", "voiceLocale", "voiceHermesLane", "voiceTTSEnabled", "voiceDuckMedia",
-            "voiceHotkey"
+            "voiceHotkey", "voiceSpeechProvider", "voiceAnswersProvider", "voiceReplyProvider",
+            "voiceAIBaseURL", "voiceAISTTModel", "voiceAIChatModel", "voiceAITTSModel", "voiceAITTSVoice",
+            "voiceAILanguage", "voiceAnthropicBaseURL", "voiceAnthropicModel"
         ]
         XCTAssertEqual(Set(SettingsStore.Key.allCases.map(\.rawValue)), expected)
     }

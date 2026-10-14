@@ -18,6 +18,9 @@ struct VoiceSessionActions {
     /// pipeline as a final transcript, bypassing mic and recognizer.
     var submitTyped: ((String) -> Void)?
     var requestPermissions: (() -> Void)?
+    /// Amendment (opt-in AI provider): re-runs the agent-lane check after Settings saved or
+    /// removed a provider key (the Keychain has no change notification).
+    var refreshAgentLane: (() -> Void)?
 
     init() {}
 }
@@ -63,6 +66,12 @@ public final class VoiceSessionModel: ObservableObject {
     @Published private(set) var hermesLaneStatus: HermesLaneStatus = .off
     /// `.unavailable` when another app owns the push-to-talk combination (or voice is off).
     @Published private(set) var hotkeyStatus: PushToTalkStatus = .unavailable
+    /// Amendment (opt-in AI provider): true while the current flow sends audio or text to the
+    /// configured OpenAI-compatible endpoint outside the agent lane (cloud speech-to-text or the
+    /// cloud reply voice). The coordinator clears it when the session returns to idle.
+    @Published private(set) var cloudActivity = false
+    /// Display name of the backend behind the agent lane: "Hermes" or "AI provider".
+    @Published private(set) var agentName = VoiceSessionModel.hermesAgentName
 
     var actions = VoiceSessionActions()
 
@@ -73,8 +82,9 @@ public final class VoiceSessionModel: ObservableObject {
     /// Hold-open input for `PillInteractionPolicy.wantsHover`: any session phase but idle.
     var isActive: Bool { state != .idle }
     var isPaused: Bool { state == .paused }
-    /// The pill must show the "cloud" badge whenever the Hermes lane is involved.
-    var usesCloud: Bool { lane == .hermes }
+    /// The pill must show the "cloud" badge whenever the agent lane is involved, and whenever
+    /// audio or text of this flow goes to the opt-in AI provider.
+    var usesCloud: Bool { lane == .hermes || cloudActivity }
     /// True while the microphone is open for this app.
     var isCapturing: Bool {
         state == .armed || state == .listening || interruptListening
@@ -93,6 +103,7 @@ public final class VoiceSessionModel: ObservableObject {
     func toggleTalk() { actions.toggleTalk?() }
     func submitTyped(_ text: String) { actions.submitTyped?(text) }
     func requestPermissions() { actions.requestPermissions?() }
+    func refreshAgentLane() { actions.refreshAgentLane?() }
 
     // MARK: Writers (called by the coordinator, and by tests/previews)
 
@@ -107,7 +118,7 @@ public final class VoiceSessionModel: ObservableObject {
         assignIfChanged(&stepsStarted, context.stepsStarted)
         assignIfChanged(&pendingConfirmation, context.pending)
         assignIfChanged(&lane, context.lane)
-        assignIfChanged(&routeSummary, Self.summary(of: context.route))
+        assignIfChanged(&routeSummary, Self.summary(of: context.route, agentName: agentName))
         assignIfChanged(&reply, context.reply)
         assignIfChanged(&interruptListening, context.interrupt != nil)
         let failure = (context.state == .error || context.state == .paused) ? context.failure : nil
@@ -140,10 +151,21 @@ public final class VoiceSessionModel: ObservableObject {
         assignIfChanged(&survivors, names)
     }
 
-    static func summary(of route: RouteDecision?) -> String? {
+    func setCloudActivity(_ active: Bool) {
+        assignIfChanged(&cloudActivity, active)
+    }
+
+    func setAgentName(_ name: String) {
+        assignIfChanged(&agentName, name)
+    }
+
+    static let hermesAgentName = "Hermes"
+    static let providerAgentName = "AI provider"
+
+    static func summary(of route: RouteDecision?, agentName: String = "Hermes") -> String? {
         switch route {
         case .local(let intent): return intent.summary
-        case .remote: return "Send to Hermes (cloud)"
+        case .remote: return "Send to \(agentName) (cloud)"
         case .emergencyStop: return "Stop everything"
         case .cancelTurn: return "Cancel the current turn"
         case .reject, .none: return nil

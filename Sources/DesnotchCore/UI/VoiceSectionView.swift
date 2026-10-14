@@ -294,7 +294,7 @@ struct VoiceSectionView: View {
                     Image(systemName: VoiceGlyph.cloud.rawValue)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(PillPalette.mist.color)
-                    Text("Hermes")
+                    Text(presentation.cloudBadgeLabel)
                         .font(PillTextStyle.caption.font)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)

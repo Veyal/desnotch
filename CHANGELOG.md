@@ -5,6 +5,14 @@
 - **Talk button on the notch:** with voice control on, the expanded notch shows a Talk row (with
   the configured shortcut) that starts a listening session without the hot key, or asks for
   microphone and speech access first. While listening, the card now has Cancel and Done buttons.
+- **Optional AI provider for voice:** Settings > Voice control > AI provider lets each step use
+  an AI service instead of staying on the Mac: speech-to-text and spoken replies through any
+  OpenAI-compatible endpoint (OpenAI, Groq, OpenRouter, or a local LM Studio/Ollama/whisper
+  server), and answers to non-command requests through an OpenAI-compatible model or Claude
+  (Anthropic). Everything stays on-device or off by default. API keys live only in the Keychain,
+  base URLs must be https (plain http only to this Mac), audio is uploaded from memory only after
+  you end the capture, a cloud mark shows in the notch while audio or text is sent, and nothing
+  is saved. "Test Connection" checks the endpoint without showing the key.
 
 ## v0.12.0 — 2026-10-13
 

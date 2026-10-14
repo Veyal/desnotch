@@ -25,6 +25,9 @@ final class VoiceCoordinator {
     private let isPrivacyMode: @MainActor () -> Bool
     private let makeNonce: () -> String
     private let debugTypingEnabled: Bool
+    /// Opt-in AI providers (OpenAI-compatible speech-to-text and reply voice, and the
+    /// OpenAI-compatible or Anthropic answers backend). Nil: on-device and Hermes only.
+    private let ai: VoiceAIProviders?
 
     private(set) var context = VoiceContext()
 
@@ -47,6 +50,14 @@ final class VoiceCoordinator {
     private var cancellables: Set<AnyCancellable> = []
 
     private var captureGeneration = 0
+    /// The recognizer of the newest capture (on-device or cloud), chosen at capture start.
+    private var activeRecognizer: SpeechRecognizing
+    /// Generations whose capture uses the cloud recognizer (its final watchdog is stretched,
+    /// and its audio is only uploaded when the user ended the capture).
+    private var cloudCaptures: Set<Int> = []
+    /// The backend that owns the current agent turn, so Stop/Cancel reach it even if the
+    /// answers provider is switched mid-turn.
+    private var turnBackend: AgentBackend?
     private var levelHistory: [Float] = []
     private var duckedThisCapture = false
     private var typedFlow = false
@@ -80,6 +91,7 @@ final class VoiceCoordinator {
         dailyTurns: DailyTurnCounter,
         isPrivacyMode: @escaping @MainActor () -> Bool,
         makeNonce: @escaping () -> String = { UUID().uuidString },
+        ai: VoiceAIProviders? = nil,
         debugTypingEnabled: Bool
     ) {
         self.model = model
@@ -101,6 +113,8 @@ final class VoiceCoordinator {
         self.isPrivacyMode = isPrivacyMode
         self.makeNonce = makeNonce
         self.debugTypingEnabled = debugTypingEnabled
+        self.ai = ai
+        activeRecognizer = recognizer
         voiceEnabledState = settings.voiceEnabled
         laneEnabled = settings.voiceHermesLane
         hotkeyChoice = settings.voiceHotkey
@@ -140,6 +154,8 @@ final class VoiceCoordinator {
         keys?.stop()
         recognizer.cancel()
         synthesizer.stop()
+        ai?.recognizer.cancel()
+        ai?.synthesizer.stop()
         ducker.restore()
         duckedThisCapture = false
         terminateAgentNow()
@@ -236,6 +252,13 @@ final class VoiceCoordinator {
 
     private func publish() {
         let deadline = context.state == .review ? reviewDeadline : nil
+        if context.state == .idle {
+            model.setCloudActivity(false)
+            cloudCaptures.removeAll()
+        }
+        if context.state == .idle || context.lane == nil {
+            model.setAgentName(agentName)
+        }
         model.apply(context, reviewDeadline: deadline)
         let armed = context.state != .idle && context.state != .paused
         guard let keys else {
@@ -254,8 +277,8 @@ final class VoiceCoordinator {
         switch effect {
         case .startCapture(let generation, _):
             startCapture(generation)
-        case .endCapture:
-            endCapture()
+        case .endCapture(let generation):
+            endCapture(generation)
         case .cancelCapture:
             cancelCapture()
         case .startTimer(let kind, let generation, let seconds):
@@ -276,6 +299,7 @@ final class VoiceCoordinator {
             speak(text, generation: generation)
         case .stopSpeaking:
             synthesizer.stop()
+            ai?.synthesizer.stop()
         case .audit(let draft):
             appendAudit(draft)
         }
@@ -288,6 +312,7 @@ final class VoiceCoordinator {
         rememberCapture(generation)
         duckedThisCapture = false
         if typed { return }
+        let recognizer = recognizerForNewCapture(generation)
         let stream = recognizer.start(
             localeIdentifier: settings.voiceLocale,
             contextualStrings: VoiceLexicon.contextualStrings
@@ -371,15 +396,42 @@ final class VoiceCoordinator {
         restoreDuckIfNeeded()
     }
 
-    private func endCapture() {
+    private func endCapture(_ generation: Int) {
         if typedFlow { return }
-        recognizer.endAudio()
+        if cloudCaptures.contains(generation) && !captureEndedByUser(generation) {
+            // R54 applied to audio: a capture the cap timer ended is never uploaded.
+            activeRecognizer.cancel()
+            restoreDuckIfNeeded()
+            dispatch(.captureFailed(.rejected(.needsUserRelease), generation: generation))
+            return
+        }
+        activeRecognizer.endAudio()
         restoreDuckIfNeeded()
+    }
+
+    private func captureEndedByUser(_ generation: Int) -> Bool {
+        if let interrupt = context.interrupt, interrupt.generation == generation {
+            return interrupt.endedByUser
+        }
+        return context.captureEndedByUser
+    }
+
+    /// On-device by default; the cloud recognizer only when the user opted in.
+    private func recognizerForNewCapture(_ generation: Int) -> SpeechRecognizing {
+        if let ai, settings.voiceSpeechProvider == .openAICompatible {
+            ai.config.update(VoiceAIConfig(settings: settings))
+            cloudCaptures.insert(generation)
+            model.setCloudActivity(true)
+            activeRecognizer = ai.recognizer
+        } else {
+            activeRecognizer = recognizer
+        }
+        return activeRecognizer
     }
 
     private func cancelCapture() {
         if typedFlow { return }
-        recognizer.cancel()
+        activeRecognizer.cancel()
         restoreDuckIfNeeded()
         levelHistory.removeAll()
         model.setLevels([])
@@ -396,6 +448,11 @@ final class VoiceCoordinator {
         let key = TimerKey(kind: kind, generation: generation)
         if let existing = timerHandles.removeValue(forKey: key) {
             existing.cancel()
+        }
+        var seconds = seconds
+        if kind == .finalWatchdog && cloudCaptures.contains(generation) {
+            // The reducer's 5 s wait covers on-device recognition; an upload needs longer.
+            seconds = max(seconds, VoiceAILimits.transcriptionWatchdog)
         }
         let handle = timers.schedule(after: seconds) { [weak self] in
             self?.dispatch(.timerElapsed(kind, generation: generation))
@@ -461,7 +518,8 @@ final class VoiceCoordinator {
             dispatch(.agent(.failed(.agentFailed("lane_off")), generation: generation))
             return
         }
-        let backend = self.backend
+        let backend = currentAgentBackend()
+        turnBackend = backend
         let clock = self.clock
         let pendingAudit = auditChain
         Task { @MainActor [weak self] in
@@ -501,7 +559,7 @@ final class VoiceCoordinator {
     }
 
     private func respondToApproval(nonce: String, allow: Bool) {
-        let backend = self.backend
+        let backend = turnBackend ?? self.backend
         let pendingAudit = auditChain
         if !allow || !auditWritable {
             Task { @MainActor in
@@ -518,7 +576,7 @@ final class VoiceCoordinator {
     }
 
     private func cancelAgentTurn() {
-        let backend = self.backend
+        let backend = turnBackend ?? currentAgentBackend()
         Task { @MainActor in
             await backend.cancelTurn()
         }
@@ -526,7 +584,7 @@ final class VoiceCoordinator {
 
     private func stopAgentHard() {
         let generation = context.generation
-        let backend = self.backend
+        let backend = turnBackend ?? currentAgentBackend()
         let previous = stopChain
         stopChain = Task { @MainActor [weak self] in
             await previous?.value
@@ -537,7 +595,12 @@ final class VoiceCoordinator {
     }
 
     private func speak(_ text: String, generation: Int) {
-        let synthesizer = self.synthesizer
+        var synthesizer = self.synthesizer
+        if let ai, settings.voiceReplyProvider == .openAICompatible {
+            ai.config.update(VoiceAIConfig(settings: settings))
+            model.setCloudActivity(true)
+            synthesizer = ai.synthesizer
+        }
         let locale = settings.voiceLocale
         Task { @MainActor [weak self] in
             _ = await synthesizer.speak(text, localeIdentifier: locale)
@@ -570,6 +633,10 @@ final class VoiceCoordinator {
             guard let self, self.debugTypingEnabled else { return }
             self.submitTyped(text)
         }
+        model.actions.refreshAgentLane = { [weak self] in
+            guard let self, !self.stopped, self.laneEnabled, self.voiceEnabledState else { return }
+            self.runLaneCheck()
+        }
         model.actions.requestPermissions = { [weak self] in
             guard let self else { return }
             let permissions = self.permissions
@@ -599,6 +666,16 @@ final class VoiceCoordinator {
             .sink { [weak self] value in
                 MainActor.assumeIsolated {
                     self?.applyHermesLane(value)
+                }
+            }
+            .store(in: &cancellables)
+        settings.$voiceAnswersProvider
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] value in
+                MainActor.assumeIsolated {
+                    self?.applyAnswersProvider(value)
                 }
             }
             .store(in: &cancellables)
@@ -647,6 +724,37 @@ final class VoiceCoordinator {
         }
     }
 
+    /// Switching who answers ends any cloud turn in flight (it belongs to the old backend) and
+    /// re-checks the lane against the new one.
+    private func applyAnswersProvider(_ provider: VoiceAnswersProvider) {
+        guard !stopped else { return }
+        let cloudSession = context.lane == .hermes
+            && (context.state.isAgentBusy || context.state == .review)
+        if cloudSession {
+            dispatch(.stopAllRequested)
+        }
+        model.setAgentName(agentName)
+        if laneEnabled && voiceEnabledState {
+            runLaneCheck()
+        }
+    }
+
+    /// The backend behind the agent lane right now: Hermes unless the user picked an AI provider.
+    private func currentAgentBackend() -> AgentBackend {
+        guard let ai, settings.voiceAnswersProvider != .hermes else { return backend }
+        ai.config.update(VoiceAIConfig(settings: settings))
+        return ai.chatBackend
+    }
+
+    private var agentName: String {
+        guard ai != nil else { return VoiceSessionModel.hermesAgentName }
+        switch settings.voiceAnswersProvider {
+        case .hermes: return VoiceSessionModel.hermesAgentName
+        case .openAICompatible: return VoiceSessionModel.providerAgentName
+        case .anthropic: return "Claude"
+        }
+    }
+
     /// R03a leaves an idle Stop as an audit only. A Hermes child that outlived a soft
     /// cancel is still this process's responsibility, so Stop reaps it.
     private func shouldReapOnIdleStop(_ event: VoiceEvent) -> Bool {
@@ -656,10 +764,12 @@ final class VoiceCoordinator {
 
     private func reapIdleAgent() {
         let backend = self.backend
+        let chat = ai?.chatBackend
         let previous = stopChain
         stopChain = Task { @MainActor in
             await previous?.value
             _ = await backend.emergencyStop()
+            _ = await chat?.emergencyStop()
         }
     }
 
@@ -699,6 +809,7 @@ final class VoiceCoordinator {
         laneCheckTask = nil
         model.setHermesLaneStatus(.off)
         recognizer.cancel()
+        ai?.recognizer.cancel()
         ducker.restore()
         duckedThisCapture = false
         cancelAllTimers()
@@ -783,7 +894,7 @@ final class VoiceCoordinator {
         laneCheckGeneration += 1
         let token = laneCheckGeneration
         laneCheckTask?.cancel()
-        let backend = self.backend
+        let backend = currentAgentBackend()
         laneCheckTask = Task { @MainActor [weak self] in
             guard let self, !self.stopped, token == self.laneCheckGeneration else { return }
             self.model.setHermesLaneStatus(.checking)
@@ -818,10 +929,12 @@ final class VoiceCoordinator {
 
     private func enqueueShutdown() {
         let backend = self.backend
+        let chat = ai?.chatBackend
         let previous = stopChain
         stopChain = Task { @MainActor in
             await previous?.value
             await backend.shutdown()
+            await chat?.shutdown()
         }
     }
 }

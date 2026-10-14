@@ -40,6 +40,29 @@ public enum VoiceHotkeyChoice: String, CaseIterable {
     case optionCommandJ
 }
 
+/// Who turns speech into text. On-device is the default; the OpenAI-compatible provider is an
+/// explicit opt-in that sends the captured audio to the configured endpoint.
+public enum VoiceSpeechProvider: String, CaseIterable {
+    case onDevice
+    case openAICompatible
+}
+
+/// Who answers requests that are not built-in commands, once the agent lane
+/// (`voiceHermesLane`) is on. Hermes is the default so the existing lane is unchanged.
+/// Anthropic answers only: it has no speech API, so speech-to-text and spoken replies stay
+/// on-device/macOS or OpenAI-compatible.
+public enum VoiceAnswersProvider: String, CaseIterable {
+    case hermes
+    case openAICompatible
+    case anthropic
+}
+
+/// Which voice speaks replies when "Speak replies" is on. The macOS voice is the default.
+public enum VoiceReplyProvider: String, CaseIterable {
+    case system
+    case openAICompatible
+}
+
 /// User-toggleable feature switches and pill-behavior knobs, UserDefaults-backed.
 /// The pill view gates its sections on these; pollers (process monitor, calendar,
 /// agent scanner) also check them so disabled features stop doing background work.
@@ -74,6 +97,16 @@ public final class SettingsStore: ObservableObject {
     public static let defaultVoiceLocale = "en-US"
     public static let defaultVoiceHotkey = VoiceHotkeyChoice.optionCommandV
 
+    /// Opt-in OpenAI-compatible AI provider. The API key is never stored here: it lives in the
+    /// Keychain (`VoiceAIKeychain`). An empty stored text field means "use the default".
+    public static let defaultVoiceAIBaseURL = VoiceAIDefaults.baseURL
+    public static let defaultVoiceAISTTModel = VoiceAIDefaults.sttModel
+    public static let defaultVoiceAIChatModel = VoiceAIDefaults.chatModel
+    public static let defaultVoiceAITTSModel = VoiceAIDefaults.ttsModel
+    public static let defaultVoiceAITTSVoice = VoiceAIDefaults.ttsVoice
+    public static let defaultVoiceAnthropicBaseURL = VoiceAIDefaults.anthropicBaseURL
+    public static let defaultVoiceAnthropicModel = VoiceAIDefaults.anthropicModel
+
     nonisolated public static func clamp(_ value: Double, to range: ClosedRange<Double>) -> Double {
         min(max(value, range.lowerBound), range.upperBound)
     }
@@ -101,6 +134,9 @@ public final class SettingsStore: ObservableObject {
         case pillMode, musicIndicatorStyle, animationStyle, pillDisplay
         case hoverCollapseDelay, minimizedWidth, minimizedHeight, expandedWidth
         case voiceEnabled, voiceLocale, voiceHermesLane, voiceTTSEnabled, voiceDuckMedia, voiceHotkey
+        case voiceSpeechProvider, voiceAnswersProvider, voiceReplyProvider
+        case voiceAIBaseURL, voiceAISTTModel, voiceAIChatModel, voiceAITTSModel, voiceAITTSVoice, voiceAILanguage
+        case voiceAnthropicBaseURL, voiceAnthropicModel
 
         /// Value used when nothing is stored (only meaningful for boolean keys). Feature
         /// toggles default ON; permission-triggering or privacy-sensitive opt-ins default OFF.
@@ -218,6 +254,48 @@ public final class SettingsStore: ObservableObject {
     /// Lower other audio while the mic is open.
     @Published public var voiceDuckMedia: Bool { didSet { set(.voiceDuckMedia, voiceDuckMedia) } }
     @Published public var voiceHotkey: VoiceHotkeyChoice { didSet { set(.voiceHotkey, voiceHotkey.rawValue) } }
+    /// Speech-to-text engine. On-device by default.
+    @Published public var voiceSpeechProvider: VoiceSpeechProvider {
+        didSet { set(.voiceSpeechProvider, voiceSpeechProvider.rawValue) }
+    }
+    /// Backend of the agent lane when `voiceHermesLane` is on. Hermes by default.
+    @Published public var voiceAnswersProvider: VoiceAnswersProvider {
+        didSet { set(.voiceAnswersProvider, voiceAnswersProvider.rawValue) }
+    }
+    /// Voice of spoken replies. The macOS voice by default.
+    @Published public var voiceReplyProvider: VoiceReplyProvider {
+        didSet { set(.voiceReplyProvider, voiceReplyProvider.rawValue) }
+    }
+    /// Base URL of the OpenAI-compatible provider (e.g. `https://api.openai.com/v1`). Machine
+    /// and account specific, so it is never exported. Validated (https, or http to this Mac)
+    /// where it is used, not here, so typing in Settings is never rewritten mid-edit.
+    @Published public var voiceAIBaseURL: String {
+        didSet { normalizeAndSet(\.voiceAIBaseURL, .voiceAIBaseURL, Self.normalizedVoiceAIBaseURL) }
+    }
+    @Published public var voiceAISTTModel: String {
+        didSet { normalizeAndSet(\.voiceAISTTModel, .voiceAISTTModel, Self.normalizedVoiceAIModel) }
+    }
+    @Published public var voiceAIChatModel: String {
+        didSet { normalizeAndSet(\.voiceAIChatModel, .voiceAIChatModel, Self.normalizedVoiceAIModel) }
+    }
+    @Published public var voiceAITTSModel: String {
+        didSet { normalizeAndSet(\.voiceAITTSModel, .voiceAITTSModel, Self.normalizedVoiceAIModel) }
+    }
+    @Published public var voiceAITTSVoice: String {
+        didSet { normalizeAndSet(\.voiceAITTSVoice, .voiceAITTSVoice, Self.normalizedVoiceAIModel) }
+    }
+    /// Base URL of the Anthropic Messages API (requests go to `<base>/v1/messages`). Never exported.
+    @Published public var voiceAnthropicBaseURL: String {
+        didSet { normalizeAndSet(\.voiceAnthropicBaseURL, .voiceAnthropicBaseURL, Self.normalizedVoiceAIBaseURL) }
+    }
+    @Published public var voiceAnthropicModel: String {
+        didSet { normalizeAndSet(\.voiceAnthropicModel, .voiceAnthropicModel, Self.normalizedVoiceAIModel) }
+    }
+    /// ISO-639-1 hint for cloud speech-to-text ("en", "id"). Empty = auto-detect, which is
+    /// what mixed Indonesian/English speech needs.
+    @Published public var voiceAILanguage: String {
+        didSet { normalizeAndSet(\.voiceAILanguage, .voiceAILanguage, Self.normalizedVoiceAILanguage) }
+    }
 
     /// One-time product guide state. The guide is always reopenable from the status menu.
     @Published public var hasSeenOnboarding: Bool { didSet { set(.hasSeenOnboarding, hasSeenOnboarding) } }
@@ -312,6 +390,24 @@ public final class SettingsStore: ObservableObject {
         voiceDuckMedia = Self.bool(defaults, .voiceDuckMedia)
         voiceHotkey = Self.string(defaults, .voiceHotkey)
             .flatMap(VoiceHotkeyChoice.init(rawValue:)) ?? Self.defaultVoiceHotkey
+        voiceSpeechProvider = Self.string(defaults, .voiceSpeechProvider)
+            .flatMap(VoiceSpeechProvider.init(rawValue:)) ?? .onDevice
+        voiceAnswersProvider = Self.string(defaults, .voiceAnswersProvider)
+            .flatMap(VoiceAnswersProvider.init(rawValue:)) ?? .hermes
+        voiceReplyProvider = Self.string(defaults, .voiceReplyProvider)
+            .flatMap(VoiceReplyProvider.init(rawValue:)) ?? .system
+        voiceAIBaseURL = Self.normalizedVoiceAIBaseURL(Self.string(defaults, .voiceAIBaseURL) ?? Self.defaultVoiceAIBaseURL)
+        voiceAISTTModel = Self.normalizedVoiceAIModel(Self.string(defaults, .voiceAISTTModel) ?? Self.defaultVoiceAISTTModel)
+        voiceAIChatModel = Self.normalizedVoiceAIModel(Self.string(defaults, .voiceAIChatModel) ?? Self.defaultVoiceAIChatModel)
+        voiceAITTSModel = Self.normalizedVoiceAIModel(Self.string(defaults, .voiceAITTSModel) ?? Self.defaultVoiceAITTSModel)
+        voiceAITTSVoice = Self.normalizedVoiceAIModel(Self.string(defaults, .voiceAITTSVoice) ?? Self.defaultVoiceAITTSVoice)
+        voiceAILanguage = Self.normalizedVoiceAILanguage(Self.string(defaults, .voiceAILanguage) ?? "")
+        voiceAnthropicBaseURL = Self.normalizedVoiceAIBaseURL(
+            Self.string(defaults, .voiceAnthropicBaseURL) ?? Self.defaultVoiceAnthropicBaseURL
+        )
+        voiceAnthropicModel = Self.normalizedVoiceAIModel(
+            Self.string(defaults, .voiceAnthropicModel) ?? Self.defaultVoiceAnthropicModel
+        )
 
         pillMode = Self.string(defaults, .pillMode).flatMap(PillVisibilityMode.init(rawValue:)) ?? Self.defaultPillMode
         musicIndicatorStyle = Self.string(defaults, .musicIndicatorStyle)
@@ -356,6 +452,46 @@ public final class SettingsStore: ObservableObject {
     static func normalizedVoiceLocale(_ raw: String?) -> String {
         guard let raw, supportedVoiceLocales.contains(raw) else { return defaultVoiceLocale }
         return raw
+    }
+
+    /// Trims, drops trailing slashes and caps the length. Never substitutes the default (an empty
+    /// field means "default" at use time), so clearing the field to retype it is not undone.
+    nonisolated static func normalizedVoiceAIBaseURL(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        value = String(value.prefix(VoiceAIDefaults.maxBaseURLLength))
+        while value.hasSuffix("/") { value.removeLast() }
+        return value
+    }
+
+    /// Model and voice identifiers: letters, digits and `._:/@+-` only, capped. Anything else
+    /// (spaces, quotes, control characters) is dropped as it is typed.
+    nonisolated static func normalizedVoiceAIModel(_ raw: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._:/@+-"))
+        let kept = raw.unicodeScalars.filter { $0.isASCII && allowed.contains($0) }
+        return String(String.UnicodeScalarView(kept).prefix(VoiceAIDefaults.maxModelLength))
+    }
+
+    /// Language hint: ASCII letters and `-` only, capped (e.g. "id", "en", "pt-BR").
+    nonisolated static func normalizedVoiceAILanguage(_ raw: String) -> String {
+        let kept = raw.unicodeScalars.filter {
+            $0.isASCII && (CharacterSet.letters.contains($0) || $0 == "-")
+        }
+        return String(String.UnicodeScalarView(kept).prefix(VoiceAIDefaults.maxLanguageLength))
+    }
+
+    /// Re-assigns a write that normalization changed (one bounded re-entry), then persists.
+    private func normalizeAndSet(
+        _ keyPath: ReferenceWritableKeyPath<SettingsStore, String>,
+        _ key: Key,
+        _ normalize: (String) -> String
+    ) {
+        let value = self[keyPath: keyPath]
+        let normalized = normalize(value)
+        if normalized != value {
+            self[keyPath: keyPath] = normalized
+            return
+        }
+        set(key, value)
     }
 
     private func set(_ key: Key, _ value: Any) {
