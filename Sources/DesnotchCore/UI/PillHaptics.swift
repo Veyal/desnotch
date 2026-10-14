@@ -34,6 +34,8 @@ enum PillHaptics {
         case voiceNeedsConfirm
         /// The user approved a card.
         case voiceApproved
+        /// The Talk row was tapped.
+        case voiceTalkTap
         /// A voice failure. Two taps, same as a finished timer.
         case voiceError
     }
@@ -44,7 +46,7 @@ enum PillHaptics {
 
     static func pattern(for event: Event) -> NSHapticFeedbackManager.FeedbackPattern {
         switch event {
-        case .transport, .clipboardCopy, .privacyToggle, .voiceCommit: return .generic
+        case .transport, .clipboardCopy, .privacyToggle, .voiceCommit, .voiceTalkTap: return .generic
         case .scrubBegin, .scrubCommit, .trayDrop, .voiceStart: return .alignment
         case .scrubEdge, .reminderComplete, .timerComplete, .voiceNeedsConfirm, .voiceApproved, .voiceError:
             return .levelChange

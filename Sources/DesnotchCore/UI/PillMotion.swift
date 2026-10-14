@@ -465,7 +465,7 @@ extension NotchAnimation.Motion {
 /// the reveal-stagger rank, so adding a section means adding a case in its visual position.
 enum PillSectionKind: CaseIterable, Hashable {
     case voice, notification, media, timer, agents, processes, calendar, reminders, battery,
-         clipboard, privacy, tray
+         clipboard, talk, privacy, tray
 
     /// Position in the stack (top = 0): the reveal-stagger rank and the staged-mount cursor.
     var order: Int {
@@ -480,8 +480,9 @@ enum PillSectionKind: CaseIterable, Hashable {
         case .reminders: return 7
         case .battery: return 8
         case .clipboard: return 9
-        case .privacy: return 10
-        case .tray: return 11
+        case .talk: return 10
+        case .privacy: return 11
+        case .tray: return 12
         }
     }
 }

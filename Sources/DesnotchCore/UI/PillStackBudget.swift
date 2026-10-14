@@ -50,6 +50,7 @@ struct PillStackEstimate: Equatable {
     var tray = 0
     var hasVoice = false
     var voiceState: VoiceState? = nil
+    var hasTalk = false
 
     static let notificationHeight = PillRowHeight.tall
     static let mediaHeight: CGFloat = 80
@@ -92,6 +93,7 @@ struct PillStackEstimate: Equatable {
         if clipboard > 0 {
             sections.append(Self.list(rows: min(clipboard, caps.clipboard), rowHeight: PillRowHeight.listRow))
         }
+        if hasTalk { sections.append(Self.privacyHeight) }
         sections.append(Self.privacyHeight)
         if trayEnabled {
             sections.append(

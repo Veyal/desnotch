@@ -75,7 +75,7 @@ final class PillSectionTokenTests: XCTestCase {
     }
 
     func testVoiceIsFirstAndEveryOtherKindShiftsByOne() {
-        XCTAssertEqual(PillSectionKind.allCases.count, 12)
+        XCTAssertEqual(PillSectionKind.allCases.count, 13)
         XCTAssertEqual(PillSectionKind.voice.order, 0)
         XCTAssertEqual(PillSectionKind.notification.order, 1)
         XCTAssertEqual(PillSectionKind.media.order, 2)
@@ -86,8 +86,9 @@ final class PillSectionTokenTests: XCTestCase {
         XCTAssertEqual(PillSectionKind.reminders.order, 7)
         XCTAssertEqual(PillSectionKind.battery.order, 8)
         XCTAssertEqual(PillSectionKind.clipboard.order, 9)
-        XCTAssertEqual(PillSectionKind.privacy.order, 10)
-        XCTAssertEqual(PillSectionKind.tray.order, 11)
+        XCTAssertEqual(PillSectionKind.talk.order, 10)
+        XCTAssertEqual(PillSectionKind.privacy.order, 11)
+        XCTAssertEqual(PillSectionKind.tray.order, 12)
     }
 
     func testApproveHoldDurationIsTheSameInEveryTokenSet() {

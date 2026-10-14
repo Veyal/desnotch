@@ -17,6 +17,8 @@ struct VoiceSectionActions {
     var cancel: () -> Void
     var approve: (String) -> Void
     var deny: (String) -> Void
+    /// Ends a live capture and sends what was heard (the model's `toggleTalk`, reducer R33).
+    var finish: () -> Void = {}
 
     static let none = VoiceSectionActions(
         stop: {}, resume: {}, cancel: {}, approve: { _ in }, deny: { _ in }
@@ -425,12 +427,12 @@ struct VoiceSectionView: View {
                 motion: motion,
                 increasedContrast: contrast == .increased
             )
-        case .stop, .cancel:
+        case .stop, .cancel, .finish:
             Button {
-                if spec.role == .stop {
-                    actions.stop()
-                } else {
-                    actions.cancel()
+                switch spec.role {
+                case .stop: actions.stop()
+                case .finish: actions.finish()
+                default: actions.cancel()
                 }
             } label: {
                 Image(systemName: (spec.glyph ?? .stop).rawValue)
@@ -566,7 +568,8 @@ struct VoiceSectionHost: View {
                 resume: { model.resume() },
                 cancel: { model.cancelReview() },
                 approve: { model.approve(nonce: $0) },
-                deny: { model.deny(nonce: $0) }
+                deny: { model.deny(nonce: $0) },
+                finish: { model.toggleTalk() }
             )
         )
     }

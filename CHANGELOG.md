@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Talk button on the notch:** with voice control on, the expanded notch shows a Talk row (with
+  the configured shortcut) that starts a listening session without the hot key, or asks for
+  microphone and speech access first. While listening, the card now has Cancel and Done buttons.
+
 ## v0.12.0 — 2026-10-13
 
 - **Voice control (experimental, off by default):** hold a shortcut to run a closed set of local
